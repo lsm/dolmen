@@ -77,8 +77,12 @@ func (s *Server) opLimit(op string) (time.Duration, string) {
 	return s.timeouts.Op, fmt.Sprintf("%s operation time limit (-op-timeout, DOLMEN_OP_TIMEOUT)", s.timeouts.Op)
 }
 
-func (s *Server) withOpDeadline(ctx context.Context, op string) (context.Context, context.CancelFunc, func(error) error) {
+func (s *Server) withOpDeadline(ctx context.Context, op string, extra time.Duration) (context.Context, context.CancelFunc, func(error) error) {
 	limit, described := s.opLimit(op)
+	if limit > 0 && extra > 0 {
+		limit += extra
+		described += fmt.Sprintf(" plus the %s file fetch limit (-files-fetch-timeout)", extra)
+	}
 	if limit <= 0 {
 		return ctx, func() {}, func(err error) error { return callerGone(ctx, err) }
 	}

@@ -15,6 +15,8 @@ type fakeFiles struct {
 	parts    map[string]FileBlob
 	attached []string
 	pinned   []string
+	urls     map[string]string
+	fetched  []string
 }
 
 func (f *fakeFiles) Describe(part string) (FileBlob, error) {
@@ -23,6 +25,15 @@ func (f *fakeFiles) Describe(part string) (FileBlob, error) {
 		return FileBlob{}, invalidf("no part %q", part)
 	}
 	return b, nil
+}
+
+func (f *fakeFiles) Fetch(_ context.Context, url string) (string, error) {
+	part, ok := f.urls[url]
+	if !ok {
+		return "", invalidf("cannot fetch %s", url)
+	}
+	f.fetched = append(f.fetched, url)
+	return part, nil
 }
 
 func (f *fakeFiles) Pin(ns, sum string) error {
@@ -92,7 +103,7 @@ func TestFileValuesThatCannotBeWritten(t *testing.T) {
 		{"no source", ctx, map[string]any{"part": "f"}, "curl -F", 0},
 		{"read-back object", WithFileSource(ctx, src), map[string]any{"sha256": "x", "size": 1}, "cannot be written", 0},
 		{"plain string", WithFileSource(ctx, src), "abc", "is a file field", 0},
-		{"url", WithFileSource(ctx, src), map[string]any{"url": "https://x"}, "not supported", 0},
+		{"unfetchable url", WithFileSource(ctx, src), map[string]any{"url": "https://x"}, "cannot fetch", 0},
 		{"unknown key", WithFileSource(ctx, src), map[string]any{"part": "big", "size": 1}, "unknown key", 0},
 		{"bad name", WithFileSource(ctx, src), map[string]any{"part": "big", "name": "a/b"}, "file name", 0},
 		{"over max_bytes", WithFileSource(ctx, src), map[string]any{"part": "big"}, "max_bytes", 413},
@@ -323,5 +334,28 @@ func TestCopyFromNormalizesTheSourceTable(t *testing.T) {
 	}
 	if reached != "docs" {
 		t.Fatalf("authorization saw table %q, want the normalized name", reached)
+	}
+}
+
+func TestAURLValueFetchesThroughTheFileSource(t *testing.T) {
+	st, ctx := fileTable(t)
+	src := &fakeFiles{parts: map[string]FileBlob{"fetched": blob("c", 7)}, urls: map[string]string{"https://files.example/a.txt": "fetched"}}
+	rec := func() []map[string]any {
+		return []map[string]any{{"doc": map[string]any{"url": "https://files.example/a.txt", "name": "a.txt"}}}
+	}
+	first, err := st.Insert(WithFileSource(ctx, src), "app", "docs", rec(), WriteOpts{IdempotencyKey: "k"}, Embedder{}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetRows(ctx, "app", "docs", first.Ids, nil, Incarnation{})
+	if ref := got.Rows[0]["doc"].(map[string]any); ref["sha256"] != strings.Repeat("c", 64) || ref["name"] != "a.txt" {
+		t.Fatalf("fetched reference = %v", ref)
+	}
+	again, err := st.Insert(WithFileSource(ctx, src), "app", "docs", rec(), WriteOpts{IdempotencyKey: "k"}, Embedder{}, nil, Incarnation{})
+	if err != nil || !again.Replayed || len(src.fetched) != 1 {
+		t.Fatalf("an idempotent retry must replay without fetching again: %+v %v fetched=%v", again, err, src.fetched)
+	}
+	if _, err := st.Insert(WithFileSource(ctx, src), "app", "docs", []map[string]any{{"doc": map[string]any{"url": "https://x", "part": "fetched"}}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err == nil || !strings.Contains(err.Error(), "exactly one of") {
+		t.Fatalf("a value with two sources must be refused: %v", err)
 	}
 }

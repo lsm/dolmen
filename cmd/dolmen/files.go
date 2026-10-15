@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/store"
@@ -36,4 +38,18 @@ func newFileStore(cfg *config) *files.Store {
 	c := cfg.Files
 	c.Root = cfg.DataDir
 	return files.New(c)
+}
+
+func parseFetchConfig(hosts, rawTimeout string) ([]string, time.Duration, error) {
+	timeout, err := time.ParseDuration(rawTimeout)
+	if err != nil || timeout < time.Second || timeout > 24*time.Hour {
+		return nil, 0, fmt.Errorf("-files-fetch-timeout must be between 1s and 24h")
+	}
+	var out []string
+	for _, h := range strings.Split(hosts, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out, timeout, nil
 }

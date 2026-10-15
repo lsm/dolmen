@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- File values can be `{"url": "https://…"}`: the server fetches the file, from hosts listed in the
+  new `-files-fetch-hosts` (off by default), bounded by `-files-fetch-timeout`. Non-public
+  addresses, URLs with credentials and redirects off the list are refused.
+
 - File values can be `{"copy_from": {"table", "id", "field"}}`, reusing a file another row the
   caller can read already holds, in a plain JSON write or over MCP.
 

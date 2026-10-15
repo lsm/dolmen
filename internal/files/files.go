@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
@@ -35,6 +36,8 @@ type Config struct {
 	MaxNamespaceFiles int64
 	MaxRequestFiles   int64
 	MaxPendingFiles   int64
+	FetchHosts        []string
+	FetchTimeout      time.Duration
 }
 
 type Error struct {
@@ -59,6 +62,7 @@ type Store struct {
 	pins     map[string]map[string]int
 	attaches map[string]map[string]int
 	live     map[string]bool
+	fetcher  *Fetcher
 }
 
 func New(cfg Config) *Store {
@@ -71,7 +75,7 @@ func New(cfg Config) *Store {
 	if cfg.MaxPendingFiles <= 0 {
 		cfg.MaxPendingFiles = DefaultMaxPendingFiles
 	}
-	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}}
+	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: NewFetcher(cfg.FetchHosts, cfg.FetchTimeout)}
 }
 
 func (s *Store) tmpDir() string { return filepath.Join(s.cfg.Root, tmpDirName) }
@@ -114,6 +118,7 @@ type Request struct {
 	order   []string
 	total   int64
 	pinned  [][2]string
+	fetched map[string]string
 	created []created
 	closed  bool
 }
