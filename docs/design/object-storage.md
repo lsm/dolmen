@@ -250,7 +250,7 @@ attach a URL with `{"url": …}` when the server allows it, and fetch bytes with
 
 ## Go facade
 
-Record values may be a `dolmen.File{Reader io.Reader, Name, MediaType string}`, which the facade
+Record values may be a `dolmen.FileUpload{Reader io.Reader, Name, MediaType string}` (`dolmen.File` is already the field type constant), which the facade
 streams exactly as a multipart part, or a `dolmen.FileURL` or `dolmen.FileCopy`. `OpenFile(ctx,
 namespace, table string, id int64, field string) (io.ReadSeekCloser, FileInfo, error)` reads one.
 The facade has no auth. Server-side fetch needs `WithFileFetch(hosts []string, timeout

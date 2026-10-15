@@ -155,3 +155,14 @@ and MCP), and `TestEmbeddedParityReadsNeverCreateNamespaces` /
 `TestEmbeddedParityWritesStillCreateNamespaces` (`internal/conformance/embedded_parity_test.go`).
 Each asserts the data directory is empty afterwards, so a future reintroduction of an ensure on a
 read fails on the surface that regressed.
+
+## File values
+
+The wire attaches a file with a `{"part": "<name>"}` value naming a multipart part. The façade takes
+a `dolmen.FileUpload{Reader, Name, MediaType}` value instead (or a pointer to one), streams it
+through the same file store, and hands the engine the same `{"part": …}` value, so `max_bytes`,
+`media_types`, name cleaning, media type inference, the idempotency fingerprint and the cleanup of
+a failed write are one implementation. A `{"part": …}` map written through the façade is refused
+the way an MCP call is: the façade names its own uploads with a random suffix, so a literal map
+cannot name one. The caller's record maps are never rewritten.
+
