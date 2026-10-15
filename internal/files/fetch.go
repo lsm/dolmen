@@ -28,7 +28,13 @@ func NewFetcher(hosts []string, timeout time.Duration) *Fetcher {
 	if timeout <= 0 {
 		timeout = DefaultFetchTimeout
 	}
-	return &Fetcher{hosts: hosts, timeout: timeout, blocked: nonPublic}
+	norm := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		if h = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), ".")); h != "" {
+			norm = append(norm, h)
+		}
+	}
+	return &Fetcher{hosts: norm, timeout: timeout, blocked: nonPublic}
 }
 
 func (f *Fetcher) Enabled() bool { return f != nil && len(f.hosts) > 0 }

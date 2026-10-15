@@ -111,3 +111,12 @@ func TestFetchRefusals(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchHostEntriesAreNormalized(t *testing.T) {
+	f := NewFetcher([]string{" Files.Example.COM. ", "*.CDN.Example.org."}, 0)
+	for _, host := range []string{"files.example.com", "a.cdn.example.org"} {
+		if !f.allowed(host) {
+			t.Errorf("%q must match its mixed-case, trailing-dot entry", host)
+		}
+	}
+}
