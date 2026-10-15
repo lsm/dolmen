@@ -166,3 +166,10 @@ a failed write are one implementation. A `{"part": …}` map written through the
 the way an MCP call is: the façade names its own uploads with a random suffix, so a literal map
 cannot name one. The caller's record maps are never rewritten.
 
+`dolmen.FileURL{URL, Name, MediaType}` and `dolmen.FileCopy{Table, ID, Field, Name, MediaType}` (or
+pointers) become the wire's `{"url": …}` and `{"copy_from": …}` values, with an empty `Name` or
+`MediaType` left out. A `FileURL` is refused unless `Open` was given `WithFileFetch(hosts,
+timeout)`, the façade's `-files-fetch-hosts` and `-files-fetch-timeout`; the timeout is 1s to 24h,
+or 0 for the default. Literal `{"url": …}` and `{"copy_from": …}` maps are refused like a literal
+`{"part": …}` map: only the typed values give the engine a file store to work with.
+

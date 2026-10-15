@@ -35,6 +35,20 @@ type fileParts struct {
 	salt string
 }
 
+type FileURL struct {
+	URL       string
+	Name      string
+	MediaType string
+}
+
+type FileCopy struct {
+	Table     string
+	ID        int64
+	Field     string
+	Name      string
+	MediaType string
+}
+
 func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.Context, []map[string]any, *fileParts, error) {
 	var fp *fileParts
 	done := false
@@ -47,15 +61,12 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 	copied := map[int]bool{}
 	for i, m := range maps {
 		for k, v := range m {
-			f, ok := fileValue(v)
+			fv, ok := fileValue(v)
 			if !ok {
 				continue
 			}
 			if s.files == nil {
 				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: this store cannot hold files; file fields need the SQLite engine", k)
-			}
-			if f.Reader == nil {
-				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: dolmen.FileUpload needs a Reader", k)
 			}
 			if fp == nil {
 				fp = &fileParts{req: s.files.NewRequest(), salt: randomSalt()}
@@ -68,12 +79,11 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 				}
 				out[i], copied[i] = cp, true
 			}
-			fp.n++
-			part := fmt.Sprintf("upload-%s-%d", fp.salt, fp.n)
-			if err := fp.req.Receive(part, f.Name, f.MediaType, f.Reader); err != nil {
+			val, err := s.fileWireValue(k, fv, fp)
+			if err != nil {
 				return ctx, nil, nil, err
 			}
-			out[i][k] = map[string]any{"part": part}
+			out[i][k] = val
 		}
 	}
 	done = true
@@ -83,16 +93,56 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 	return store.WithFileSource(ctx, fp.req), out, fp, nil
 }
 
-func fileValue(v any) (FileUpload, bool) {
-	switch x := v.(type) {
+func (s *Store) fileWireValue(field string, v any, fp *fileParts) (map[string]any, error) {
+	val := map[string]any{}
+	name, mediaType := "", ""
+	switch f := v.(type) {
 	case FileUpload:
+		if f.Reader == nil {
+			return nil, derr.New(derr.InvalidRequest, "field %q: dolmen.FileUpload needs a Reader", field)
+		}
+		fp.n++
+		part := fmt.Sprintf("upload-%s-%d", fp.salt, fp.n)
+		if err := fp.req.Receive(part, f.Name, f.MediaType, f.Reader); err != nil {
+			return nil, err
+		}
+		return map[string]any{"part": part}, nil
+	case FileURL:
+		if !s.fileFetch {
+			return nil, derr.New(derr.InvalidRequest, "field %q: dolmen.FileURL needs Open(dir, dolmen.WithFileFetch(hosts, timeout)) naming the hosts to fetch from; or read the file yourself and pass a dolmen.FileUpload", field)
+		}
+		val["url"], name, mediaType = f.URL, f.Name, f.MediaType
+	case FileCopy:
+		val["copy_from"] = map[string]any{"table": f.Table, "id": f.ID, "field": f.Field}
+		name, mediaType = f.Name, f.MediaType
+	}
+	if name != "" {
+		val["name"] = name
+	}
+	if mediaType != "" {
+		val["media_type"] = mediaType
+	}
+	return val, nil
+}
+
+func fileValue(v any) (any, bool) {
+	switch x := v.(type) {
+	case FileUpload, FileURL, FileCopy:
 		return x, true
 	case *FileUpload:
 		if x != nil {
 			return *x, true
 		}
+	case *FileURL:
+		if x != nil {
+			return *x, true
+		}
+	case *FileCopy:
+		if x != nil {
+			return *x, true
+		}
 	}
-	return FileUpload{}, false
+	return nil, false
 }
 
 func (fp *fileParts) finish(err error) {
