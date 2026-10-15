@@ -432,6 +432,8 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	maxFileSize := fs.String("max-file-size", envOr("DOLMEN_MAX_FILE_SIZE", "1GiB", getenv), "largest single file a write may attach, e.g. 1GiB; applies on top of a file field's max_bytes, so the lower limit wins")
 	maxNamespaceFiles := fs.String("max-namespace-files-size", envOr("DOLMEN_MAX_NAMESPACE_FILES_SIZE", "0", getenv), "largest total of one namespace's stored files, e.g. 50GiB; a write past it is refused with 507. 0 (default) is unbounded")
 	maxRequestFiles := fs.String("max-request-files-size", envOr("DOLMEN_MAX_REQUEST_FILES_SIZE", "2GiB", getenv), "most file bytes one multipart write may carry across its parts")
+	fetchHosts := fs.String("files-fetch-hosts", envOr("DOLMEN_FILES_FETCH_HOSTS", "", getenv), "comma-separated hosts a {\"url\": ...} file value may be fetched from: exact names, *.example.com for subdomains, or * for any public host. Empty (default) disables fetching")
+	fetchTimeout := fs.String("files-fetch-timeout", envOr("DOLMEN_FILES_FETCH_TIMEOUT", files.DefaultFetchTimeout.String(), getenv), "longest one server-side file fetch may take, 1s to 24h")
 	maxPendingFiles := fs.String("max-pending-files-size", envOr("DOLMEN_MAX_PENDING_FILES_SIZE", "8GiB", getenv), "most file bytes all in-flight writes may hold in temporary space at once; past it a write is refused with 503 storage_unavailable")
 	maxNamespaceSize := fs.String("max-namespace-size", envOr("DOLMEN_MAX_NAMESPACE_SIZE", "0", getenv), "largest a namespace file may grow, e.g. 10GiB; a write past it is refused with 507 and nothing is written. 0 (default) is unbounded; sqlite engine")
 	logLevel := fs.String("log-level", envOr("DOLMEN_LOG_LEVEL", "info", getenv), "log verbosity: debug (adds one line per operation: op, outcome, status, duration, request size, request id), info (default), warn, or error")
@@ -605,6 +607,9 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		return nil, &printedError{err}
 	}
 	filesCfg, err := parseFilesConfig(*maxFileSize, *maxNamespaceFiles, *maxRequestFiles, *maxPendingFiles)
+	if err == nil {
+		filesCfg.FetchHosts, filesCfg.FetchTimeout, err = parseFetchConfig(*fetchHosts, *fetchTimeout)
+	}
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()

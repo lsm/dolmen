@@ -31,6 +31,7 @@ type FileSource interface {
 	Attach(ctx context.Context, ns, part string) (FileBlob, error)
 	Describe(part string) (FileBlob, error)
 	Pin(ns, sha256 string) error
+	Fetch(ctx context.Context, url string) (string, error)
 }
 
 type CopyReach func(ctx context.Context, ns, table string) (*RowScope, error)
@@ -58,6 +59,7 @@ func fileSourceFrom(ctx context.Context) FileSource {
 
 type fileValue struct {
 	part      string
+	url       string
 	copy      *fileCopy
 	name      *string
 	mediaType *string
@@ -77,9 +79,6 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 	if _, isRead := m["sha256"]; isRead {
 		return fileValue{}, invalidf("field %q: a file value read back from a row cannot be written; to attach a file, write {\"part\": \"<form name>\"} and send the file in the same multipart request, or write null to clear the field", f.Name)
 	}
-	if _, has := m["url"]; has {
-		return fileValue{}, invalidf("field %q: \"url\" file values are not supported by this server yet; download the file and send it as a multipart part with {\"part\": \"<form name>\"}", f.Name)
-	}
 	var out fileValue
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -95,6 +94,12 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 				return fileValue{}, invalidf("field %q: \"part\" must be the form name of a file part in the same multipart request", f.Name)
 			}
 			out.part = s
+		case "url":
+			u, ok := raw.(string)
+			if !ok || u == "" {
+				return fileValue{}, invalidf("field %q: \"url\" must be the http or https URL of the file", f.Name)
+			}
+			out.url = u
 		case "copy_from":
 			c, err := parseFileCopy(f.Name, raw)
 			if err != nil {
@@ -120,11 +125,17 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 			}
 			out.mediaType = &s
 		default:
-			return fileValue{}, invalidf("field %q: unknown key %q in a file value; a file value takes \"part\" or \"copy_from\", and optionally \"name\" and \"media_type\"", f.Name, k)
+			return fileValue{}, invalidf("field %q: unknown key %q in a file value; a file value takes \"part\", \"url\" or \"copy_from\", and optionally \"name\" and \"media_type\"", f.Name, k)
 		}
 	}
-	if (out.part == "") == (out.copy == nil) {
-		return fileValue{}, invalidf("field %q: a file value needs exactly one of \"part\", the form name of a file part in the same multipart request, or \"copy_from\", {\"table\", \"id\", \"field\"} of a row whose file to reuse", f.Name)
+	sources := 0
+	for _, set := range []bool{out.part != "", out.url != "", out.copy != nil} {
+		if set {
+			sources++
+		}
+	}
+	if sources != 1 {
+		return fileValue{}, invalidf("field %q: a file value needs exactly one of \"part\", the form name of a file part in the same multipart request; \"url\", a URL the server fetches; or \"copy_from\", {\"table\", \"id\", \"field\"} of a row whose file to reuse", f.Name)
 	}
 	return out, nil
 }
@@ -197,6 +208,16 @@ func (s *Store) coerceFile(ctx context.Context, nsName string, f schema.Field, v
 		return s.copyFile(ctx, nsName, f, fv)
 	}
 	src := fileSourceFrom(ctx)
+	if fv.url != "" {
+		if src == nil {
+			return nil, invalidf("field %q: \"url\" needs the server's file store, which this request does not have", f.Name)
+		}
+		part, err := src.Fetch(ctx, fv.url)
+		if err != nil {
+			return nil, err
+		}
+		fv.part = part
+	}
 	if src == nil {
 		return nil, invalidf("field %q: {\"part\": %q} needs the file in the same request, and this request carries none (a JSON body or an MCP call cannot); send the write over HTTP as multipart/form-data, with the JSON request in a part named request and the file in a part named %s (curl -F 'request=<json>' -F '%s=@path')", f.Name, fv.part, fv.part, fv.part)
 	}

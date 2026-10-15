@@ -1279,4 +1279,5 @@ var defaultFilesConfig = files.Config{
 	MaxFileSize:     files.DefaultMaxFileSize,
 	MaxRequestFiles: files.DefaultMaxRequestFiles,
 	MaxPendingFiles: files.DefaultMaxPendingFiles,
+	FetchTimeout:    files.DefaultFetchTimeout,
 }

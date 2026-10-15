@@ -309,3 +309,20 @@ func TestCopyFromNeverReachesAnotherPrincipalsRow(t *testing.T) {
 		t.Fatalf("alice copying her own file: %d %v", res.StatusCode, out)
 	}
 }
+
+func TestAURLValueTeachesTheAlternativeWhenFetchingIsOff(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	rec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"url": "https://files.example/a.txt"}}}}
+	code, body := h.httpCall("insert", rec)
+	if code != http.StatusBadRequest || errCode(body) != "invalid_request" || !strings.Contains(errMessage(body), "does not fetch URLs") {
+		t.Fatalf("http: %d %v", code, body)
+	}
+	env := h.mcpCall("insert", rec).toolError()
+	if msg, _ := env["message"].(string); !strings.Contains(msg, "multipart part") {
+		t.Fatalf("mcp: %v", env)
+	}
+}

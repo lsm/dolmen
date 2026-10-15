@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -192,4 +193,28 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 		return fetchErr("fetching from %s took longer than -files-fetch-timeout (%s); the fetch may be retried", u.Hostname(), f.timeout)
 	}
 	return fetchErr("fetching from %s broke off before the file arrived; the fetch may be retried", u.Hostname())
+}
+
+func (s *Store) FetchTimeout() time.Duration {
+	if !s.fetcher.Enabled() {
+		return 0
+	}
+	return s.fetcher.timeout
+}
+
+func (r *Request) Fetch(ctx context.Context, raw string) (string, error) {
+	if name, ok := r.fetched[raw]; ok {
+		return name, nil
+	}
+	if r.fetched == nil {
+		r.fetched = map[string]string{}
+	}
+	var salt [8]byte
+	rand.Read(salt[:])
+	name := fmt.Sprintf("url-%x-%d", salt, len(r.fetched)+1)
+	if err := r.ReceiveURL(ctx, name, raw, r.s.fetcher); err != nil {
+		return "", err
+	}
+	r.fetched[raw] = name
+	return name, nil
 }

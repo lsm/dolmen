@@ -170,14 +170,12 @@ has arrived and bounds the write itself. The server arms its write deadline when
 headers, so the handler re-arms it before answering, as every other response path does.
 
 **Server-side fetch** (slice 2). A `url` value makes the server fetch the bytes before taking the
-writer, streaming them to a temporary file under the same limits. The fetch runs in
-`api.Server.Dispatch`, which both transports go through, before it arms the operation's
-`-op-timeout`: it is bounded by `-files-fetch-timeout` instead, and `-op-timeout` then bounds the
-write alone, as it does for a multipart write once the body has arrived. When the request carries
-an idempotency key, Dispatch first looks the key up: a key already recorded with a matching
-fingerprint replays the stored result without fetching, and one recorded with a different
-fingerprint is the usual conflict, so a retry still replays after its source URL has expired or
-changed. The engine repeats the check inside the write, so a racing retry is still caught there. It is off unless the operator
+writer, streaming them to a temporary file under the same limits. The engine fetches
+when it resolves the value, through the request's file source, and each URL once per request. A
+write whose body mentions `"url"` gets `-files-fetch-timeout` added to its `-op-timeout`, and the
+fetch itself is bounded by `-files-fetch-timeout`. The engine looks an idempotency key up before it
+resolves any value, so a retry whose key is recorded replays without fetching, even after its
+source URL has expired or changed; the fingerprint covers the URL string and the value's overrides. It is off unless the operator
 sets `-files-fetch-hosts`: a comma-separated list of host names, where `*.example.com` matches
 subdomains and `*` alone matches any public host. Without it, a `url` value is refused with an error
 that gives the `curl -o` then `curl -F` alternative. Every fetch:

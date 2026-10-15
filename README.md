@@ -467,6 +467,8 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 | `-max-file-size` | `DOLMEN_MAX_FILE_SIZE` | `1GiB` | Largest single file a write may attach, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`. It applies on top of a file field's `max_bytes`, so the lower of the two wins. A larger file is refused with `413` |
 | `-max-namespace-files-size` | `DOLMEN_MAX_NAMESPACE_FILES_SIZE` | `0` | Largest total of one namespace's stored files, each file counted once however many rows reference it. A write that would pass it is refused with `507` and writes nothing. Files do not count toward `-max-namespace-size`. `0` is unbounded |
 | `-max-request-files-size` | `DOLMEN_MAX_REQUEST_FILES_SIZE` | `2GiB` | Most file bytes one multipart write may carry across its parts; past it the write is refused with `413` |
+| `-files-fetch-hosts` | `DOLMEN_FILES_FETCH_HOSTS` | — | Comma-separated hosts a `{"url": …}` file value may be fetched from: exact names, `*.example.com` for subdomains, or `*` for any public host. Empty disables fetching. Every connection is refused to loopback, private, link-local and other non-public addresses after DNS resolution, redirects are re-checked, and no credentials are sent |
+| `-files-fetch-timeout` | `DOLMEN_FILES_FETCH_TIMEOUT` | `5m` | Longest one server-side file fetch may take, `1s` to `24h`; a write that fetches gets it on top of `-op-timeout` |
 | `-max-pending-files-size` | `DOLMEN_MAX_PENDING_FILES_SIZE` | `8GiB` | Most file bytes all in-flight writes may hold in temporary space at once, so concurrent uploads cannot fill the disk; past it a write is refused with `503` `storage_unavailable` and may be retried |
 | `-max-namespace-size` | `DOLMEN_MAX_NAMESPACE_SIZE` | `0` | Largest a namespace file may grow, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`. A write that would pass it is refused with `507` and writes nothing; reads keep working. `0` is unbounded. SQLite engine only (see [Disk use](docs/deployment.md#disk-use)) |
 | `-log-level` | `DOLMEN_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, or `error`. `debug` adds one line per operation over HTTP, MCP or stdio with the operation, outcome code, status, duration, request size, and request id, and never the payload, SQL, arguments, or credentials |
@@ -1122,7 +1124,8 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
 
   The media type comes from the part's `Content-Type`, or from the file name's extension when the
   client sends `application/octet-stream`; a value may set `name` and `media_type` itself.
-  `{"copy_from": {"table", "id", "field"}}` reuses a file a row the caller can read already holds,
+  `{"url": "https://…"}` makes the server fetch the file, when the operator lists its host in
+  `-files-fetch-hosts`. `{"copy_from": {"table", "id", "field"}}` reuses a file a row the caller can read already holds,
   in any write and over MCP, without uploading it again. Every
   read returns the reference `{"sha256", "size", "media_type", "name"}`, never the bytes.
   `GET /v1/files?namespace=&table=&id=&field=` downloads them with the same authorization as
