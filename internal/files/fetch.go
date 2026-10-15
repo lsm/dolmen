@@ -107,7 +107,7 @@ func (f *Fetcher) client() *http.Client {
 		Transport: &http.Transport{DialContext: dialer.DialContext, Proxy: nil, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 4},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
-				return errors.New("more than 5 redirects")
+				return fetchErr("fetching from %s followed more than 5 redirects; give the file's final URL, or download it with curl -o and send it as a multipart part", via[0].URL.Hostname())
 			}
 			return f.check(req.URL)
 		},
@@ -116,7 +116,7 @@ func (f *Fetcher) client() *http.Client {
 
 func (f *Fetcher) check(u *url.URL) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fetchErr("%s is not an http or https URL", u.Scheme+":")
+		return fetchErr("%q is not an http or https URL; give the file's full http(s) URL, or download it with curl -o and send it as a multipart part", u.String())
 	}
 	if u.User != nil {
 		return fetchErr("URLs with credentials (user:password@) are not fetched, because the server sends no credentials; remove them, or download the file and send it as a multipart part")

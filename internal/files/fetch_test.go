@@ -3,6 +3,7 @@ package files
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -205,6 +206,29 @@ func TestAFetchThatBreaksMidBodyIsClassified(t *testing.T) {
 		var fe *Error
 		if !errors.As(err, &fe) || fe.Status != http.StatusBadRequest || !strings.Contains(fe.Message, want) || !strings.Contains(fe.Message, "may be retried") {
 			t.Errorf("%s: %v, want a classified 400 containing %q", path, err, want)
+		}
+	}
+}
+
+func TestFetchRefusalsNameTheCauseAndTheAlternative(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := 0
+		fmt.Sscanf(r.URL.Path, "/hop/%d", &n)
+		http.Redirect(w, r, fmt.Sprintf("/hop/%d", n+1), http.StatusFound)
+	}))
+	defer srv.Close()
+	s := New(Config{Root: t.TempDir()})
+	for raw, want := range map[string][]string{
+		srv.URL + "/hop/0":       {"more than 5 redirects", "multipart"},
+		"example.com/report.pdf": {`"example.com/report.pdf"`, "multipart"},
+	} {
+		r := s.NewRequest()
+		err := r.ReceiveURL(context.Background(), "u", raw, testFetcher(srv))
+		r.Close()
+		for _, w := range want {
+			if err == nil || !strings.Contains(err.Error(), w) || strings.Contains(err.Error(), "may be retried") {
+				t.Errorf("%s: %v, want %q and no retry advice", raw, err, w)
+			}
 		}
 	}
 }
