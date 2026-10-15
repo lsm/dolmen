@@ -186,7 +186,7 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			if !present {
 				continue
 			}
-			cv, err := s.coerceWrite(f, v)
+			cv, err := s.coerceWrite(ctx, nsName, f, v)
 			if err != nil {
 				return nil, 0, 0, ChangeRange{}, true, err
 			}

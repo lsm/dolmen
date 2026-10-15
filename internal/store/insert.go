@@ -81,8 +81,8 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 	}
 }
 
-func (s *Store) payloadHash(sc *schema.TableSchema, records []map[string]any) IdemHash {
-	h, err := RequestHash(s.secrets, sc, records)
+func (s *Store) payloadHash(ctx context.Context, sc *schema.TableSchema, records []map[string]any) IdemHash {
+	h, err := RequestHash(s.secrets, sc, canonicalFiles(ctx, sc, records))
 	if err != nil {
 		sum := sha256.Sum256([]byte("marshal error: " + err.Error()))
 		return IdemHash{Primary: hex.EncodeToString(sum[:])}
@@ -102,7 +102,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	}
 	var idemHash IdemHash
 	if idemKey != "" {
-		idemHash = s.payloadHash(sc, records)
+		idemHash = s.payloadHash(ctx, sc, records)
 		if ids, found, err := lookupIdem(ctx, preRead(n, shared), table, idemKey, idemHash, domain); err != nil {
 			return nil, ChangeRange{}, false, true, err
 		} else if found {
@@ -145,7 +145,7 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			if !present {
 				continue
 			}
-			cv, err := s.coerceWrite(f, v)
+			cv, err := s.coerceWrite(ctx, nsName, f, v)
 			if err != nil {
 				return nil, ChangeRange{}, false, true, err
 			}

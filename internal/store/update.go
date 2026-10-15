@@ -143,7 +143,7 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		if f.Required && v == nil {
 			return UpsertResult{}, true, invalidf("field %q is required and cannot be set to null", f.Name)
 		}
-		cv, err := s.coerceWrite(f, v)
+		cv, err := s.coerceWrite(ctx, nsName, f, v)
 		if err != nil {
 			return UpsertResult{}, true, err
 		}

@@ -68,3 +68,20 @@ func TestFileFieldDeclaration(t *testing.T) {
 	h.mustHTTP("list_migrations", map[string]any{"namespace": "fil", "table": "docs"})
 	h.mustMCP("list_migrations", map[string]any{"namespace": "fil", "table": "docs"})
 }
+
+func TestAFileValueWithoutItsBytesTeachesMultipart(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	rec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"part": "notes"}}}}
+	code, body := h.httpCall("insert", rec)
+	if code != http.StatusBadRequest || errCode(body) != "invalid_request" || !strings.Contains(errMessage(body), "curl -F") {
+		t.Fatalf("http: %d %v", code, body)
+	}
+	env := h.mcpCall("insert", rec).toolError()
+	if msg, _ := env["message"].(string); !strings.Contains(msg, "curl -F") {
+		t.Fatalf("mcp: %v", env)
+	}
+}
