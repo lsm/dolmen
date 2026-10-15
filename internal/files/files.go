@@ -493,3 +493,26 @@ func (s *Store) Sweep(ns string, referenced map[string]bool) (store.FileSweep, e
 }
 
 var _ store.FileSweeper = (*Store)(nil)
+
+func (r *Request) Pin(ns, sum string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !ValidHash(sum) {
+		return invalid(http.StatusBadRequest, "the file to copy has no valid hash")
+	}
+	if _, err := os.Stat(s.blobPath(ns, sum)); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return invalid(http.StatusNotFound, "the file to copy was removed while this write ran; read the source row again and retry")
+		}
+		return err
+	}
+	if n, ok := s.attaches[ns][sum]; ok {
+		s.attaches[ns][sum] = n + 1
+	}
+	s.pin(ns, sum)
+	r.pinned = append(r.pinned, [2]string{ns, sum})
+	return nil
+}
