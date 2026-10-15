@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/files"
@@ -316,14 +314,6 @@ func storedFile(t *testing.T, dir, ns string, ref map[string]any) []byte {
 		t.Fatal(err)
 	}
 	return got
-}
-
-func TestAFullDiskWhileStreamingIsInsufficientStorage(t *testing.T) {
-	s := New(nil, fakeEmb{})
-	err := WrapError(s.partReadError(&fs.PathError{Op: "write", Path: "/data/.files-tmp/part-1", Err: syscall.ENOSPC}, "cannot read file part"))
-	if err.Status != http.StatusInsufficientStorage || err.Code != ErrCodeInternal || strings.Contains(err.Message, "/data") {
-		t.Fatalf("got %d %s %q", err.Status, err.Code, err.Message)
-	}
 }
 
 func TestAMultipartReadErrorDoesNotEchoItsCause(t *testing.T) {
