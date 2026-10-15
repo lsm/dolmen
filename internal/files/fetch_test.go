@@ -265,3 +265,31 @@ func TestAFullDiskIsInsufficientStorage(t *testing.T) {
 		t.Fatal("other storage errors pass through unchanged")
 	}
 }
+
+func TestACanceledFetchIsNotATimeout(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/body" {
+			w.Header().Set("Content-Length", "100")
+			w.Write([]byte("partial"))
+			w.(http.Flusher).Flush()
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	s := New(Config{Root: t.TempDir()})
+	for _, path := range []string{"/head", "/body"} {
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(100*time.Millisecond, cancel)
+		r := s.NewRequest()
+		err := r.ReceiveURL(ctx, "u", srv.URL+path, testFetcher(srv))
+		r.Close()
+		if !errors.Is(err, context.Canceled) || strings.Contains(fmt.Sprint(err), "took longer") {
+			t.Errorf("%s: %v, want a cancellation, not a timeout", path, err)
+		}
+	}
+}
