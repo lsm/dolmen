@@ -53,7 +53,9 @@ through the download endpoint and writes its result back as ordinary fields.
 
 **Declaring it.** `{"name": "recording", "type": "file"}`, with two optional constraints:
 
-- `max_bytes`: the largest blob the field accepts, at most the server's `-max-file-size`.
+- `max_bytes`: the largest blob the field accepts. The server's `-max-file-size` still applies, so
+  the lower of the two wins; a declaration is not checked against the flag, which can change
+  between restarts.
 - `media_types`: accepted media types, exact (`application/pdf`) or a top-level wildcard
   (`audio/*`).
 
@@ -108,8 +110,9 @@ The reference copies the source's `sha256`, `media_type` and `name`. It resolves
 transaction under the namespace writer, where the source row's reference keeps the blob marked, so no
 sweep can collect it in between.
 
-**Storage in the row.** The column holds the canonical reference JSON (`sha256`, `media_type` and
-`name`); `size` is joined from the namespace's blob table on read. SQLite stores it as TEXT,
+**Storage in the row.** The column holds the whole reference as JSON (`sha256`, `size`,
+`media_type` and `name`). A hash always names the same bytes, so storing its size in each
+reference never goes stale, and a read needs no join. SQLite stores it as TEXT,
 PostgreSQL as `text` like every `json` field there, the lakehouse as a Parquet string, so `query` and
 filters can read the hash with each dialect's JSON accessor (`json_extract(recording, '$.sha256')`
 on SQLite and DuckDB, `recording::jsonb->>'sha256'` on PostgreSQL).
@@ -127,23 +130,29 @@ on SQLite and DuckDB, `recording::jsonb->>'sha256'` on PostgreSQL).
   (what `curl -F x=@file` sends), the server infers the type from the filename's extension, then by
   sniffing the first 512 bytes. So `-F rec=@standup.ogg` arrives as `audio/ogg` with no `type=`.
 - A `part` value may be referenced from any number of records in the request. A reference to a part
-  that is absent, or a part no value references, is `invalid_request` naming the part: the second is
-  almost always a typo, and accepting it would store bytes nothing points at. At most 100 file parts
-  per request, and at most `-max-request-files-size` of file bytes across them.
+  that is absent is `invalid_request` naming the parts the request does carry, which is how a typo
+  shows up. A part no value references is never stored: it is discarded with the request's other
+  temporary files. At most 100 file parts per request, and at most `-max-request-files-size` of
+  file bytes across them.
 - `media_types` filters on the declared or inferred type. It is not a content check: a caller can
   declare `application/pdf` over any bytes. What keeps a mislabeled file harmless is the download's
   headers.
 
-The server streams each part to a temporary file under the store's `tmp/` while hashing it, and
-refuses a part as soon as it passes the smallest limit that applies to it: `-max-file-size`, or the
-lowest `max_bytes` among the fields that reference it, since every reference must accept the part
-for the write to succeed. The refusal names that field and its limit. Streaming takes no
-lock. Once the whole request has arrived it takes the namespace's writer and, in the one write
-transaction the operation already uses, records each blob and runs the write. For each hash: if a
-`_dolmen_blobs` row exists and its file is present the temporary file is discarded; if the row exists
-but the file is missing, the temporary file is renamed into place, healing it; otherwise the file is
-renamed into place and the row inserted. If anything fails, the transaction rolls back and every
-temporary file is deleted, so a failed write stores nothing.
+The server first authorizes the `request` part as it would a JSON body, so a caller without the
+write's verbs streams nothing. It then streams each part to a temporary file under
+`<data>/.files-tmp/` while hashing it, and refuses a part as soon as it passes `-max-file-size`, the
+request's `-max-request-files-size` or the server's `-max-pending-files-size`. Streaming takes no
+lock and knows no schema, so a field's `max_bytes` and `media_types` are checked when the write
+resolves the value, once the namespace and table are known; the refusal names the field and its
+limit.
+
+Resolving a `{"part": …}` value places the part's file: if the namespace already stores that hash
+the temporary file is discarded, otherwise it is renamed into `<data>/<ns>.files/` (healing a file
+that had gone missing), counted against `-max-namespace-files-size`, and the directory synced. The
+hash is then pinned until the request ends, which is what keeps the sweep (below) from collecting a
+file whose write has not committed yet. If the write then fails, nothing references the placed
+file, and the next sweep removes it; every temporary file is deleted when the request ends either
+way.
 
 A `batch` may carry parts for any of its writes; they share one `request` and one transaction.
 
@@ -224,7 +233,7 @@ invalidates every URL issued for the old one.
 | Field is not a `file` field | `400` | `invalid_request`, naming the field's type |
 | A file over the field's `max_bytes` or `-max-file-size` | `413` | `invalid_request`, naming the part or URL and the limit |
 | Media type not in `media_types` | `415` | `invalid_request`, naming the accepted types and saying to set `media_type` if the guess was wrong |
-| `request` part missing or not first; a missing or unreferenced part | `400` | `invalid_request`, naming the rule or the part |
+| `request` part missing or not first; a reference to a missing part | `400` | `invalid_request`, naming the rule or the part |
 | `part` over MCP; `url` with fetching off | `400` | `invalid_request`, giving the `curl` form to use instead |
 | Fetch failed | `400` | `invalid_request`, naming the host and the status or error class |
 | Disk full | `507` | `internal_error`, as `-max-namespace-size` refusals today |
@@ -264,9 +273,10 @@ type BlobStore interface {
 `BlobWriter` hashes as it writes and commits under its hash; `Blob` is an `io.ReadSeekCloser` with
 its size. The engine never sees bytes. A new `internal/files` package owns the interface, the local
 implementation, multipart and fetch streaming, the download handler and the sweep; each engine owns
-only the file column, the blob table, and the reference scan the sweep needs.
+only the file column and the reference scan the sweep needs.
 
-**Local.** `<data>/<ns>.files/<first two hex>/<sha256>`, written to `<ns>.files/tmp/` and renamed.
+**Local.** `<data>/<ns>.files/<first two hex>/<sha256>`, written to `<data>/.files-tmp/` and
+renamed. Neither name is a valid namespace segment, so `list_namespaces` never sees them.
 SQLite and the lakehouse put it beside the namespace's `.db` or `.lakehouse/` directory.
 
 **PostgreSQL.** Rows live in the database but the local store is on one server's disk, so two servers
@@ -275,25 +285,26 @@ server exists. So until the S3 store exists (slice 3), the postgres engine refus
 `create_table` and `add_field` with `invalid_request` saying file fields need `-files-store s3` on
 PostgreSQL. From slice 3 it accepts them only with the S3 store configured.
 
-**Metadata.** Each namespace gets `_dolmen_blobs` (`sha256` primary key, `size`, `created_at`). A
-blob's row is inserted in the same transaction as the first write that references it.
+**Metadata.** There is no blob table. The store's directory is the set of stored hashes, and each
+reference carries its size. A blob table would have to be written in the same transaction as every
+write on every engine; the pins below give the same safety with no schema change.
 
 ## Garbage collection
 
-`vacuum` gains a sweep, run holding the namespace's writer as `vacuum` already does, so no write
-commits during it. It marks every hash referenced by a file column in any table of the namespace and
-deletes each unmarked blob: it commits the `_dolmen_blobs` row deletions first and only then unlinks
-the files, all while still holding the writer. A crash between the two leaves files without rows,
-never a row whose file is gone.
+`vacuum` gains a sweep (slice 1b), run holding the namespace's writer as `vacuum` already does, so no
+write commits during it. It marks every hash referenced by a file column in any table of the
+namespace, then deletes each stored file that is unmarked and not pinned, subtracting its size from
+the namespace's total so files left by failed writes stop counting toward
+`-max-namespace-files-size`. A failed write cannot delete the file it placed itself: another write
+may have found the same hash already stored and committed a reference to it in the meantime. The pin check and the
+unlink happen under the same lock that placement takes, so a request either pins its hash before the
+sweep looks at it, and the file is kept, or places it after, and finds it gone and stores it again.
+A write that committed before the sweep is marked by its reference; one still in flight holds a pin.
+Neither order leaves a row pointing at a deleted file.
 
-A write that commits before the sweep is marked by the reference it stored. One that commits after it
-finds no `_dolmen_blobs` row for its hash and stores its own file from its temporary copy. Neither
-order leaves a row pointing at a deleted blob.
-
-The same pass deletes blob files that have no `_dolmen_blobs` row, left by a crash between a write's
-rename and its commit; renames happen only under the writer, so no live write has such a file. It
-also deletes temporary files under `tmp/` that no request in this process holds open; each request
-registers its temporary files while it streams, and after a restart every one is an orphan.
+The same pass deletes temporary files under `.files-tmp/` that no request in this process holds
+open; after a restart every one is an orphan. Pins live in memory, which is sound because one data
+directory has one live server.
 
 Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`, `batch`
 with its rollback, `drop_field`, `drop_table`, the lakehouse's replayed commit log) would have to keep
@@ -308,25 +319,28 @@ stored file bytes after the sweep. No other operation's output changes shape.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-max-file-size` | `1GiB` | Largest single file; also the ceiling for a field's `max_bytes` |
+| `-max-file-size` | `1GiB` | Largest single file, whatever a field's `max_bytes` says |
 | `-max-namespace-files-size` | `0` | Largest total of one namespace's stored blobs, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`; `0` is unbounded |
 | `-files-store` | `local` | Blob store; `s3` arrives in slice 3 |
 | `-files-fetch-hosts` | empty | Hosts a `url` value may fetch from; empty disables fetching |
 | `-files-fetch-timeout` | `5m` | Longest one server-side fetch may take |
 | `-max-request-files-size` | `2GiB` | Most file bytes one request may stream, across all its parts and `url` fetches |
-| `-max-pending-files-size` | `8GiB` | Most file bytes all in-flight requests may hold in `tmp/` at once, server-wide |
+| `-max-pending-files-size` | `8GiB` | Most file bytes all in-flight requests may hold in `.files-tmp/` at once, server-wide |
 
 The 32 MiB request limit bounds the `request` part only; file parts answer to `-max-file-size`.
 Blobs do not count toward `-max-namespace-size`, which keeps bounding the namespace's rows;
 `-max-namespace-files-size` bounds its blobs separately, so a large file can never refuse the
-namespace's row writes. The total is the sum of `_dolmen_blobs.size`, each blob counted once however
-many rows reference it. It is checked at commit, under the writer, once each hash is known: bytes
-already stored add nothing and are always accepted, and concurrent writes cannot overshoot the cap
-together. Temporary space is bounded before commit by the last two flags: a request stops as soon
+namespace's row writes. The total is the size of every file the namespace stores, each counted once
+however many rows reference it, kept in memory after one walk of the directory. It is checked when a
+part is placed, under the store's lock, once its hash is known: bytes already stored add nothing and
+are always accepted, and concurrent writes cannot overshoot the cap together. A file placed by a
+write that then failed counts until the next sweep removes it.
+
+Temporary space is bounded before placement by the last two flags: a request stops as soon
 as its own streamed bytes pass `-max-request-files-size`, refused as `413` `invalid_request` naming
 the flag, and a chunk that would push the server's in-flight total past `-max-pending-files-size` is
 refused as `503` `storage_unavailable`, saying the server is busy with other uploads and the write
-may be retried. So `tmp/` never holds more than `-max-pending-files-size`, whatever the number of
+may be retried. So `.files-tmp/` never holds more than `-max-pending-files-size`, whatever the number of
 parts or concurrent requests, and a refused write frees its share at once. The refusal of a write
 over the namespace cap names the namespace's current file bytes, and `vacuum` reports them.
 
@@ -341,7 +355,7 @@ read. CORS needs no change: multipart writes are `POST` and downloads are `GET`.
 ## Conformance
 
 Pinned on every engine that accepts `file` fields: the declaration refusals, the read-back object,
-each write form and its refusals (a raw hash, a read-back object, a missing or unreferenced part, a
+each write form and its refusals (a raw hash, a read-back object, a reference to a missing part, a
 part over MCP, an unreadable `copy_from` source, a `url` with fetching off), media type inference
 from the filename, multipart and `url` idempotent replay and conflict (a `url` replay succeeding
 after the source stops answering), a failed write storing nothing,
@@ -355,10 +369,13 @@ the list.
 
 Each one a PR from main.
 
-1. The `file` type, multipart writes, the download endpoint, the local store, the sweep in
-   `vacuum`, the files cap and temporary-space bounds with `storage_unavailable`, the facade, skills, README and conformance, on SQLite. `dolmen backup`
-   refuses a data directory holding any blob directory, naming slice 4, and the postgres engine
-   refuses `file` fields.
+1. On SQLite, in two PRs:
+   - 1a: the `file` type, multipart writes, the download endpoint, the local store with its pins,
+     the files cap and temporary-space bounds with `storage_unavailable`, skills, README and
+     conformance; PostgreSQL and the lakehouse refuse `file` fields, and `dolmen backup` refuses a
+     data directory that stores files, naming the namespace, since it cannot copy them yet.
+   - 1b: the sweep in `vacuum` and `drop_namespace` removing the store, `set_file_constraints`,
+     and the facade's `dolmen.File` and `OpenFile`.
 2. Lakehouse parity, `copy_from`, and server-side fetch.
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store.

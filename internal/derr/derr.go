@@ -13,6 +13,7 @@ const (
 	Forbidden            Code = "forbidden"
 	EmbedderUnavailable  Code = "embedder_unavailable"
 	SQLEngineUnavailable Code = "sql_engine_unavailable"
+	StorageUnavailable   Code = "storage_unavailable"
 	Canceled             Code = "canceled"
 	Timeout              Code = "timeout"
 	Internal             Code = "internal_error"
@@ -53,6 +54,7 @@ var (
 	ErrForbidden            = &Error{Code: Forbidden}
 	ErrEmbedderUnavailable  = &Error{Code: EmbedderUnavailable}
 	ErrSQLEngineUnavailable = &Error{Code: SQLEngineUnavailable}
+	ErrStorageUnavailable   = &Error{Code: StorageUnavailable}
 	ErrCanceled             = &Error{Code: Canceled}
 	ErrTimeout              = &Error{Code: Timeout}
 	ErrInternal             = &Error{Code: Internal}

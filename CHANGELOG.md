@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **New error code `storage_unavailable`** (503), reserved for the file store of `file` fields: the
+  store cannot take the write right now, and it may be retried. The Go library exports it as
+  `dolmen.ErrStorageUnavailable`.
+
 - Lakehouse filters run in their own SQL sidecar, so `query` can no longer read the unmasked views
   filters use (`_dolmen_filter.<table>`), even through DuckDB's `query()` or `query_table()`.
 
