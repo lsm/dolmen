@@ -30,18 +30,6 @@ func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err 
 		return VacuumResult{}, err
 	}
 	defer conn.Close()
-	var swept *FileSweep
-	if sw := fileSweeperFrom(ctx); sw != nil {
-		refs, err := fileReferences(ctx, conn)
-		if err != nil {
-			return VacuumResult{}, err
-		}
-		res, err := sw.Sweep(nsName, refs)
-		if err != nil {
-			return VacuumResult{}, err
-		}
-		swept = &res
-	}
 	before, err := namespaceBytes(path)
 	if err != nil {
 		return VacuumResult{}, err
@@ -59,6 +47,18 @@ func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err 
 	}
 	if err != nil || busy != 0 {
 		return VacuumResult{}, derr.New(derr.Conflict, "vacuum of namespace %s rebuilt its file, but a reader held the write-ahead log open, so the log was not truncated and its space is not yet returned; retry vacuum once those reads finish (an open subscribe stream or long query counts)", nsName)
+	}
+	var swept *FileSweep
+	if sw := fileSweeperFrom(ctx); sw != nil {
+		refs, err := fileReferences(ctx, conn)
+		if err != nil {
+			return VacuumResult{}, err
+		}
+		res, err := sw.Sweep(nsName, refs)
+		if err != nil {
+			return VacuumResult{}, err
+		}
+		swept = &res
 	}
 	after, err := namespaceBytes(path)
 	if err != nil {

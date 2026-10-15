@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -216,5 +217,32 @@ func TestVacuumSweepsWithEveryLiveReferenceWhileHoldingTheWriter(t *testing.T) {
 	plain, err := st.Vacuum(ctx, "app")
 	if err != nil || plain.Files != nil {
 		t.Fatalf("without a sweeper vacuum reports no files: %+v %v", plain, err)
+	}
+}
+
+func TestAVacuumThatFailsSweepsNothing(t *testing.T) {
+	st, ctx := fileTable(t)
+	other, err := sql.Open("sqlite", dsn(st.nsPath("app"), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	conn, err := other.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.ExecContext(ctx, `ROLLBACK`)
+	sw := &recordingSweeper{}
+	vctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if _, err := st.Vacuum(WithFileSweeper(vctx, sw), "app"); err == nil {
+		t.Fatal("vacuum should fail while another connection holds the write lock")
+	}
+	if sw.called != 0 {
+		t.Fatal("a vacuum that did not run must not delete files")
 	}
 }
