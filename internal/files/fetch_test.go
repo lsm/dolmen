@@ -120,3 +120,33 @@ func TestFetchHostEntriesAreNormalized(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchRefusesURLsCarryingCredentials(t *testing.T) {
+	var sawAuth bool
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			sawAuth = true
+		}
+		if r.URL.Path == "/hop" {
+			u, _ := url.Parse(srv.URL)
+			http.Redirect(w, r, "http://user:pass@"+u.Host+"/x", http.StatusFound)
+			return
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	s := New(Config{Root: t.TempDir()})
+	u, _ := url.Parse(srv.URL)
+	for _, raw := range []string{"http://user:pass@" + u.Host + "/x", srv.URL + "/hop"} {
+		r := s.NewRequest()
+		err := r.ReceiveURL(context.Background(), "u", raw, testFetcher(srv))
+		r.Close()
+		if err == nil || !strings.Contains(err.Error(), "credentials") {
+			t.Errorf("%s: %v, want a refusal naming the credentials", raw, err)
+		}
+	}
+	if sawAuth {
+		t.Fatal("credentials in a URL must never reach the host")
+	}
+}

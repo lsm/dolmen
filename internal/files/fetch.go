@@ -91,6 +91,9 @@ func (f *Fetcher) check(u *url.URL) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fetchErr("%s is not an http or https URL", u.Scheme+":")
 	}
+	if u.User != nil {
+		return fetchErr("URLs with credentials (user:password@) are not fetched, because the server sends no credentials; remove them, or download the file and send it as a multipart part")
+	}
 	if !f.allowed(u.Hostname()) {
 		return fetchErr("host %q is not in -files-fetch-hosts; download the file and send it as a multipart part with {\"part\": \"<form name>\"} instead", u.Hostname())
 	}
