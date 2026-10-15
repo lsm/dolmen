@@ -159,8 +159,8 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 		case errors.Is(err, errBlockedAddress):
 			return fetchErr("fetching from %s was refused: it resolves to an address that is not public", u.Hostname())
 		case parent.Err() != nil:
-		return parent.Err()
-	case ctx.Err() != nil:
+			return parent.Err()
+		case ctx.Err() != nil:
 			return fetchErr("fetching from %s took longer than -files-fetch-timeout (%s); the fetch may be retried", u.Hostname(), f.timeout)
 		}
 		return fetchErr("fetching from %s failed before a response arrived; the fetch may be retried", u.Hostname())
