@@ -1,6 +1,10 @@
 package store
 
-import "github.com/lsm/dolmen/internal/schema"
+import (
+	"context"
+
+	"github.com/lsm/dolmen/internal/schema"
+)
 
 func RefuseFileFields(engine string, fields []schema.Field) error {
 	for _, f := range fields {
@@ -9,4 +13,16 @@ func RefuseFileFields(engine string, fields []schema.Field) error {
 		}
 	}
 	return nil
+}
+
+type FileBlob struct {
+	SHA256    string
+	Size      int64
+	MediaType string
+	Name      string
+}
+
+type FileSource interface {
+	Attach(ctx context.Context, ns, part string) (FileBlob, error)
+	Describe(part string) (FileBlob, error)
 }
