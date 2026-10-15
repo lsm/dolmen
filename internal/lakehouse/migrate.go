@@ -243,6 +243,8 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 				next.RowAccess = ""
 			}
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_row_access %t", *ch.Value))
+		case schema.OpSetFileConstraints:
+			return nil, nil, invalidf("field %q: file fields are not supported on this engine yet, so there are no file constraints to set", ch.Name)
 		default:
 			return nil, nil, invalidf("unknown migration op %q", ch.Op)
 		}

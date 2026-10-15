@@ -89,18 +89,23 @@ type Change struct {
 
 	Shape *string `json:"shape,omitempty"`
 
+	MaxBytes *int64 `json:"max_bytes,omitempty"`
+
+	MediaTypes *[]string `json:"media_types,omitempty"`
+
 	Default any `json:"default,omitempty"`
 }
 
 const (
-	OpAddField     = "add_field"
-	OpRenameField  = "rename_field"
-	OpDropField    = "drop_field"
-	OpSetFulltext  = "set_fulltext"
-	OpSetVectorize = "set_vectorize"
-	OpSetEnum      = "set_enum"
-	OpSetShape     = "set_shape"
-	OpSetRowAccess = "set_row_access"
+	OpAddField           = "add_field"
+	OpRenameField        = "rename_field"
+	OpDropField          = "drop_field"
+	OpSetFulltext        = "set_fulltext"
+	OpSetVectorize       = "set_vectorize"
+	OpSetEnum            = "set_enum"
+	OpSetShape           = "set_shape"
+	OpSetFileConstraints = "set_file_constraints"
+	OpSetRowAccess       = "set_row_access"
 )
 
 func TakesValue(op string) bool {
@@ -115,7 +120,7 @@ func (c Change) ReadsRows() bool {
 	switch c.Op {
 	case OpAddField:
 		return c.Field == nil || c.Field.Required || c.Field.Fulltext || c.Field.Vectorize || c.Default != nil
-	case OpSetEnum, OpSetShape, OpSetVectorize, OpSetFulltext, OpSetRowAccess, OpDropField:
+	case OpSetEnum, OpSetShape, OpSetFileConstraints, OpSetVectorize, OpSetFulltext, OpSetRowAccess, OpDropField:
 		return true
 	}
 	return false

@@ -173,3 +173,48 @@ func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
 		}
 	}
 }
+
+func TestSetFileConstraints(t *testing.T) {
+	h := newHarness(t)
+	if testEngine(t) != store.EngineSQLite {
+		h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
+		code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 1}}})
+		if code == http.StatusOK || !strings.Contains(errMessage(body), "not supported on this engine") {
+			t.Fatalf("engine %s: %d %v", testEngine(t), code, body)
+		}
+		return
+	}
+	h.seedTable("fil", "docs", fileTableFields())
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"a","doc":{"part":"f"}}]}`, map[string][]byte{"f": bytes.Repeat([]byte("x"), 600)}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	migrate := func(change map[string]any) (int, map[string]any) {
+		change["op"] = "set_file_constraints"
+		change["name"] = "doc"
+		return h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{change}})
+	}
+	if code, body := migrate(map[string]any{"max_bytes": 100}); code != http.StatusBadRequest || !strings.Contains(errMessage(body), "1 rows hold files that break them (ids 1)") {
+		t.Fatalf("tightening past a stored file: %d %v", code, body)
+	}
+	if code, body := migrate(map[string]any{"media_types": []string{"image/*"}}); code != http.StatusBadRequest || !strings.Contains(errMessage(body), "ids 1") {
+		t.Fatalf("excluding a stored file's type: %d %v", code, body)
+	}
+	if code, body := migrate(map[string]any{}); code != http.StatusBadRequest || !strings.Contains(errMessage(body), "needs max_bytes") {
+		t.Fatalf("no constraint given: %d %v", code, body)
+	}
+	if code, body := migrate(map[string]any{"max_bytes": 700, "media_types": []string{}}); code != http.StatusOK {
+		t.Fatalf("loosening: %d %v", code, body)
+	}
+	f := h.mustMCP("describe_table", map[string]any{"namespace": "fil", "table": "docs"})["table"].(map[string]any)["fields"].([]any)[1].(map[string]any)
+	if f["max_bytes"] != float64(700) || f["media_types"] != nil {
+		t.Fatalf("describe_table after set_file_constraints = %v", f)
+	}
+	h.mustHTTP("list_migrations", map[string]any{"namespace": "fil", "table": "docs"})
+	h.mustMCP("list_migrations", map[string]any{"namespace": "fil", "table": "docs"})
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"doc":{"part":"f"}}]}`, map[string][]byte{"f": bytes.Repeat([]byte("y"), 701)}); code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("the new max_bytes must apply to the next write: %d %v", code, body)
+	}
+	if code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 5}}}); code != http.StatusBadRequest || !strings.Contains(errMessage(body), "only allowed on file fields") {
+		t.Fatalf("on a string field: %d %v", code, body)
+	}
+}

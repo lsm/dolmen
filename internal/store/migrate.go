@@ -298,6 +298,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		if err := ShapeChangeArgs(i, ch); err != nil {
 			return nil, err
 		}
+		if err := FileConstraintArgs(i, ch); err != nil {
+			return nil, err
+		}
 		switch ch.Op {
 		case schema.OpAddField:
 			if ch.Field == nil {
@@ -699,8 +702,17 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			cur.RowAccess = ""
 			plan.Operations = append(plan.Operations, "set_row_access false (the owner column and its values are kept)")
 
+		case schema.OpSetFileConstraints:
+			f, err := findField(ch.Name)
+			if err != nil {
+				return nil, err
+			}
+			if err := setFileConstraints(ctx, db, table, physicalName[f.Name], f, ch, scope != nil); err != nil {
+				return nil, err
+			}
+			plan.Operations = append(plan.Operations, fmt.Sprintf("set_file_constraints %s max_bytes=%d media_types=%v", ch.Name, f.MaxBytes, f.MediaTypes))
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_row_access)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, set_row_access)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
