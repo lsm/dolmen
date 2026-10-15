@@ -168,3 +168,19 @@ func TestDroppingANamespaceInTheLibraryRemovesItsFiles(t *testing.T) {
 		t.Fatalf("the namespace's files must be gone: %v", err)
 	}
 }
+
+func TestOpenFileClassifiesLikeTheDownload(t *testing.T) {
+	st, _, ctx := openWithDocs(t)
+	if _, _, err := st.OpenFile(ctx, "app", "docs", 1, "title"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a missing row: %v, want not found", err)
+	}
+	if _, err := st.Insert(ctx, "app", "docs", []map[string]any{{"title": "x"}}, InsertOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.OpenFile(ctx, "app", "docs", 1, "titel"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a field the table does not have: %v, want not found", err)
+	}
+	if _, _, err := st.OpenFile(ctx, "app", "docs", 1, "title"); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("a field that is not a file field: %v, want invalid request", err)
+	}
+}

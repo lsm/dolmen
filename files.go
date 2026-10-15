@@ -116,19 +116,23 @@ func (s *Store) OpenFile(ctx context.Context, namespace, table string, id int64,
 		return nil, FileInfo{}, derr.New(derr.NotFound, "this store holds no files")
 	}
 	ns, tbl := ops.NormalizeNamespace(namespace), ops.NormalizeTable(table)
-	sc, _, err := s.eng.TableState(ctx, ns, tbl, nil)
-	if err != nil {
-		return nil, FileInfo{}, facadeErr(ctx, err)
-	}
-	if f := sc.Field(field); f == nil || f.Type != schema.File {
-		return nil, FileInfo{}, derr.New(derr.InvalidRequest, "field %q of %s is not a file field", field, table)
-	}
 	res, err := s.eng.GetRows(ctx, ns, tbl, []int64{id}, nil, store.Incarnation{})
 	if err != nil {
 		return nil, FileInfo{}, facadeErr(ctx, err)
 	}
 	if len(res.Rows) == 0 {
 		return nil, FileInfo{}, derr.New(derr.NotFound, "table %s has no row %d", table, id)
+	}
+	sc, _, err := s.eng.TableState(ctx, ns, tbl, nil)
+	if err != nil {
+		return nil, FileInfo{}, facadeErr(ctx, err)
+	}
+	fd := sc.Field(field)
+	if fd == nil {
+		return nil, FileInfo{}, derr.New(derr.NotFound, "table %s has no field %q", table, field)
+	}
+	if fd.Type != schema.File {
+		return nil, FileInfo{}, derr.New(derr.InvalidRequest, "field %q of %s is not a file field", field, table)
 	}
 	ref, _ := res.Rows[0][field].(map[string]any)
 	if ref == nil {
