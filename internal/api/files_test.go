@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -494,18 +496,28 @@ func TestVacuumRemovesFilesNoRowReferences(t *testing.T) {
 }
 
 func TestADownloadRacingAVacuumAnswersNotFound(t *testing.T) {
-	srv, _ := newFileServer(t, files.Config{})
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	api := New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: dir})))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
 	createMeetings(t, srv.URL, nil)
 	if code, body := postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"f"}}]}`,
 		filePart{name: "f", filename: "a.bin", data: []byte("racing")}); code != http.StatusOK {
 		t.Fatalf("insert: %d %v", code, body)
 	}
-	beforeFileOpen = func() {
-		beforeFileOpen = func() {}
-		post(t, srv.URL, "update", map[string]any{"namespace": "app", "table": "meetings", "filter": "id = ?", "args": []any{1}, "set": map[string]any{"recording": nil}})
-		post(t, srv.URL, "vacuum", map[string]any{"namespace": "app"})
+	var raced sync.Once
+	api.beforeFileOpen = func() {
+		raced.Do(func() {
+			ctx := context.Background()
+			api.Dispatch(ctx, "update", []byte(`{"namespace":"app","table":"meetings","filter":"id = ?","args":[1],"set":{"recording":null}}`))
+			api.Dispatch(store.WithFileSweeper(ctx, api.files), "vacuum", []byte(`{"namespace":"app"}`))
+		})
 	}
-	t.Cleanup(func() { beforeFileOpen = func() {} })
 	res, err := http.Get(srv.URL + "/v1/files?namespace=app&table=meetings&id=1&field=recording")
 	if err != nil {
 		t.Fatal(err)

@@ -213,7 +213,9 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, badRequest("field %q of %s is not a file field", field, table))
 		return
 	}
-	beforeFileOpen()
+	if s.beforeFileOpen != nil {
+		s.beforeFileOpen()
+	}
 	f, err := s.files.Open(normNS(ns), ref.sha)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -311,5 +313,3 @@ func rfc5987(s string) string {
 	}
 	return b.String()
 }
-
-var beforeFileOpen = func() {}
