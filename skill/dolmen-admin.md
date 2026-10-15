@@ -822,10 +822,10 @@ match, before ranking.
   `{"part": "<part name>"}` as the value (`curl -F 'request=<json>' -F 'rec=@path'`). Fetch it with
   `GET /v1/files?namespace=&table=&id=&field=`, which needs `read_rows` access to the row. MCP
   cannot carry files.
-- Files are stored once per namespace however many rows reference them. A file stays on disk
-  after the rows referencing it are deleted or cleared until `vacuum` removes it; `vacuum` reports
-  `files_removed`, `file_bytes_removed` and `file_bytes`, the total `-max-namespace-files-size`
-  counts. File fields exist only on
+- Files are stored once per namespace however many rows reference them, and `drop_namespace`
+  deletes them with the namespace. A file stays on disk after the rows referencing it are deleted
+  or cleared until `vacuum` removes it; `vacuum` reports `files_removed`, `file_bytes_removed` and
+  `file_bytes`, the total `-max-namespace-files-size` counts. File fields exist only on
   the SQLite engine for now; `create_table` and `migrate add_field` refuse them on PostgreSQL and
   the lakehouse.
 - `storage_unavailable` (503) means the server holds as much in-flight file data as

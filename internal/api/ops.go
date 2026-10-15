@@ -533,6 +533,11 @@ var Ops = map[string]OpDef{
 			if err := s.eng.DropNamespace(ctx, ns, [16]byte{}); err != nil {
 				return nil, wrapStoreErr(err)
 			}
+			if s.files != nil {
+				if err := s.files.DropNamespace(ns); err != nil {
+					return nil, internal(err)
+				}
+			}
 			return map[string]any{"dropped": ns}, nil
 		},
 	},
