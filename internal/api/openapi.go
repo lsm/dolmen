@@ -99,6 +99,7 @@ var errorCodes = []ErrorCode{
 	ErrCodeForbidden,
 	ErrCodeEmbedderUnavailable,
 	ErrCodeSQLEngineUnavailable,
+	ErrCodeStorageUnavailable,
 	ErrCodeCanceled,
 	ErrCodeTimeout,
 	ErrCodeInternal,

@@ -84,8 +84,8 @@ All successful `/v1/{operation}` POSTs return `{"ok":true,"data":{...}}`; errors
 request's `X-Request-Id` header when one was sent, otherwise a server-generated id, echoed back as
 the `X-Request-Id` response header so any error can be correlated with the server log — with a
 matching 4xx/5xx status. Error codes are stable for branching: `invalid_request`, `not_found`,
-`query_error`, `conflict`, `unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`, `canceled`,
-`timeout`, `internal_error`.
+`query_error`, `conflict`, `unauthorized`, `forbidden`, `embedder_unavailable`, `sql_engine_unavailable`,
+`storage_unavailable`, `canceled`, `timeout`, `internal_error`.
 `canceled` means the request was cancelled before it completed (over the stdio transport, by a
 client cancellation notification or the shutdown drain); the operation may or may not have
 finished server-side — check with a query before retrying a write.
@@ -102,6 +102,9 @@ directory); retrying the same request makes no sense until the model can load.
 `sql_engine_unavailable` (503) is the lakehouse engine's counterpart: its DuckDB sidecar is missing
 or failed to start, and the message says which (check `-duckdb-sidecar` and `-duckdb-extensions`).
 A failed start is retried with a backoff of up to thirty seconds.
+`storage_unavailable` (503) is reserved for the file store of `file` fields
+([design](docs/design/object-storage.md)): the store cannot take the write right now, and it may
+be retried shortly.
 The one exception is `GET /v1/openapi.json`, which serves the raw OpenAPI document.
 `/livez` (and its alias `/healthz`) returns `{"status":"ok"}`, `/readyz` returns `{"status":"ready", ...}`, and `/mcp` returns JSON-RPC responses.
 

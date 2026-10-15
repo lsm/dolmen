@@ -37,6 +37,7 @@ const (
 
 	ErrCodeEmbedderUnavailable  ErrorCode = "embedder_unavailable"
 	ErrCodeSQLEngineUnavailable ErrorCode = "sql_engine_unavailable"
+	ErrCodeStorageUnavailable   ErrorCode = "storage_unavailable"
 
 	ErrCodeCanceled ErrorCode = "canceled"
 
@@ -360,6 +361,8 @@ func statusFor(code derr.Code) (int, ErrorCode) {
 		return http.StatusServiceUnavailable, ErrCodeEmbedderUnavailable
 	case derr.SQLEngineUnavailable:
 		return http.StatusServiceUnavailable, ErrCodeSQLEngineUnavailable
+	case derr.StorageUnavailable:
+		return http.StatusServiceUnavailable, ErrCodeStorageUnavailable
 	case derr.Canceled:
 		return http.StatusOK, ErrCodeCanceled
 	case derr.Timeout:
