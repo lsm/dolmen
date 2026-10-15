@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -312,4 +313,16 @@ func rfc5987(s string) string {
 		fmt.Fprintf(&b, "%%%02X", c)
 	}
 	return b.String()
+}
+
+func (s *Server) copyReach(ctx context.Context, ns, table string) (*store.RowScope, error) {
+	body, err := json.Marshal(map[string]any{"namespace": ns, "table": table})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.authorizeOp(ctx, "read_rows", body); err != nil {
+		return nil, err
+	}
+	scope, _, err := s.resolveScope(ctx, ns, table)
+	return scope, err
 }

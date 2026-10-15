@@ -57,7 +57,7 @@ func RequireSecretKey(k *secret.Keyring, fields []schema.Field) error {
 
 func (s *Store) coerceWrite(ctx context.Context, nsName string, f schema.Field, v any) (any, error) {
 	if f.Type == schema.File {
-		return coerceFile(ctx, nsName, f, v)
+		return s.coerceFile(ctx, nsName, f, v)
 	}
 	cv, err := coerceValue(f, v)
 	if err != nil {

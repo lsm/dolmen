@@ -238,3 +238,74 @@ func TestVacuumReportsTheFilesItRemoved(t *testing.T) {
 		t.Fatalf("mcp vacuum = %v", again)
 	}
 }
+
+func (h *harness) multipartAs(t *testing.T, principal, op, request string, parts map[string][]byte) (int, map[string]any) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.WriteField("request", request)
+	for name, data := range parts {
+		w, _ := mw.CreateFormFile(name, name+".txt")
+		w.Write(data)
+	}
+	mw.Close()
+	req, _ := http.NewRequest(http.MethodPost, h.httpURL+"/"+op, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-Dolmen-Principal", principal)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
+}
+
+func TestCopyFromReusesAFileWithoutReuploading(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"src","doc":{"part":"f"}}]}`, map[string][]byte{"f": []byte("shared notes")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	src := h.mustHTTP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"].(map[string]any)
+	copyRec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"copy_from": map[string]any{"table": "docs", "id": 1, "field": "doc"}, "name": "copy.txt"}}}}
+	h.mustHTTP("insert", copyRec)
+	h.mustMCP("insert", copyRec)
+	for _, id := range []int{2, 3} {
+		ref := h.mustHTTP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{id}})["rows"].([]any)[0].(map[string]any)["doc"].(map[string]any)
+		if ref["sha256"] != src["sha256"] || ref["name"] != "copy.txt" {
+			t.Fatalf("row %d copied reference = %v", id, ref)
+		}
+	}
+	missing := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"copy_from": map[string]any{"table": "docs", "id": 99, "field": "doc"}}}}}
+	if code, body := h.httpCall("insert", missing); code != http.StatusBadRequest || !strings.Contains(errMessage(body), "copy_from names no file you can read") {
+		t.Fatalf("copy from a missing row: %d %v", code, body)
+	}
+}
+
+func TestCopyFromNeverReachesAnotherPrincipalsRow(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+	h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "docs", "row_access": "own",
+		"fields": []map[string]any{{"name": "doc", "type": "file"}}})
+	grantTo(t, h, "principal", "alice", "acme", "docs", "create")
+	grantTo(t, h, "principal", "bob", "acme", "docs", "create")
+	if code, body := h.multipartAs(t, "alice", "insert", `{"namespace":"acme","table":"docs","records":[{"doc":{"part":"f"}}]}`, map[string][]byte{"f": []byte("alice's secret file")}); code != http.StatusOK {
+		t.Fatalf("alice insert: %d %v", code, body)
+	}
+	res, out := h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"docs","records":[{"doc":{"copy_from":{"table":"docs","id":1,"field":"doc"}}}]}`)
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(errMessage(out), "copy_from names no file you can read") {
+		t.Fatalf("bob copying alice's file: %d %v", res.StatusCode, out)
+	}
+	res, out = h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"docs","records":[{"doc":{"copy_from":{"table":"docs","id":1,"field":"doc"}}}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("alice copying her own file: %d %v", res.StatusCode, out)
+	}
+}

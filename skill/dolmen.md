@@ -245,7 +245,9 @@ curl -s "${base%/}/v1/insert" \
 The media type is taken from the part's `Content-Type`, or, when curl sends the default
 `application/octet-stream`, from the file name's extension; add `"media_type": "audio/ogg"` to the
 value to set it yourself, and `"name": "q3.ogg"` to store a different file name. Several records,
-or several fields, may reference the same part. `null` clears the field. A read returns the
+or several fields, may reference the same part. `null` clears the field. To reuse a file a row
+already holds, write `{"copy_from": {"table": "meetings", "id": 1, "field": "recording"}}` instead,
+in a plain JSON write or over MCP: no upload, and the source must be a row you can read. A read returns the
 reference, never the bytes: `{"sha256": "9f86…", "size": 48213, "media_type": "audio/ogg",
 "name": "standup.ogg"}`. Fetch the bytes with one GET, addressed by row; it needs the same access
 as `read_rows` on that row, and supports `Range`:

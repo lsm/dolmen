@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- File values can be `{"copy_from": {"table", "id", "field"}}`, reusing a file another row the
+  caller can read already holds, in a plain JSON write or over MCP.
+
 - **File fields** (object storage, slice 1): a `file` field holds a SHA-256 reference to bytes
   stored beside the namespace. `insert`, `update`, `upsert`, `upsert_by_key` and `batch` attach
   files in the same call as `multipart/form-data` (`curl -F 'request=<json>' -F 'rec=@file'`), and

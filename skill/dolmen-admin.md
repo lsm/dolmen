@@ -819,7 +819,8 @@ match, before ranking.
   field.
 - Attach a file in the write itself: send the operation as `multipart/form-data` to
   `/v1/{operation}`, with the JSON request in a first part named `request`, and write
-  `{"part": "<part name>"}` as the value (`curl -F 'request=<json>' -F 'rec=@path'`). Fetch it with
+  `{"part": "<part name>"}` as the value (`curl -F 'request=<json>' -F 'rec=@path'`), or reuse a
+  file another readable row holds with `{"copy_from": {"table", "id", "field"}}`. Fetch it with
   `GET /v1/files?namespace=&table=&id=&field=`, which needs `read_rows` access to the row. MCP
   cannot carry files.
 - Files are stored once per namespace however many rows reference them, and `drop_namespace`

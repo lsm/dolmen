@@ -582,6 +582,14 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (res any,
 	}
 	ctx, cancel, overran := s.withOpDeadline(ctx, op)
 	defer cancel()
+	if fileWriteOps[op] && s.files != nil {
+		if !store.HasFileSource(ctx) {
+			req := s.files.NewRequest()
+			defer req.Close()
+			ctx = store.WithFileSource(ctx, req)
+		}
+		ctx = store.WithCopyReach(ctx, s.copyReach)
+	}
 	if err := s.authorizeOp(ctx, op, body); err != nil {
 		return nil, overran(err)
 	}
