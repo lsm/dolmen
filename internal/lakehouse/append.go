@@ -252,7 +252,7 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		domain := store.DomainFor(opts, scope)
 		var hash store.IdemHash
 		if opts.IdempotencyKey != "" {
-			if hash, err = store.RequestHash(s.secrets, state.schema, records); err != nil {
+			if hash, err = store.RequestHash(ctx, s.secrets, state.schema, records); err != nil {
 				return err
 			}
 		}

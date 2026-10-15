@@ -172,7 +172,7 @@ func TestTheBatchFingerprintOfATableWithoutFilesIsUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := BatchPayloadHash(st.secrets, map[string]*schema.TableSchema{"notes": sc}, writes, BatchOpts{})
+	want, err := BatchPayloadHash(ctx, st.secrets, map[string]*schema.TableSchema{"notes": sc}, writes, BatchOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,5 +357,69 @@ func TestAURLValueFetchesThroughTheFileSource(t *testing.T) {
 	}
 	if _, err := st.Insert(WithFileSource(ctx, src), "app", "docs", []map[string]any{{"doc": map[string]any{"url": "https://x", "part": "fetched"}}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err == nil || !strings.Contains(err.Error(), "exactly one of") {
 		t.Fatalf("a value with two sources must be refused: %v", err)
+	}
+}
+
+func TestSharedFileFingerprintsCanonicalizeWithoutAttaching(t *testing.T) {
+	sc := &schema.TableSchema{Fields: []schema.Field{{Name: "doc", Type: schema.File}}}
+	src := &fakeFiles{parts: map[string]FileBlob{"first": blob("a", 5), "renamed": blob("a", 5)}}
+	ctx := WithFileSource(context.Background(), src)
+	record := func(part string) []map[string]any {
+		return []map[string]any{{"doc": map[string]any{"part": part, "name": "override.txt"}}}
+	}
+	canonical := []map[string]any{{"doc": map[string]any{"sha256": strings.Repeat("a", 64), "media_type": "text/plain", "name": "override.txt"}}}
+	want, err := RequestHash(context.Background(), nil, sc, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{"first", "renamed"} {
+		got, err := RequestHash(ctx, nil, sc, record(part))
+		if err != nil || got.Primary != want.Primary {
+			t.Fatalf("insert hash = %v, %v; want %v", got, err, want)
+		}
+		for _, kind := range []BatchWriteKind{BatchWriteInsert, BatchWriteUpdate} {
+			w := BatchWrite{Kind: kind, Table: "docs"}
+			expected := w
+			if kind == BatchWriteInsert {
+				w.Records = []map[string]any{{"DOC": record(part)[0]["doc"]}}
+				expected.Records = canonical
+			} else {
+				w.Set = map[string]any{"DOC": record(part)[0]["doc"]}
+				expected.Set = canonical[0]
+			}
+			got, err := BatchPayloadHash(ctx, nil, map[string]*schema.TableSchema{"docs": sc}, []BatchWrite{w}, BatchOpts{})
+			want, wantErr := BatchPayloadHash(context.Background(), nil, map[string]*schema.TableSchema{"docs": sc}, []BatchWrite{expected}, BatchOpts{})
+			if err != nil || wantErr != nil || got.Primary != want.Primary {
+				t.Fatalf("%s hash = %v, %v; want %v, %v", kind, got, err, want, wantErr)
+			}
+		}
+	}
+	if len(src.attached)+len(src.pinned)+len(src.fetched) != 0 {
+		t.Fatalf("hashing touched files: %+v", src)
+	}
+	url := []map[string]any{{"doc": map[string]any{"url": "https://example.com/doc", "name": "x.txt"}}}
+	a, _ := RequestHash(ctx, nil, sc, url)
+	b, _ := RequestHash(context.Background(), nil, sc, url)
+	if a.Primary != b.Primary {
+		t.Fatal("URL hashing must not resolve the URL")
+	}
+}
+
+func TestParseFileReferencesFromStoredAndPresentedValues(t *testing.T) {
+	want := blob("a", 5)
+	raw, err := fileReference(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []any{raw, map[string]any{"sha256": want.SHA256, "size": 5, "media_type": want.MediaType, "name": want.Name}} {
+		got, err := ParseFileReference(v)
+		if err != nil || got != want {
+			t.Fatalf("reference %v = %+v, %v", v, got, err)
+		}
+	}
+	for _, v := range []any{nil, "{}", map[string]any{"sha256": "a", "media_type": "text/plain", "size": -1}} {
+		if _, err := ParseFileReference(v); !errors.Is(err, ErrCatalogCorrupt) {
+			t.Fatalf("reference %v: %v", v, err)
+		}
 	}
 }

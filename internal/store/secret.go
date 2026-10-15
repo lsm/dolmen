@@ -57,7 +57,7 @@ func RequireSecretKey(k *secret.Keyring, fields []schema.Field) error {
 
 func (s *Store) coerceWrite(ctx context.Context, nsName string, f schema.Field, v any) (any, error) {
 	if f.Type == schema.File {
-		return s.coerceFile(ctx, nsName, f, v)
+		return CoerceFile(ctx, s, nsName, f, v)
 	}
 	cv, err := coerceValue(f, v)
 	if err != nil {
@@ -149,7 +149,8 @@ func (h IdemHash) Matches(stored string) bool {
 	return false
 }
 
-func RequestHash(k *secret.Keyring, sc *schema.TableSchema, records []map[string]any) (IdemHash, error) {
+func RequestHash(ctx context.Context, k *secret.Keyring, sc *schema.TableSchema, records []map[string]any) (IdemHash, error) {
+	records = canonicalFiles(ctx, sc, records)
 	sum := func(k *secret.Keyring) (string, error) {
 		raw, err := json.Marshal(FingerprintSecrets(k, sc, records))
 		if err != nil {
