@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -196,4 +197,77 @@ func canonicalFiles(ctx context.Context, sc *schema.TableSchema, records []map[s
 		out[i] = cp
 	}
 	return out
+}
+
+type FileSweep struct {
+	Removed      int
+	RemovedBytes int64
+	Bytes        int64
+}
+
+type FileSweeper interface {
+	Sweep(ns string, referenced map[string]bool) (FileSweep, error)
+}
+
+type fileSweeperKey struct{}
+
+func WithFileSweeper(ctx context.Context, sw FileSweeper) context.Context {
+	return context.WithValue(ctx, fileSweeperKey{}, sw)
+}
+
+func fileSweeperFrom(ctx context.Context) FileSweeper {
+	sw, _ := ctx.Value(fileSweeperKey{}).(FileSweeper)
+	return sw
+}
+
+func fileReferences(ctx context.Context, conn *sql.Conn) (map[string]bool, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT name, schema_json FROM _dolmen_tables ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	var tables []schema.TableSchema
+	for rows.Next() {
+		var name, raw string
+		if err := rows.Scan(&name, &raw); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		var sc schema.TableSchema
+		if err := json.Unmarshal([]byte(raw), &sc); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("corrupt schema for table %s: %w", name, err)
+		}
+		if len(sc.FileFields()) > 0 {
+			sc.Name = name
+			tables = append(tables, sc)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	refs := map[string]bool{}
+	for _, sc := range tables {
+		for _, f := range sc.FileFields() {
+			r, err := conn.QueryContext(ctx, fmt.Sprintf(`SELECT DISTINCT json_extract(%s, '$.sha256') FROM %s WHERE %s IS NOT NULL`, q(f.Name), q(sc.Name), q(f.Name)))
+			if err != nil {
+				return nil, err
+			}
+			for r.Next() {
+				var sum sql.NullString
+				if err := r.Scan(&sum); err != nil {
+					r.Close()
+					return nil, err
+				}
+				if sum.Valid {
+					refs[sum.String] = true
+				}
+			}
+			r.Close()
+			if err := r.Err(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return refs, nil
 }
