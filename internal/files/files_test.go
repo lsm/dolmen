@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -290,5 +291,44 @@ func TestASweepNeverRemovesAPartBeingReceived(t *testing.T) {
 			t.Fatalf("attempt %d: a sweep removed a part still being received: %v", i, err)
 		}
 		r.Close()
+	}
+}
+
+func TestAnAbortedSweepStillReleasesWhatItRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not block reads on Windows")
+	}
+	root := t.TempDir()
+	s := New(Config{Root: root, MaxNamespaceFiles: 20})
+	r := s.NewRequest()
+	if err := r.Receive("f", "x", "", strings.NewReader("0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.Attach(context.Background(), "app", "f")
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.SHA256[:2] == "ff" {
+		t.Skip("the fixture's hash sorts after the unreadable directory")
+	}
+	locked := filepath.Join(root, "app.files", "ff")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if _, err := s.Sweep("app", map[string]bool{}); err == nil {
+		t.Skip("the walk did not fail; running with permissions that ignore mode bits")
+	}
+	r2 := s.NewRequest()
+	defer r2.Close()
+	if err := r2.Receive("g", "y", "", strings.NewReader("ABCDEFGHIJKLMNOP")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r2.Attach(context.Background(), "app", "g"); err != nil {
+		t.Fatalf("the removed file must stop counting toward the cap even when the sweep fails later: %v", err)
 	}
 }

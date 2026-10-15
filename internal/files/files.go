@@ -469,6 +469,9 @@ func (s *Store) Sweep(ns string, referenced map[string]bool) (store.FileSweep, e
 			return err
 		}
 		os.Remove(filepath.Dir(path))
+		if t, ok := s.totals[ns]; ok {
+			s.totals[ns] = t - info.Size()
+		}
 		out.Removed++
 		out.RemovedBytes += info.Size()
 		return nil
