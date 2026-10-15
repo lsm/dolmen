@@ -330,3 +330,27 @@ func TestAMultipartReadErrorDoesNotEchoItsCause(t *testing.T) {
 		t.Fatalf("got %d %q", err.Status, err.Message)
 	}
 }
+
+func TestAFailedWriteLeavesNoFileBehind(t *testing.T) {
+	srv, dir := newFileServer(t, files.Config{MaxNamespaceFiles: 10})
+	code, body := post(t, srv.URL, "create_table", map[string]any{"namespace": "app", "table": "meetings", "fields": []any{
+		map[string]any{"name": "recording", "type": "file"},
+		map[string]any{"name": "count", "type": "number"},
+	}})
+	if code != http.StatusOK {
+		t.Fatalf("create_table: %d %v", code, body)
+	}
+	code, body = postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"f"},"count":"not a number"}]}`,
+		filePart{name: "f", filename: "a.bin", data: []byte("12345678")})
+	if code != http.StatusBadRequest {
+		t.Fatalf("the write should fail on count: %d %v", code, body)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, "app.files")); len(entries) != 0 {
+		t.Fatalf("a failed write left %d entries in the namespace's store", len(entries))
+	}
+	code, body = postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"f"},"count":1}]}`,
+		filePart{name: "f", filename: "b.bin", data: []byte("abcdefgh")})
+	if code != http.StatusOK {
+		t.Fatalf("the failed write's file must not count toward the cap: %d %v", code, body)
+	}
+}

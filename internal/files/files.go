@@ -51,11 +51,12 @@ func invalid(status int, format string, args ...any) *Error {
 }
 
 type Store struct {
-	cfg     Config
-	mu      sync.Mutex
-	pending int64
-	totals  map[string]int64
-	pins    map[string]map[string]int
+	cfg      Config
+	mu       sync.Mutex
+	pending  int64
+	totals   map[string]int64
+	pins     map[string]map[string]int
+	attaches map[string]map[string]int
 }
 
 func New(cfg Config) *Store {
@@ -68,7 +69,7 @@ func New(cfg Config) *Store {
 	if cfg.MaxPendingFiles <= 0 {
 		cfg.MaxPendingFiles = DefaultMaxPendingFiles
 	}
-	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}}
+	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}}
 }
 
 func (s *Store) tmpDir() string { return filepath.Join(s.cfg.Root, tmpDirName) }
@@ -104,13 +105,14 @@ type part struct {
 }
 
 type Request struct {
-	s      *Store
-	mu     sync.Mutex
-	parts  map[string]*part
-	order  []string
-	total  int64
-	pinned [][2]string
-	closed bool
+	s       *Store
+	mu      sync.Mutex
+	parts   map[string]*part
+	order   []string
+	total   int64
+	pinned  [][2]string
+	created []created
+	closed  bool
 }
 
 func (s *Store) NewRequest() *Request {
@@ -238,6 +240,9 @@ func (r *Request) Close() {
 	for _, pin := range r.pinned {
 		r.s.unpin(pin[0], pin[1])
 	}
+	for _, c := range r.created {
+		r.s.forget(c)
+	}
 	r.s.mu.Unlock()
 }
 
@@ -340,6 +345,9 @@ func (r *Request) Attach(_ context.Context, ns, name string) (store.FileBlob, er
 		if err := os.Remove(p.tmp); err != nil {
 			return store.FileBlob{}, err
 		}
+		if n, ok := s.attaches[ns][p.sum]; ok {
+			s.attaches[ns][p.sum] = n + 1
+		}
 	case err == nil || errors.Is(err, fs.ErrNotExist):
 		total, terr := s.namespaceTotal(ns)
 		if terr != nil {
@@ -361,6 +369,11 @@ func (r *Request) Attach(_ context.Context, ns, name string) (store.FileBlob, er
 			return store.FileBlob{}, err
 		}
 		s.totals[ns] = total + p.size
+		if s.attaches[ns] == nil {
+			s.attaches[ns] = map[string]int{}
+		}
+		s.attaches[ns][p.sum] = 1
+		r.created = append(r.created, created{ns: ns, sum: p.sum, size: p.size})
 	default:
 		return store.FileBlob{}, err
 	}
@@ -386,3 +399,35 @@ func syncDir(dir string) error {
 }
 
 var _ store.FileSource = (*Request)(nil)
+
+type created struct {
+	ns   string
+	sum  string
+	size int64
+}
+
+func (r *Request) Discard() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range r.created {
+		if s.attaches[c.ns][c.sum] == 1 {
+			path := s.blobPath(c.ns, c.sum)
+			if os.Remove(path) == nil {
+				s.totals[c.ns] -= c.size
+				os.Remove(filepath.Dir(path))
+			}
+		}
+		s.forget(c)
+	}
+	r.created = nil
+}
+
+func (s *Store) forget(c created) {
+	delete(s.attaches[c.ns], c.sum)
+	if len(s.attaches[c.ns]) == 0 {
+		delete(s.attaches, c.ns)
+	}
+}

@@ -150,8 +150,8 @@ Resolving a `{"part": …}` value places the part's file: if the namespace alrea
 the temporary file is discarded, otherwise it is renamed into `<data>/<ns>.files/` (healing a file
 that had gone missing), counted against `-max-namespace-files-size`, and the directory synced. The
 hash is then pinned until the request ends, which is what keeps the sweep (below) from collecting a
-file whose write has not committed yet. If the write then fails, nothing references the placed
-file, and the next sweep removes it; every temporary file is deleted when the request ends either
+file whose write has not committed yet. If the write then fails, the request removes a file it
+created that no other request has attached since; anything else waits for the next sweep; every temporary file is deleted when the request ends either
 way.
 
 A `batch` may carry parts for any of its writes; they share one `request` and one transaction.
@@ -295,8 +295,9 @@ write on every engine; the pins below give the same safety with no schema change
 write commits during it. It marks every hash referenced by a file column in any table of the
 namespace, then deletes each stored file that is unmarked and not pinned, subtracting its size from
 the namespace's total so files left by failed writes stop counting toward
-`-max-namespace-files-size`. A failed write cannot delete the file it placed itself: another write
-may have found the same hash already stored and committed a reference to it in the meantime. The pin check and the
+`-max-namespace-files-size`. A failed write deletes a file it placed itself only when no other
+request has attached that hash since, because a reference can only come from an attach; otherwise
+the file waits for the sweep. The pin check and the
 unlink happen under the same lock that placement takes, so a request either pins its hash before the
 sweep looks at it, and the file is kept, or places it after, and finds it gone and stores it again.
 A write that committed before the sweep is marked by its reference; one still in flight holds a pin.

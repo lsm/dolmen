@@ -116,6 +116,9 @@ func (s *Server) multipartOp(w http.ResponseWriter, r *http.Request, op string) 
 	res, err := s.Dispatch(ctx, op, body)
 	s.ArmResponseWrite(w)
 	if err != nil {
+		if code := WrapError(err).Code; code != ErrCodeTimeout && code != ErrCodeCanceled {
+			req.Discard()
+		}
 		slog.DebugContext(r.Context(), "op failed", WithPrincipal(r, "op", op, "err", err)...)
 		writeError(w, r, err)
 		return
