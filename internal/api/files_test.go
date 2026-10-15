@@ -473,3 +473,26 @@ func TestVacuumRemovesFilesNoRowReferences(t *testing.T) {
 	}
 	storedFile(t, dir, "app", readRow(t, srv.URL, 1)["recording"].(map[string]any))
 }
+
+func TestADownloadRacingAVacuumAnswersNotFound(t *testing.T) {
+	srv, _ := newFileServer(t, files.Config{})
+	createMeetings(t, srv.URL, nil)
+	if code, body := postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"f"}}]}`,
+		filePart{name: "f", filename: "a.bin", data: []byte("racing")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	beforeFileOpen = func() {
+		beforeFileOpen = func() {}
+		post(t, srv.URL, "update", map[string]any{"namespace": "app", "table": "meetings", "filter": "id = ?", "args": []any{1}, "set": map[string]any{"recording": nil}})
+		post(t, srv.URL, "vacuum", map[string]any{"namespace": "app"})
+	}
+	t.Cleanup(func() { beforeFileOpen = func() {} })
+	res, err := http.Get(srv.URL + "/v1/files?namespace=app&table=meetings&id=1&field=recording")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a file removed between reading its row and opening it: got %d, want 404", res.StatusCode)
+	}
+}
