@@ -107,6 +107,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err := store.RequireSecretKey(s.secrets, []schema.Field{field}); err != nil {
 				return nil, nil, err
 			}
+			if err := store.RefuseFileFields("lakehouse", []schema.Field{field}); err != nil {
+				return nil, nil, err
+			}
 			var backfill any
 			if ch.Default != nil {
 				if field.Type == schema.Secret {

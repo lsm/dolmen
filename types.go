@@ -15,18 +15,21 @@ const (
 	JSON      FieldType = "json"
 	Vector    FieldType = "vector"
 	Secret    FieldType = "secret"
+	File      FieldType = "file"
 )
 
 type Field struct {
-	Name      string
-	Type      FieldType
-	Fulltext  bool
-	Vectorize bool
-	Dim       int
-	Required  bool
-	Enum      []string
-	Shape     string
-	Default   any
+	Name       string
+	Type       FieldType
+	Fulltext   bool
+	Vectorize  bool
+	Dim        int
+	Required   bool
+	Enum       []string
+	Shape      string
+	Default    any
+	MaxBytes   int64
+	MediaTypes []string
 }
 
 type TableSchema struct {
@@ -45,15 +48,17 @@ func fieldsToSchema(fields []Field) []schema.Field {
 	out := make([]schema.Field, len(fields))
 	for i, f := range fields {
 		out[i] = schema.Field{
-			Name:      f.Name,
-			Type:      schema.FieldType(f.Type),
-			Fulltext:  f.Fulltext,
-			Vectorize: f.Vectorize,
-			Dim:       f.Dim,
-			Required:  f.Required,
-			Enum:      f.Enum,
-			Shape:     f.Shape,
-			Default:   f.Default,
+			Name:       f.Name,
+			Type:       schema.FieldType(f.Type),
+			Fulltext:   f.Fulltext,
+			Vectorize:  f.Vectorize,
+			Dim:        f.Dim,
+			Required:   f.Required,
+			Enum:       f.Enum,
+			Shape:      f.Shape,
+			Default:    f.Default,
+			MaxBytes:   f.MaxBytes,
+			MediaTypes: f.MediaTypes,
 		}
 	}
 	return out
@@ -66,15 +71,17 @@ func schemaToFields(fields []schema.Field) []Field {
 	out := make([]Field, len(fields))
 	for i, f := range fields {
 		out[i] = Field{
-			Name:      f.Name,
-			Type:      FieldType(f.Type),
-			Fulltext:  f.Fulltext,
-			Vectorize: f.Vectorize,
-			Dim:       f.Dim,
-			Required:  f.Required,
-			Enum:      f.Enum,
-			Shape:     f.Shape,
-			Default:   f.Default,
+			Name:       f.Name,
+			Type:       FieldType(f.Type),
+			Fulltext:   f.Fulltext,
+			Vectorize:  f.Vectorize,
+			Dim:        f.Dim,
+			Required:   f.Required,
+			Enum:       f.Enum,
+			Shape:      f.Shape,
+			Default:    f.Default,
+			MaxBytes:   f.MaxBytes,
+			MediaTypes: f.MediaTypes,
 		}
 	}
 	return out

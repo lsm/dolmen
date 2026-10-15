@@ -199,11 +199,23 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 		},
 		"type": map[string]any{
 			"type":        "string",
-			"description": "One of: string, text, number, boolean, timestamp, json, vector, secret (omit to default to string); a secret is encrypted at rest and reads back as a mask unless revealed",
+			"description": "One of: string, text, number, boolean, timestamp, json, vector, secret, file (omit to default to string); a secret is encrypted at rest and reads back as a mask unless revealed; a file holds a reference to stored bytes and reads back as {sha256, size, media_type, name}",
 			"enum": []schema.FieldType{
 				schema.String, schema.Text, schema.Number, schema.Boolean,
-				schema.Timestamp, schema.JSON, schema.Vector, schema.Secret,
+				schema.Timestamp, schema.JSON, schema.Vector, schema.Secret, schema.File,
 			},
+		},
+		"max_bytes": map[string]any{
+			"type":        "integer",
+			"description": "File fields only: the largest file the field accepts, in bytes; the server's -max-file-size still applies, so the lower limit wins; omit for no per-field limit",
+			"minimum":     1,
+		},
+		"media_types": map[string]any{
+			"type":        "array",
+			"description": "File fields only: media types the field accepts, exact (application/pdf) or a whole top-level type (audio/*); omit to accept any",
+			"items":       map[string]any{"type": "string", "minLength": 3},
+			"minItems":    1,
+			"uniqueItems": true,
 		},
 		"fulltext":  prop("boolean", "Index this field for full-text search (string/text only)"),
 		"vectorize": prop("boolean", "Server embeds this text field automatically (string/text only, one per table)"),
@@ -307,6 +319,15 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 			},
 		)
 	}
+	allOf = append(allOf, map[string]any{
+		"if": map[string]any{
+			"properties": map[string]any{"type": map[string]any{"not": map[string]any{"const": string(schema.File)}}},
+		},
+		"then": map[string]any{"allOf": []any{
+			map[string]any{"not": map[string]any{"required": []string{"max_bytes"}}},
+			map[string]any{"not": map[string]any{"required": []string{"media_types"}}},
+		}},
+	})
 	return map[string]any{
 		"description":          desc,
 		"type":                 "object",
