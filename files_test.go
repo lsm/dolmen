@@ -235,11 +235,23 @@ func TestTheLibraryFetchesOnlyWithWithFileFetch(t *testing.T) {
 	defer srv.Close()
 	for url, want := range map[string]string{
 		srv.URL + "/a.txt":          "not public",
-		"https://example.com/a.txt": "example.com",
+		"https://example.com/a.txt": "not in the hosts given to WithFileFetch",
+		"ftp://127.0.0.1/a.txt":     "dolmen.FileUpload",
 	} {
 		_, err := fs.Insert(ctx, "app", "docs", []map[string]any{{"doc": &FileURL{URL: url}}}, InsertOptions{})
-		if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), want) {
-			t.Errorf("fetch %s: %v, want %q", url, err, want)
+		if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "-files-") || strings.Contains(err.Error(), "multipart") {
+			t.Errorf("fetch %s: %v, want %q in library wording", url, err, want)
 		}
+	}
+	blank, err := Open(t.TempDir(), WithFileFetch([]string{" ", ""}, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blank.Close()
+	if _, err := blank.CreateTable(ctx, "app", "docs", []Field{{Name: "doc", Type: File}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blank.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileURL{URL: "https://example.com/a.txt"}}}, InsertOptions{}); err == nil || !strings.Contains(err.Error(), "WithFileFetch(hosts") {
+		t.Fatalf("FileURL with only blank hosts: %v", err)
 	}
 }

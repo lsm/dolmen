@@ -93,6 +93,12 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 	return store.WithFileSource(ctx, fp.req), out, fp, nil
 }
 
+var libraryFetchWording = files.FetchWording{
+	Hosts:    "the hosts given to WithFileFetch",
+	Timeout:  "the WithFileFetch timeout",
+	Fallback: "read the file yourself and pass a dolmen.FileUpload",
+}
+
 func (s *Store) fileWireValue(field string, v any, fp *fileParts) (map[string]any, error) {
 	val := map[string]any{}
 	name, mediaType := "", ""
@@ -108,7 +114,7 @@ func (s *Store) fileWireValue(field string, v any, fp *fileParts) (map[string]an
 		}
 		return map[string]any{"part": part}, nil
 	case FileURL:
-		if !s.fileFetch {
+		if !s.files.Fetches() {
 			return nil, derr.New(derr.InvalidRequest, "field %q: dolmen.FileURL needs Open(dir, dolmen.WithFileFetch(hosts, timeout)) naming the hosts to fetch from; or read the file yourself and pass a dolmen.FileUpload", field)
 		}
 		val["url"], name, mediaType = f.URL, f.Name, f.MediaType

@@ -38,6 +38,7 @@ type Config struct {
 	MaxPendingFiles   int64
 	FetchHosts        []string
 	FetchTimeout      time.Duration
+	FetchWording      *FetchWording
 }
 
 type Error struct {
@@ -75,8 +76,14 @@ func New(cfg Config) *Store {
 	if cfg.MaxPendingFiles <= 0 {
 		cfg.MaxPendingFiles = DefaultMaxPendingFiles
 	}
-	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: NewFetcher(cfg.FetchHosts, cfg.FetchTimeout)}
+	fetcher := NewFetcher(cfg.FetchHosts, cfg.FetchTimeout)
+	if cfg.FetchWording != nil {
+		fetcher.Worded(*cfg.FetchWording)
+	}
+	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
 }
+
+func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
 
 func (s *Store) tmpDir() string { return filepath.Join(s.cfg.Root, tmpDirName) }
 

@@ -30,7 +30,6 @@ type Store struct {
 	emb             ops.EmbeddingProvider
 	tracing         *telemetry.Tracing
 	files           *files.Store
-	fileFetch       bool
 	changeRetention time.Duration
 
 	mu       sync.Mutex
@@ -75,7 +74,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 		ownersMu.Unlock()
 		return nil, derr.New(derr.Conflict, "data directory %s is already open in this process; close that store before reopening the directory", dataDir)
 	}
-	s := &Store{dir: dir, emb: cfg.embedding, tracing: tel, changeRetention: cfg.changeRetention, closing: make(chan struct{}), files: files.New(files.Config{Root: dir, FetchHosts: cfg.fetchHosts, FetchTimeout: cfg.fetchTimeout}), fileFetch: len(cfg.fetchHosts) > 0}
+	s := &Store{dir: dir, emb: cfg.embedding, tracing: tel, changeRetention: cfg.changeRetention, closing: make(chan struct{}), files: files.New(files.Config{Root: dir, FetchHosts: cfg.fetchHosts, FetchTimeout: cfg.fetchTimeout, FetchWording: &libraryFetchWording})}
 	owners[dir] = s
 	ownersMu.Unlock()
 
