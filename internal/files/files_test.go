@@ -3,6 +3,7 @@ package files
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -259,6 +260,35 @@ func TestASweepRemovesOnlyUnreferencedUnpinnedFiles(t *testing.T) {
 	}
 	inFlight.Close()
 	if _, r := place("0123456789"); r != nil {
+		r.Close()
+	}
+}
+
+func TestASweepNeverRemovesAPartBeingReceived(t *testing.T) {
+	s := New(Config{Root: t.TempDir()})
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				s.Sweep("app", map[string]bool{})
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for i := 0; i < 300; i++ {
+		r := s.NewRequest()
+		if err := r.Receive("f", "x", "", strings.NewReader(fmt.Sprintf("part %d", i))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Attach(context.Background(), "ns"+fmt.Sprint(i), "f"); err != nil {
+			r.Close()
+			t.Fatalf("attempt %d: a sweep removed a part still being received: %v", i, err)
+		}
 		r.Close()
 	}
 }

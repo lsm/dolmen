@@ -137,13 +137,15 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	if err := os.MkdirAll(r.s.tmpDir(), 0o700); err != nil {
 		return err
 	}
+	r.s.mu.Lock()
 	f, err := os.CreateTemp(r.s.tmpDir(), "part-*")
+	if err == nil {
+		r.s.live[f.Name()] = true
+	}
+	r.s.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	r.s.mu.Lock()
-	r.s.live[f.Name()] = true
-	r.s.mu.Unlock()
 	p := &part{name: name, filename: BaseName(filename), tmp: f.Name(), tmpName: f.Name(), placed: map[string]bool{}}
 	r.parts[name] = p
 	r.order = append(r.order, name)
