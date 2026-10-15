@@ -10,6 +10,7 @@ import (
 type VacuumResult struct {
 	BytesBefore int64
 	BytesAfter  int64
+	Files       *FileSweep
 }
 
 func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err error) {
@@ -29,6 +30,18 @@ func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err 
 		return VacuumResult{}, err
 	}
 	defer conn.Close()
+	var swept *FileSweep
+	if sw := fileSweeperFrom(ctx); sw != nil {
+		refs, err := fileReferences(ctx, conn)
+		if err != nil {
+			return VacuumResult{}, err
+		}
+		res, err := sw.Sweep(nsName, refs)
+		if err != nil {
+			return VacuumResult{}, err
+		}
+		swept = &res
+	}
 	before, err := namespaceBytes(path)
 	if err != nil {
 		return VacuumResult{}, err
@@ -51,7 +64,7 @@ func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err 
 	if err != nil {
 		return VacuumResult{}, err
 	}
-	return VacuumResult{BytesBefore: before, BytesAfter: after}, nil
+	return VacuumResult{BytesBefore: before, BytesAfter: after, Files: swept}, nil
 }
 
 func namespaceBytes(path string) (int64, error) {

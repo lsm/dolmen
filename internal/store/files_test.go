@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -163,5 +164,57 @@ func TestTheBatchFingerprintOfATableWithoutFilesIsUnchanged(t *testing.T) {
 	}
 	if got.Primary != want.Primary {
 		t.Fatal("a stored batch fingerprint must keep matching: the hash of a batch without file fields changed")
+	}
+}
+
+type recordingSweeper struct {
+	refs   map[string]bool
+	during func()
+	called int
+}
+
+func (r *recordingSweeper) Sweep(ns string, refs map[string]bool) (FileSweep, error) {
+	r.called++
+	r.refs = refs
+	if r.during != nil {
+		r.during()
+	}
+	return FileSweep{Removed: 1, RemovedBytes: 5, Bytes: 10}, nil
+}
+
+func TestVacuumSweepsWithEveryLiveReferenceWhileHoldingTheWriter(t *testing.T) {
+	st, ctx := fileTable(t)
+	src := &fakeFiles{parts: map[string]FileBlob{"a": blob("a", 5), "b": blob("b", 5)}}
+	if _, err := st.Insert(WithFileSource(ctx, src), "app", "docs", []map[string]any{
+		{"title": "keep", "doc": map[string]any{"part": "a"}},
+		{"title": "drop", "doc": map[string]any{"part": "b"}},
+	}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Update(ctx, "app", "docs", "title = ?", []any{"drop"}, map[string]any{"doc": nil}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	var blocked error
+	sw := &recordingSweeper{during: func() {
+		wctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		_, blocked = st.Insert(wctx, "app", "docs", []map[string]any{{"title": "racing"}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+	}}
+	res, err := st.Vacuum(WithFileSweeper(ctx, sw), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.called != 1 || len(sw.refs) != 1 || !sw.refs[strings.Repeat("a", 64)] {
+		t.Fatalf("the sweep must see exactly the live references, got %v", sw.refs)
+	}
+	if blocked == nil {
+		t.Fatal("a write must wait while the sweep holds the namespace's writer")
+	}
+	if res.Files == nil || res.Files.Removed != 1 || res.Files.Bytes != 10 {
+		t.Fatalf("vacuum must report the sweep, got %+v", res.Files)
+	}
+	plain, err := st.Vacuum(ctx, "app")
+	if err != nil || plain.Files != nil {
+		t.Fatalf("without a sweeper vacuum reports no files: %+v %v", plain, err)
 	}
 }
