@@ -30,6 +30,19 @@ type FileBlob struct {
 type FileSource interface {
 	Attach(ctx context.Context, ns, part string) (FileBlob, error)
 	Describe(part string) (FileBlob, error)
+	Pin(ns, sha256 string) error
+}
+
+type CopyReach func(ctx context.Context, ns, table string) (*RowScope, error)
+
+type copyReachKey struct{}
+
+func WithCopyReach(ctx context.Context, reach CopyReach) context.Context {
+	return context.WithValue(ctx, copyReachKey{}, reach)
+}
+
+func HasFileSource(ctx context.Context) bool {
+	return fileSourceFrom(ctx) != nil
 }
 
 type fileSourceKey struct{}
@@ -45,8 +58,15 @@ func fileSourceFrom(ctx context.Context) FileSource {
 
 type fileValue struct {
 	part      string
+	copy      *fileCopy
 	name      *string
 	mediaType *string
+}
+
+type fileCopy struct {
+	table string
+	id    int64
+	field string
 }
 
 func parseFileValue(f schema.Field, v any) (fileValue, error) {
@@ -57,10 +77,8 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 	if _, isRead := m["sha256"]; isRead {
 		return fileValue{}, invalidf("field %q: a file value read back from a row cannot be written; to attach a file, write {\"part\": \"<form name>\"} and send the file in the same multipart request, or write null to clear the field", f.Name)
 	}
-	for _, k := range []string{"url", "copy_from"} {
-		if _, has := m[k]; has {
-			return fileValue{}, invalidf("field %q: %q file values are not supported by this server yet; download the file and send it as a multipart part with {\"part\": \"<form name>\"}", f.Name, k)
-		}
+	if _, has := m["url"]; has {
+		return fileValue{}, invalidf("field %q: \"url\" file values are not supported by this server yet; download the file and send it as a multipart part with {\"part\": \"<form name>\"}", f.Name)
 	}
 	var out fileValue
 	keys := make([]string, 0, len(m))
@@ -77,6 +95,12 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 				return fileValue{}, invalidf("field %q: \"part\" must be the form name of a file part in the same multipart request", f.Name)
 			}
 			out.part = s
+		case "copy_from":
+			c, err := parseFileCopy(f.Name, raw)
+			if err != nil {
+				return fileValue{}, err
+			}
+			out.copy = c
 		case "name":
 			s, ok := raw.(string)
 			if !ok {
@@ -96,13 +120,45 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 			}
 			out.mediaType = &s
 		default:
-			return fileValue{}, invalidf("field %q: unknown key %q in a file value; a file value takes \"part\", and optionally \"name\" and \"media_type\"", f.Name, k)
+			return fileValue{}, invalidf("field %q: unknown key %q in a file value; a file value takes \"part\" or \"copy_from\", and optionally \"name\" and \"media_type\"", f.Name, k)
 		}
 	}
-	if out.part == "" {
-		return fileValue{}, invalidf("field %q: a file value needs \"part\", the form name of a file part in the same multipart request", f.Name)
+	if (out.part == "") == (out.copy == nil) {
+		return fileValue{}, invalidf("field %q: a file value needs exactly one of \"part\", the form name of a file part in the same multipart request, or \"copy_from\", {\"table\", \"id\", \"field\"} of a row whose file to reuse", f.Name)
 	}
 	return out, nil
+}
+
+func parseFileCopy(field string, raw any) (*fileCopy, error) {
+	m, ok := raw.(map[string]any)
+	bad := invalidf("field %q: \"copy_from\" must be {\"table\": \"<table>\", \"id\": <row id>, \"field\": \"<file field>\"}", field)
+	if !ok || len(m) != 3 {
+		return nil, bad
+	}
+	c := &fileCopy{}
+	c.table, _ = m["table"].(string)
+	c.field, _ = m["field"].(string)
+	switch id := m["id"].(type) {
+	case json.Number:
+		n, err := id.Int64()
+		if err != nil {
+			return nil, bad
+		}
+		c.id = n
+	case float64:
+		c.id = int64(id)
+		if float64(c.id) != id {
+			return nil, bad
+		}
+	case int64:
+		c.id = id
+	case int:
+		c.id = int64(id)
+	}
+	if c.table == "" || c.field == "" || c.id < 1 {
+		return nil, bad
+	}
+	return c, nil
 }
 
 func (fv fileValue) apply(b FileBlob) FileBlob {
@@ -127,13 +183,16 @@ func fileReference(b FileBlob) (string, error) {
 	return string(raw), nil
 }
 
-func coerceFile(ctx context.Context, nsName string, f schema.Field, v any) (any, error) {
+func (s *Store) coerceFile(ctx context.Context, nsName string, f schema.Field, v any) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
 	fv, err := parseFileValue(f, v)
 	if err != nil {
 		return nil, err
+	}
+	if fv.copy != nil {
+		return s.copyFile(ctx, nsName, f, fv)
 	}
 	src := fileSourceFrom(ctx)
 	if src == nil {
@@ -144,17 +203,70 @@ func coerceFile(ctx context.Context, nsName string, f schema.Field, v any) (any,
 		return nil, err
 	}
 	b = fv.apply(b)
-	if f.MaxBytes > 0 && b.Size > f.MaxBytes {
-		return nil, &FileLimitError{Status: 413, Message: fmt.Sprintf("field %q accepts files up to %d bytes (max_bytes) and part %q is %d bytes; store a smaller file, or keep larger files in a field without that limit", f.Name, f.MaxBytes, fv.part, b.Size)}
-	}
-	if !schema.MediaTypeAllowed(f.MediaTypes, b.MediaType) {
-		return nil, &FileLimitError{Status: 415, Message: fmt.Sprintf("field %q accepts %s and part %q is %s; if the type was guessed wrong, set \"media_type\" in the file value", f.Name, strings.Join(f.MediaTypes, ", "), fv.part, b.MediaType)}
+	if err := fileLimits(f, "part "+fmt.Sprintf("%q", fv.part), b); err != nil {
+		return nil, err
 	}
 	placed, err := src.Attach(ctx, nsName, fv.part)
 	if err != nil {
 		return nil, err
 	}
 	return fileReference(fv.apply(placed))
+}
+
+func fileLimits(f schema.Field, what string, b FileBlob) error {
+	if f.MaxBytes > 0 && b.Size > f.MaxBytes {
+		return &FileLimitError{Status: 413, Message: fmt.Sprintf("field %q accepts files up to %d bytes (max_bytes) and %s is %d bytes; store a smaller file, or keep larger files in a field without that limit", f.Name, f.MaxBytes, what, b.Size)}
+	}
+	if !schema.MediaTypeAllowed(f.MediaTypes, b.MediaType) {
+		return &FileLimitError{Status: 415, Message: fmt.Sprintf("field %q accepts %s and %s is %s; if the type was guessed wrong, set \"media_type\" in the file value", f.Name, strings.Join(f.MediaTypes, ", "), what, b.MediaType)}
+	}
+	return nil
+}
+
+func (s *Store) copyFile(ctx context.Context, nsName string, f schema.Field, fv fileValue) (any, error) {
+	c := fv.copy
+	unreadable := invalidf("field %q: copy_from names no file you can read: table %s has no readable row %d with a file in field %q", f.Name, c.table, c.id, c.field)
+	var scope *RowScope
+	if reach, ok := ctx.Value(copyReachKey{}).(CopyReach); ok {
+		var err error
+		if scope, err = reach(ctx, nsName, c.table); err != nil {
+			return nil, unreadable
+		}
+	}
+	sc, _, err := s.TableState(ctx, nsName, c.table, nil)
+	if err != nil {
+		return nil, unreadable
+	}
+	if src := sc.Field(c.field); src == nil || src.Type != schema.File {
+		return nil, unreadable
+	}
+	res, err := s.GetRows(ctx, nsName, c.table, []int64{c.id}, scope, Incarnation{})
+	if err != nil || len(res.Rows) == 0 {
+		return nil, unreadable
+	}
+	ref, _ := res.Rows[0][c.field].(map[string]any)
+	if ref == nil {
+		return nil, unreadable
+	}
+	b := FileBlob{}
+	b.SHA256, _ = ref["sha256"].(string)
+	b.MediaType, _ = ref["media_type"].(string)
+	b.Name, _ = ref["name"].(string)
+	if n, ok := ref["size"].(json.Number); ok {
+		b.Size, _ = n.Int64()
+	}
+	b = fv.apply(b)
+	if err := fileLimits(f, fmt.Sprintf("the file of %s row %d", c.table, c.id), b); err != nil {
+		return nil, err
+	}
+	src := fileSourceFrom(ctx)
+	if src == nil {
+		return nil, invalidf("field %q: copy_from needs the server's file store, which this request does not have", f.Name)
+	}
+	if err := src.Pin(nsName, b.SHA256); err != nil {
+		return nil, err
+	}
+	return fileReference(b)
 }
 
 type FileLimitError struct {

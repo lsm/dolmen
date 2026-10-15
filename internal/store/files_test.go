@@ -14,6 +14,7 @@ import (
 type fakeFiles struct {
 	parts    map[string]FileBlob
 	attached []string
+	pinned   []string
 }
 
 func (f *fakeFiles) Describe(part string) (FileBlob, error) {
@@ -22,6 +23,11 @@ func (f *fakeFiles) Describe(part string) (FileBlob, error) {
 		return FileBlob{}, invalidf("no part %q", part)
 	}
 	return b, nil
+}
+
+func (f *fakeFiles) Pin(ns, sum string) error {
+	f.pinned = append(f.pinned, ns+":"+sum)
+	return nil
 }
 
 func (f *fakeFiles) Attach(_ context.Context, ns, part string) (FileBlob, error) {
@@ -244,5 +250,58 @@ func TestAVacuumThatFailsSweepsNothing(t *testing.T) {
 	}
 	if sw.called != 0 {
 		t.Fatal("a vacuum that did not run must not delete files")
+	}
+}
+
+func TestCopyFromReusesAReadableRowsFile(t *testing.T) {
+	st, ctx := fileTable(t)
+	if _, err := st.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "meta", Type: schema.JSON}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeFiles{parts: map[string]FileBlob{"f": blob("a", 5)}}
+	if _, err := st.Insert(WithFileSource(ctx, src), "app", "docs", []map[string]any{{"doc": map[string]any{"part": "f"}}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Insert(ctx, "app", "notes", []map[string]any{{"meta": map[string]any{"sha256": strings.Repeat("b", 64), "size": 1, "media_type": "text/plain"}}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	copyOf := func(table string, id int, field string, extra map[string]any) map[string]any {
+		v := map[string]any{"copy_from": map[string]any{"table": table, "id": id, "field": field}}
+		for k, x := range extra {
+			v[k] = x
+		}
+		return map[string]any{"doc": v}
+	}
+	res, err := st.Insert(WithFileSource(ctx, src), "app", "docs", []map[string]any{copyOf("docs", 1, "doc", map[string]any{"name": "copy.txt"})}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetRows(ctx, "app", "docs", res.Ids, nil, Incarnation{})
+	ref := got.Rows[0]["doc"].(map[string]any)
+	if ref["sha256"] != strings.Repeat("a", 64) || ref["name"] != "copy.txt" || ref["media_type"] != "text/plain" {
+		t.Fatalf("copied reference = %v", ref)
+	}
+	if len(src.pinned) != 1 || src.pinned[0] != "app:"+strings.Repeat("a", 64) {
+		t.Fatalf("the copied hash must be pinned until the write ends, got %v", src.pinned)
+	}
+	denied := WithCopyReach(WithFileSource(ctx, src), func(context.Context, string, string) (*RowScope, error) { return nil, errors.New("forbidden") })
+	for label, tc := range map[string]struct {
+		ctx context.Context
+		rec map[string]any
+	}{
+		"unreadable table": {denied, copyOf("docs", 1, "doc", nil)},
+		"missing row":      {WithFileSource(ctx, src), copyOf("docs", 99, "doc", nil)},
+		"json lookalike":   {WithFileSource(ctx, src), copyOf("notes", 1, "meta", nil)},
+		"empty file field": {WithFileSource(ctx, src), copyOf("docs", 99, "doc", nil)},
+	} {
+		_, err := st.Insert(tc.ctx, "app", "docs", []map[string]any{tc.rec}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+		if err == nil || !strings.Contains(err.Error(), "copy_from names no file you can read") {
+			t.Errorf("%s: %v", label, err)
+		}
+	}
+	_, err = st.Insert(WithFileSource(ctx, src), "app", "docs", []map[string]any{copyOf("docs", 1, "doc", map[string]any{"media_type": "application/pdf"})}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+	var le *FileLimitError
+	if !errors.As(err, &le) || le.Status != 415 {
+		t.Fatalf("a copy must satisfy the target field's media_types: %v", err)
 	}
 }

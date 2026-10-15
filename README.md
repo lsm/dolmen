@@ -1121,7 +1121,9 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   ```
 
   The media type comes from the part's `Content-Type`, or from the file name's extension when the
-  client sends `application/octet-stream`; a value may set `name` and `media_type` itself. Every
+  client sends `application/octet-stream`; a value may set `name` and `media_type` itself.
+  `{"copy_from": {"table", "id", "field"}}` reuses a file a row the caller can read already holds,
+  in any write and over MCP, without uploading it again. Every
   read returns the reference `{"sha256", "size", "media_type", "name"}`, never the bytes.
   `GET /v1/files?namespace=&table=&id=&field=` downloads them with the same authorization as
   `read_rows` on that row, as an attachment with `X-Content-Type-Options: nosniff` and a sandbox
