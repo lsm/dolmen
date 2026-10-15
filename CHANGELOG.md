@@ -4,7 +4,8 @@
 
 - **File fields** (object storage, slice 1): a `file` field holds a SHA-256 reference to bytes
   stored beside the namespace. `insert`, `update`, `upsert`, `upsert_by_key` and `batch` attach
-  files in the same call as `multipart/form-data` (`curl -F 'request=<json>' -F 'rec=@file'`). New flags
+  files in the same call as `multipart/form-data` (`curl -F 'request=<json>' -F 'rec=@file'`), and
+  `GET /v1/files` downloads one by row. New flags
   `-max-file-size`, `-max-namespace-files-size`, `-max-request-files-size` and
   `-max-pending-files-size`. SQLite engine only for now.
 

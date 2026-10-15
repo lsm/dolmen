@@ -247,7 +247,12 @@ The media type is taken from the part's `Content-Type`, or, when curl sends the 
 value to set it yourself, and `"name": "q3.ogg"` to store a different file name. Several records,
 or several fields, may reference the same part. `null` clears the field. A read returns the
 reference, never the bytes: `{"sha256": "9f86…", "size": 48213, "media_type": "audio/ogg",
-"name": "standup.ogg"}`.
+"name": "standup.ogg"}`. Fetch the bytes with one GET, addressed by row; it needs the same access
+as `read_rows` on that row, and supports `Range`:
+
+```bash
+curl -s -o standup.ogg "${base%/}/v1/files?namespace=research&table=meetings&id=1&field=recording"
+```
 
 MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -352,5 +353,97 @@ func TestAFailedWriteLeavesNoFileBehind(t *testing.T) {
 		filePart{name: "f", filename: "b.bin", data: []byte("abcdefgh")})
 	if code != http.StatusOK {
 		t.Fatalf("the failed write's file must not count toward the cap: %d %v", code, body)
+	}
+}
+
+func TestDownloadAuthorizesLikeReadRows(t *testing.T) {
+	srv, _ := newFileServer(t, files.Config{})
+	createMeetings(t, srv.URL, nil)
+	postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"title":"x"}]}`)
+	for _, tc := range []struct {
+		query  string
+		status int
+	}{
+		{"namespace=app&table=meetings&id=1&field=recording", 404},
+		{"namespace=app&table=meetings&id=9&field=recording", 404},
+		{"namespace=app&table=meetings&id=1&field=title", 400},
+		{"namespace=app&table=meetings&id=1&field=nope", 404},
+		{"namespace=app&table=meetings", 400},
+	} {
+		res, err := http.Get(srv.URL + "/v1/files?" + tc.query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != tc.status {
+			t.Errorf("%s: %d, want %d", tc.query, res.StatusCode, tc.status)
+		}
+	}
+}
+
+func TestContentDispositionKeepsTheHeaderWellFormed(t *testing.T) {
+	got := contentDisposition(`naïve "plan"; v2.pdf`, "x")
+	want := `attachment; filename="na_ve _plan_; v2.pdf"; filename*=UTF-8''na%C3%AFve%20%22plan%22%3B%20v2.pdf`
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}
+
+func TestAJSONValueShapedLikeAReferenceIsNotDownloadable(t *testing.T) {
+	srv, _ := newFileServer(t, files.Config{})
+	code, body := post(t, srv.URL, "create_table", map[string]any{"namespace": "app", "table": "notes", "fields": []any{
+		map[string]any{"name": "meta", "type": "json"},
+	}})
+	if code != 200 {
+		t.Fatalf("create_table: %d %v", code, body)
+	}
+	post(t, srv.URL, "insert", map[string]any{"namespace": "app", "table": "notes", "records": []any{
+		map[string]any{"meta": map[string]any{"sha256": strings.Repeat("ab", 32)}},
+	}})
+	res, err := http.Get(srv.URL + "/v1/files?namespace=app&table=notes&id=1&field=meta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a json field is not a file field: got %d, want 400", res.StatusCode)
+	}
+}
+
+func TestADownloadServesTheBytesWithSafeHeaders(t *testing.T) {
+	srv, _ := newFileServer(t, files.Config{})
+	createMeetings(t, srv.URL, nil)
+	audio := []byte("OggS fake audio bytes")
+	if code, body := postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"rec"}}]}`,
+		filePart{name: "rec", filename: "standup.ogg", data: audio}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	sum := sha256.Sum256(audio)
+	res, err := http.Get(srv.URL + "/v1/files?namespace=app&table=meetings&id=1&field=recording")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || !bytes.Equal(got, audio) {
+		t.Fatalf("download: %d %q", res.StatusCode, got)
+	}
+	h := res.Header
+	if h.Get("Content-Type") != "audio/ogg" || h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Content-Security-Policy") != "sandbox" || h.Get("ETag") != `"`+hex.EncodeToString(sum[:])+`"` {
+		t.Fatalf("download headers: %v", h)
+	}
+	if !strings.HasPrefix(h.Get("Content-Disposition"), `attachment; filename="standup.ogg"`) {
+		t.Fatalf("Content-Disposition = %q", h.Get("Content-Disposition"))
+	}
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/files?namespace=app&table=meetings&id=1&field=recording", nil)
+	req.Header.Set("Range", "bytes=0-3")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusPartialContent || string(got) != "OggS" {
+		t.Fatalf("range: %d %q", res.StatusCode, got)
 	}
 }

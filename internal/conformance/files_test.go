@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -134,6 +135,41 @@ func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
 	for label, v := range reads {
 		if got, _ := json.Marshal(v); string(got) != string(want) {
 			t.Fatalf("%s read of a file field = %s, want %s", label, got, want)
+		}
+	}
+}
+
+func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	data := []byte("quarterly notes")
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"q3","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": data}); code != http.StatusOK {
+		t.Fatalf("multipart insert: %d %v", code, body)
+	}
+	res, err := http.Get(h.srv.URL + "/v1/files?namespace=fil&table=docs&id=1&field=doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || !bytes.Equal(got, data) || res.Header.Get("X-Content-Type-Options") != "nosniff" || res.Header.Get("Content-Type") != "text/plain" {
+		t.Fatalf("download: %d %q %v", res.StatusCode, got, res.Header)
+	}
+	for query, status := range map[string]int{
+		"namespace=fil&table=docs&id=2&field=doc":   http.StatusNotFound,
+		"namespace=fil&table=docs&id=1&field=title": http.StatusBadRequest,
+		"namespace=nope&table=docs&id=1&field=doc":  http.StatusNotFound,
+	} {
+		res, err := http.Get(h.srv.URL + "/v1/files?" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != status {
+			t.Errorf("%s: %d, want %d", query, res.StatusCode, status)
 		}
 	}
 }

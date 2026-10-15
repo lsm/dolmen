@@ -663,6 +663,7 @@ func (s *Server) Handler() http.Handler {
 		}
 		s.HandleSubscribe(w, r)
 	}), telemetry.EndAtHeaders))
+	mux.Handle("/v1/files", s.tracing.Server(s.prefix+"/v1/files", http.HandlerFunc(s.handleFileDownload)))
 	mux.Handle("/v1/", s.tracing.Server(s.prefix+"/v1/{op}", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		r = r.WithContext(WithRequestID(r.Context(), RequestIDFor(r)))
