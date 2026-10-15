@@ -267,7 +267,7 @@ What the schema and administration operations need:
 | Operation | Needs |
 |---|---|
 | `create_table` | `schema` on the namespace |
-| `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_shape`, `set_fulltext`, `set_vectorize`, `set_row_access`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
+| `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_shape`, `set_file_constraints`, `set_fulltext`, `set_vectorize`, `set_row_access`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
 | `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it |
 | `create_namespace` (`{"namespace":"eng"}`, or `"eng/team-a"` for a sub-namespace) | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |
@@ -905,6 +905,15 @@ itself is shared — so copy the exact shape per op:
 
   ```json
   {"op": "set_shape", "name": "tags", "shape": "array<string>"}
+  ```
+
+- `set_file_constraints` — `name` + `max_bytes` (0 removes the limit), `media_types` (an empty
+  array removes the constraint), or both; an omitted one stays as it is. It refuses when stored
+  files break the new constraints, naming how many rows and their ids, and the new constraints
+  apply to the next write:
+
+  ```json
+  {"op": "set_file_constraints", "name": "recording", "max_bytes": 52428800, "media_types": ["audio/*"]}
   ```
 
 Three top-level keys complete the request:
