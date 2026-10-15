@@ -1,13 +1,17 @@
 package files
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -21,6 +25,7 @@ const (
 	DefaultMaxPendingFiles int64 = 8 << 30
 	MaxPartsPerRequest           = 100
 	tmpDirName                   = ".files-tmp"
+	nsDirSuffix                  = ".files"
 )
 
 type Config struct {
@@ -49,6 +54,8 @@ type Store struct {
 	cfg     Config
 	mu      sync.Mutex
 	pending int64
+	totals  map[string]int64
+	pins    map[string]map[string]int
 }
 
 func New(cfg Config) *Store {
@@ -61,7 +68,7 @@ func New(cfg Config) *Store {
 	if cfg.MaxPendingFiles <= 0 {
 		cfg.MaxPendingFiles = DefaultMaxPendingFiles
 	}
-	return &Store{cfg: cfg}
+	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}}
 }
 
 func (s *Store) tmpDir() string { return filepath.Join(s.cfg.Root, tmpDirName) }
@@ -93,6 +100,7 @@ type part struct {
 	sum       string
 	size      int64
 	pending   int64
+	placed    map[string]bool
 }
 
 type Request struct {
@@ -101,6 +109,7 @@ type Request struct {
 	parts  map[string]*part
 	order  []string
 	total  int64
+	pinned [][2]string
 	closed bool
 }
 
@@ -128,7 +137,7 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	if err != nil {
 		return err
 	}
-	p := &part{name: name, filename: BaseName(filename), tmp: f.Name()}
+	p := &part{name: name, filename: BaseName(filename), tmp: f.Name(), placed: map[string]bool{}}
 	r.parts[name] = p
 	r.order = append(r.order, name)
 	h := sha256.New()
@@ -225,4 +234,155 @@ func (r *Request) Close() {
 		pending += p.pending
 	}
 	r.s.release(pending)
+	r.s.mu.Lock()
+	for _, pin := range r.pinned {
+		r.s.unpin(pin[0], pin[1])
+	}
+	r.s.mu.Unlock()
 }
+
+func (s *Store) nsDir(ns string) string {
+	return filepath.Join(s.cfg.Root, filepath.FromSlash(ns)+nsDirSuffix)
+}
+
+func (s *Store) blobPath(ns, sum string) string {
+	return filepath.Join(s.nsDir(ns), sum[:2], sum)
+}
+
+func ValidHash(sum string) bool {
+	if len(sum) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(sum)
+	return err == nil && strings.ToLower(sum) == sum
+}
+
+func (s *Store) Open(ns, sum string) (*os.File, error) {
+	if !ValidHash(sum) {
+		return nil, fs.ErrNotExist
+	}
+	return os.Open(s.blobPath(ns, sum))
+}
+
+func (s *Store) namespaceTotal(ns string) (int64, error) {
+	if t, ok := s.totals[ns]; ok {
+		return t, nil
+	}
+	var total int64
+	err := filepath.WalkDir(s.nsDir(ns), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if d.Type().IsRegular() && ValidHash(d.Name()) {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	s.totals[ns] = total
+	return total, nil
+}
+
+func (s *Store) Pinned(ns, sum string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pins[ns][sum] > 0
+}
+
+func (s *Store) pin(ns, sum string) {
+	if s.pins[ns] == nil {
+		s.pins[ns] = map[string]int{}
+	}
+	s.pins[ns][sum]++
+}
+
+func (s *Store) unpin(ns, sum string) {
+	m := s.pins[ns]
+	if m[sum] <= 1 {
+		delete(m, sum)
+		if len(m) == 0 {
+			delete(s.pins, ns)
+		}
+		return
+	}
+	m[sum]--
+}
+
+func (r *Request) Attach(_ context.Context, ns, name string) (store.FileBlob, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.parts[name]
+	if !ok {
+		return store.FileBlob{}, r.missingPart(name)
+	}
+	if p.placed[ns] {
+		return p.blob(), nil
+	}
+	if p.tmp == "" {
+		return store.FileBlob{}, fmt.Errorf("file part %q was already stored in another namespace", name)
+	}
+	s := r.s
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	final := s.blobPath(ns, p.sum)
+	info, err := os.Stat(final)
+	switch {
+	case err == nil && info.Size() == p.size:
+		if err := os.Remove(p.tmp); err != nil {
+			return store.FileBlob{}, err
+		}
+	case err == nil || errors.Is(err, fs.ErrNotExist):
+		total, terr := s.namespaceTotal(ns)
+		if terr != nil {
+			return store.FileBlob{}, terr
+		}
+		if err == nil {
+			total -= info.Size()
+		}
+		if s.cfg.MaxNamespaceFiles > 0 && total+p.size > s.cfg.MaxNamespaceFiles {
+			return store.FileBlob{}, &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
+		}
+		if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+			return store.FileBlob{}, err
+		}
+		if err := os.Rename(p.tmp, final); err != nil {
+			return store.FileBlob{}, err
+		}
+		if err := syncDir(filepath.Dir(final)); err != nil {
+			return store.FileBlob{}, err
+		}
+		s.totals[ns] = total + p.size
+	default:
+		return store.FileBlob{}, err
+	}
+	p.tmp = ""
+	s.pending -= p.pending
+	p.pending = 0
+	s.pin(ns, p.sum)
+	r.pinned = append(r.pinned, [2]string{ns, p.sum})
+	p.placed[ns] = true
+	return p.blob(), nil
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil && runtime.GOOS != "windows" {
+		return err
+	}
+	return nil
+}
+
+var _ store.FileSource = (*Request)(nil)
