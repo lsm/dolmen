@@ -273,7 +273,7 @@ type BlobStore interface {
 `BlobWriter` hashes as it writes and commits under its hash; `Blob` is an `io.ReadSeekCloser` with
 its size. The engine never sees bytes. A new `internal/files` package owns the interface, the local
 implementation, multipart and fetch streaming, the download handler and the sweep; each engine owns
-only the file column, the blob table, and the reference scan the sweep needs.
+only the file column and the reference scan the sweep needs.
 
 **Local.** `<data>/<ns>.files/<first two hex>/<sha256>`, written to `<data>/.files-tmp/` and
 renamed. Neither name is a valid namespace segment, so `list_namespaces` never sees them.
