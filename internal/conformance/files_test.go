@@ -130,3 +130,16 @@ func errMessage(body map[string]any) string {
 	m, _ := e["message"].(string)
 	return m
 }
+
+func TestListMigrationsEchoesFileConstraints(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarness(t)
+	h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
+	h.mustHTTP("migrate", map[string]any{"namespace": "fil", "table": "docs", "expected_version": 1, "changes": []any{
+		map[string]any{"op": "add_field", "field": map[string]any{"name": "scan", "type": "file", "max_bytes": 1024, "media_types": []string{"application/pdf"}}},
+	}})
+	h.mustHTTP("list_migrations", map[string]any{"namespace": "fil", "table": "docs"})
+	h.mustMCP("list_migrations", map[string]any{"namespace": "fil", "table": "docs"})
+}

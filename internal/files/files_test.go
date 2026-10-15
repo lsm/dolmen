@@ -88,3 +88,27 @@ func TestMediaTypeInference(t *testing.T) {
 		}
 	}
 }
+
+func TestAPartFileNameIsReducedToAValidBaseName(t *testing.T) {
+	s := New(Config{Root: t.TempDir()})
+	for _, tc := range []struct{ in, want string }{
+		{`C:\Users\me\report.pdf`, "report.pdf"},
+		{"a\tb\x01c.txt", "abc.txt"},
+		{"bad\xffbyte.txt", "bad_byte.txt"},
+		{strings.Repeat("é", 200), strings.Repeat("é", 127)},
+		{"dir/", ""},
+	} {
+		r := s.NewRequest()
+		if err := r.Receive("f", tc.in, "", strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+		b, err := r.Describe("f")
+		r.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.Name != tc.want {
+			t.Errorf("%q became %q, want %q", tc.in, b.Name, tc.want)
+		}
+	}
+}

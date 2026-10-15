@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
@@ -213,7 +214,7 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	if err != nil {
 		return err
 	}
-	p := &part{name: name, filename: filename, tmp: f.Name(), placed: map[string]bool{}}
+	p := &part{name: name, filename: baseName(filename), tmp: f.Name(), placed: map[string]bool{}}
 	r.parts[name] = p
 	r.order = append(r.order, name)
 	h := sha256.New()
@@ -387,4 +388,22 @@ func syncDir(dir string) error {
 		return err
 	}
 	return nil
+}
+
+func baseName(filename string) string {
+	if i := strings.LastIndexAny(filename, `/\`); i >= 0 {
+		filename = filename[i+1:]
+	}
+	filename = strings.ToValidUTF8(filename, "_")
+	var b strings.Builder
+	for _, r := range filename {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		if b.Len()+utf8.RuneLen(r) > 255 {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
