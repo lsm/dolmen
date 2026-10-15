@@ -293,7 +293,10 @@ write on every engine; the pins below give the same safety with no schema change
 
 `vacuum` gains a sweep (slice 1b), run holding the namespace's writer as `vacuum` already does, so no
 write commits during it. It marks every hash referenced by a file column in any table of the
-namespace, then deletes each stored file that is unmarked and not pinned. The pin check and the
+namespace, then deletes each stored file that is unmarked and not pinned, subtracting its size from
+the namespace's total so files left by failed writes stop counting toward
+`-max-namespace-files-size`. A failed write cannot delete the file it placed itself: another write
+may have found the same hash already stored and committed a reference to it in the meantime. The pin check and the
 unlink happen under the same lock that placement takes, so a request either pins its hash before the
 sweep looks at it, and the file is kept, or places it after, and finds it gone and stores it again.
 A write that committed before the sweep is marked by its reference; one still in flight holds a pin.
