@@ -1097,7 +1097,7 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
 
 - **Namespace = one SQLite file** (`data/<ns>.db`, WAL). Isolation is physical. Lifecycle is managed
   over the API: `list_namespaces`, `create_namespace`, and `drop_namespace` (which closes the server's
-  own connections, then deletes the file and its WAL sidecars — `confirm` must repeat the namespace
+  own connections, then deletes the file, its WAL sidecars and the files of its file fields — `confirm` must repeat the namespace
   name, and any later **write**-op use of the name recreates the namespace empty (every read —
   including `wait_for` and the `subscribe` stream (`/v1/subscribe`) — answers `not_found` until it
   is recreated);
