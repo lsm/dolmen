@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Go library: `dolmen.FileCopy` and `dolmen.FileURL` record values, and `WithFileFetch(hosts,
+  timeout)` to let `FileURL` fetch.
+
 - File values can be `{"url": "https://…"}`: the server fetches the file, from hosts listed in the
   new `-files-fetch-hosts` (off by default), bounded by `-files-fetch-timeout`. Non-public
   addresses, URLs with credentials and redirects off the list are refused.

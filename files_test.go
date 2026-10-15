@@ -5,10 +5,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func openWithDocs(t *testing.T) (*Store, string, context.Context) {
@@ -182,5 +185,73 @@ func TestOpenFileClassifiesLikeTheDownload(t *testing.T) {
 	}
 	if _, _, err := st.OpenFile(ctx, "app", "docs", 1, "title"); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("a field that is not a file field: %v, want invalid request", err)
+	}
+}
+
+func TestTheLibraryCopiesAFileFromAnotherRow(t *testing.T) {
+	st, _, ctx := openWithDocs(t)
+	res, err := st.Insert(ctx, "app", "docs", []map[string]any{
+		{"title": "a", "doc": FileUpload{Reader: strings.NewReader("shared"), Name: "a.txt"}},
+	}, InsertOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp, err := st.Insert(ctx, "app", "docs", []map[string]any{
+		{"title": "b", "doc": FileCopy{Table: "Docs", ID: res.Ids[0], Field: "doc", Name: "b.txt"}},
+		{"title": "c", "doc": &FileCopy{Table: "docs", ID: res.Ids[0], Field: "doc", MediaType: "text/markdown"}},
+	}, InsertOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, info := readFile(t, st, ctx, cp.Ids[0]); string(got) != "shared" || info.Name != "b.txt" || info.MediaType != "text/plain" {
+		t.Fatalf("copied with a name = %q %+v", got, info)
+	}
+	if got, info := readFile(t, st, ctx, cp.Ids[1]); string(got) != "shared" || info.Name != "a.txt" || info.MediaType != "text/markdown" {
+		t.Fatalf("copied with a media type = %q %+v", got, info)
+	}
+	if _, err := st.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileCopy{Table: "docs", ID: 99, Field: "doc"}}}, InsertOptions{}); !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "copy_from names no file you can read") {
+		t.Fatalf("copy from a missing row: %v", err)
+	}
+}
+
+func TestTheLibraryFetchesOnlyWithWithFileFetch(t *testing.T) {
+	st, _, ctx := openWithDocs(t)
+	_, err := st.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileURL{URL: "https://example.com/a.txt"}}}, InsertOptions{})
+	if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "WithFileFetch") {
+		t.Fatalf("FileURL without WithFileFetch: %v", err)
+	}
+	if _, err := Open(t.TempDir(), WithFileFetch([]string{"example.com"}, time.Millisecond)); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("a fetch timeout under a second: %v", err)
+	}
+	fs, err := Open(t.TempDir(), WithFileFetch([]string{"127.0.0.1"}, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fs.Close()
+	if _, err := fs.CreateTable(ctx, "app", "docs", []Field{{Name: "doc", Type: File}}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "x") }))
+	defer srv.Close()
+	for url, want := range map[string]string{
+		srv.URL + "/a.txt":          "not public",
+		"https://example.com/a.txt": "not in the hosts given to WithFileFetch",
+		"ftp://127.0.0.1/a.txt":     "dolmen.FileUpload",
+	} {
+		_, err := fs.Insert(ctx, "app", "docs", []map[string]any{{"doc": &FileURL{URL: url}}}, InsertOptions{})
+		if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "-files-") || strings.Contains(err.Error(), "multipart") {
+			t.Errorf("fetch %s: %v, want %q in library wording", url, err, want)
+		}
+	}
+	blank, err := Open(t.TempDir(), WithFileFetch([]string{" ", ""}, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blank.Close()
+	if _, err := blank.CreateTable(ctx, "app", "docs", []Field{{Name: "doc", Type: File}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blank.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileURL{URL: "https://example.com/a.txt"}}}, InsertOptions{}); err == nil || !strings.Contains(err.Error(), "WithFileFetch(hosts") {
+		t.Fatalf("FileURL with only blank hosts: %v", err)
 	}
 }

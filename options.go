@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -32,6 +33,8 @@ type config struct {
 	retiredKeys     [][]byte
 	secretKeySet    bool
 	secrets         *secret.Keyring
+	fetchHosts      []string
+	fetchTimeout    time.Duration
 
 	tracerProvider    trace.TracerProvider
 	tracerProviderSet bool
@@ -88,7 +91,17 @@ func WithVectorCacheBytes(n int64) Option {
 	}
 }
 
+func WithFileFetch(hosts []string, timeout time.Duration) Option {
+	return func(c *config) {
+		c.fetchHosts = append([]string(nil), hosts...)
+		c.fetchTimeout = timeout
+	}
+}
+
 func (c *config) validate() error {
+	if c.fetchTimeout != 0 && (c.fetchTimeout < time.Second || c.fetchTimeout > 24*time.Hour) {
+		return derr.New(derr.InvalidRequest, "WithFileFetch: timeout must be between 1s and 24h, or 0 for the default of %s", files.DefaultFetchTimeout)
+	}
 	if c.vectorCache < 0 {
 		return derr.New(derr.InvalidRequest, "WithVectorCacheBytes: size must not be negative (0 disables the cache)")
 	}

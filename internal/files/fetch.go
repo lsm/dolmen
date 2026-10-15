@@ -20,7 +20,20 @@ import (
 
 const DefaultFetchTimeout = 5 * time.Minute
 
+type FetchWording struct {
+	Hosts    string
+	Timeout  string
+	Fallback string
+}
+
+var ServerFetchWording = FetchWording{
+	Hosts:    "-files-fetch-hosts",
+	Timeout:  "-files-fetch-timeout",
+	Fallback: "download the file with curl -o and send it as a multipart part with {\"part\": \"<form name>\"}",
+}
+
 type Fetcher struct {
+	say     FetchWording
 	hosts   []string
 	timeout time.Duration
 	blocked func(net.IP) bool
@@ -37,8 +50,13 @@ func NewFetcher(hosts []string, timeout time.Duration) *Fetcher {
 			norm = append(norm, h)
 		}
 	}
-	f := &Fetcher{hosts: norm, timeout: timeout, blocked: nonPublic}
+	f := &Fetcher{say: ServerFetchWording, hosts: norm, timeout: timeout, blocked: nonPublic}
 	f.http = f.client()
+	return f
+}
+
+func (f *Fetcher) Worded(say FetchWording) *Fetcher {
+	f.say = say
 	return f
 }
 
@@ -109,7 +127,7 @@ func (f *Fetcher) client() *http.Client {
 		Transport: &http.Transport{DialContext: dialer.DialContext, Proxy: nil, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 4},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) > 5 {
-				return fetchErr("fetching from %s followed more than 5 redirects; give the file's final URL, or download it with curl -o and send it as a multipart part", via[0].URL.Hostname())
+				return fetchErr("fetching from %s followed more than 5 redirects; give the file's final URL, or %s", via[0].URL.Hostname(), f.say.Fallback)
 			}
 			return f.check(req.URL)
 		},
@@ -118,13 +136,13 @@ func (f *Fetcher) client() *http.Client {
 
 func (f *Fetcher) check(u *url.URL) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fetchErr("%q is not an http or https URL; give the file's full http(s) URL, or download it with curl -o and send it as a multipart part", u.String())
+		return fetchErr("%q is not an http or https URL; give the file's full http(s) URL, or %s", u.String(), f.say.Fallback)
 	}
 	if u.User != nil {
-		return fetchErr("URLs with credentials (user:password@) are not fetched, because the server sends no credentials; remove them, or download the file and send it as a multipart part")
+		return fetchErr("URLs with credentials (user:password@) are not fetched, because no credentials are sent; remove them, or %s", f.say.Fallback)
 	}
 	if !f.allowed(u.Hostname()) {
-		return fetchErr("host %q is not in -files-fetch-hosts; download the file and send it as a multipart part with {\"part\": \"<form name>\"} instead", u.Hostname())
+		return fetchErr("host %q is not in %s; %s instead", u.Hostname(), f.say.Hosts, f.say.Fallback)
 	}
 	return nil
 }
@@ -135,7 +153,7 @@ func fetchErr(format string, args ...any) *Error {
 
 func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) error {
 	if !f.Enabled() {
-		return fetchErr("this server does not fetch URLs (-files-fetch-hosts is empty); download the file with curl -o and send it as a multipart part with {\"part\": \"<form name>\"}")
+		return fetchErr("this server does not fetch URLs (%s is empty); %s", f.say.Hosts, f.say.Fallback)
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -162,7 +180,7 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 		case parent.Err() != nil:
 			return parent.Err()
 		case ctx.Err() != nil:
-			return fetchErr("fetching from %s took longer than -files-fetch-timeout (%s); the fetch may be retried", u.Hostname(), f.timeout)
+			return fetchErr("fetching from %s took longer than %s (%s); the fetch may be retried", u.Hostname(), f.say.Timeout, f.timeout)
 		}
 		return fetchErr("fetching from %s failed before a response arrived; the fetch may be retried", u.Hostname())
 	}
@@ -190,7 +208,7 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 	case parent.Err() != nil:
 		return parent.Err()
 	case ctx.Err() != nil:
-		return fetchErr("fetching from %s took longer than -files-fetch-timeout (%s); the fetch may be retried", u.Hostname(), f.timeout)
+		return fetchErr("fetching from %s took longer than %s (%s); the fetch may be retried", u.Hostname(), f.say.Timeout, f.timeout)
 	}
 	return fetchErr("fetching from %s broke off before the file arrived; the fetch may be retried", u.Hostname())
 }
