@@ -149,9 +149,9 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 	canon := make([]BatchWrite, len(writes))
 	for i, w := range writes {
 		sc := schemas[w.Table]
-		w.Records = canonicalFiles(ctx, sc, w.Records)
+		w.Records = canonicalFiles(ctx, sc, lowerRecordKeys(w.Records))
 		if w.Set != nil {
-			w.Set = canonicalFiles(ctx, sc, []map[string]any{w.Set})[0]
+			w.Set = canonicalFiles(ctx, sc, lowerRecordKeys([]map[string]any{w.Set}))[0]
 		}
 		canon[i] = w
 	}

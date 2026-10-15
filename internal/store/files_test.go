@@ -120,3 +120,17 @@ func TestAnIdempotentFileInsertReplaysOnlyForTheSameBytes(t *testing.T) {
 		t.Fatal("different bytes under the same key must not replay")
 	}
 }
+
+func TestABatchReplaysOnlyForTheSameBytesWhateverTheKeyCase(t *testing.T) {
+	st, ctx := fileTable(t)
+	write := func(sum string) (BatchResult, error) {
+		src := &fakeFiles{parts: map[string]FileBlob{"f": blob(sum, 5)}}
+		return st.Batch(WithFileSource(ctx, src), "app", []BatchWrite{{Kind: BatchWriteInsert, Table: "docs", Records: []map[string]any{{"DOC": map[string]any{"part": "f"}}}}}, BatchOpts{IdempotencyKey: "k"}, Embedder{}, nil, Incarnation{})
+	}
+	if _, err := write("a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := write("d"); err == nil {
+		t.Fatal("different bytes under the same key must not replay, even when the field is spelled in capitals")
+	}
+}
