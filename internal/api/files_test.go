@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/files"
@@ -310,4 +313,20 @@ func storedFile(t *testing.T, dir, ns string, ref map[string]any) []byte {
 		t.Fatal(err)
 	}
 	return got
+}
+
+func TestAFullDiskWhileStreamingIsInsufficientStorage(t *testing.T) {
+	s := New(nil, fakeEmb{})
+	err := WrapError(s.partReadError(&fs.PathError{Op: "write", Path: "/data/.files-tmp/part-1", Err: syscall.ENOSPC}, "cannot read file part"))
+	if err.Status != http.StatusInsufficientStorage || err.Code != ErrCodeInternal || strings.Contains(err.Message, "/data") {
+		t.Fatalf("got %d %s %q", err.Status, err.Code, err.Message)
+	}
+}
+
+func TestAMultipartReadErrorDoesNotEchoItsCause(t *testing.T) {
+	s := New(nil, fakeEmb{})
+	err := WrapError(s.partReadError(errors.New("multipart: NextPart: read tcp 10.0.0.5:8790->10.0.0.9:51234: connection reset"), "cannot read the multipart body"))
+	if err.Status != http.StatusBadRequest || strings.Contains(err.Message, "10.0.0.5") || !strings.Contains(err.Message, "cannot read the multipart body") {
+		t.Fatalf("got %d %q", err.Status, err.Message)
+	}
 }

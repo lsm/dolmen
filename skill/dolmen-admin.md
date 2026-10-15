@@ -953,7 +953,7 @@ A complete call, previewed first:
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
 | One file | the server's `-max-file-size`, 1 GiB by default, and the field's `max_bytes` when set | `invalid_request` (413) naming the limit |
-| Files per multipart write | 100 parts, 2 GiB across them by default; the `request` part answers to the 32 MiB body limit | `invalid_request` (413) |
+| Files per multipart write | 100 parts, 2 GiB across them by default; the `request` part answers to the 32 MiB body limit | `invalid_request`: `413` over the byte limit, `400` over 100 parts |
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 {{ if eq .Dialect "postgresql" }}| Database connections | the database's own connection limit, shared by every request and open subscription | `timeout` (504) saying the database is at its connection limit: nothing was started, so retry shortly |
 {{ end }}| Time per `migrate` | unbounded by default; the operator can set a limit | `timeout` (504): the migration is stopped; check the table's version with `describe_table` before retrying |

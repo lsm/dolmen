@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lsm/dolmen/internal/files"
@@ -135,9 +136,12 @@ func (s *Server) partReadError(err error, msg string) error {
 	if bodyReadTimedOut(err) {
 		return &Error{Status: http.StatusRequestTimeout, Code: ErrCodeTimeout, Message: fmt.Sprintf("the request body stalled for longer than the server's %s read limit (-read-timeout, DOLMEN_READ_TIMEOUT) between chunks; retry the write", s.timeouts.Read)}
 	}
+	if errors.Is(err, syscall.ENOSPC) {
+		return &Error{Status: http.StatusInsufficientStorage, Code: ErrCodeInternal, Message: "the server's disk is full, so nothing was written; have the operator free disk space", Cause: err}
+	}
 	var pe *fs.PathError
 	if errors.As(err, &pe) {
 		return internal(err)
 	}
-	return badRequest("%s: %s", msg, err)
+	return &Error{Status: http.StatusBadRequest, Code: ErrCodeInvalid, Message: msg, Cause: err}
 }
