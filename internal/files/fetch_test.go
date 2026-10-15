@@ -150,3 +150,32 @@ func TestFetchRefusesURLsCarryingCredentials(t *testing.T) {
 		t.Fatal("credentials in a URL must never reach the host")
 	}
 }
+
+func TestFetchesShareOneConnectionPool(t *testing.T) {
+	var addrs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		addrs = append(addrs, r.RemoteAddr)
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	f := testFetcher(srv)
+	s := New(Config{Root: t.TempDir()})
+	for i := 0; i < 2; i++ {
+		r := s.NewRequest()
+		if err := r.ReceiveURL(context.Background(), "u", srv.URL, f); err != nil {
+			t.Fatal(err)
+		}
+		r.Close()
+	}
+	if len(addrs) != 2 || addrs[0] != addrs[1] {
+		t.Fatalf("a second fetch must reuse the first one's idle connection, not leak a new pool: %v", addrs)
+	}
+}
+
+func TestEmbeddedAndReservedAddressesAreNotPublic(t *testing.T) {
+	for _, ip := range []string{"64:ff9b::a00:1", "2002:a00:1::1", "2001:0:4136:e378::1", "240.0.0.1", "198.18.0.1", "192.0.0.1", "255.255.255.255"} {
+		if !nonPublic(net.ParseIP(ip)) {
+			t.Errorf("%s must be refused", ip)
+		}
+	}
+}

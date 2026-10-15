@@ -22,6 +22,7 @@ type Fetcher struct {
 	hosts   []string
 	timeout time.Duration
 	blocked func(net.IP) bool
+	http    *http.Client
 }
 
 func NewFetcher(hosts []string, timeout time.Duration) *Fetcher {
@@ -34,16 +35,42 @@ func NewFetcher(hosts []string, timeout time.Duration) *Fetcher {
 			norm = append(norm, h)
 		}
 	}
-	return &Fetcher{hosts: norm, timeout: timeout, blocked: nonPublic}
+	f := &Fetcher{hosts: norm, timeout: timeout, blocked: nonPublic}
+	f.http = f.client()
+	return f
 }
 
 func (f *Fetcher) Enabled() bool { return f != nil && len(f.hosts) > 0 }
 
-var sharedAddressSpace = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+var reservedRanges = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, cidr := range []string{
+		"100.64.0.0/10",
+		"192.0.0.0/24",
+		"198.18.0.0/15",
+		"240.0.0.0/4",
+		"64:ff9b::/96",
+		"64:ff9b:1::/48",
+		"2002::/16",
+		"2001::/32",
+	} {
+		_, n, _ := net.ParseCIDR(cidr)
+		out = append(out, n)
+	}
+	return out
+}()
 
 func nonPublic(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() || sharedAddressSpace.Contains(ip)
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	for _, n := range reservedRanges {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *Fetcher) allowed(host string) bool {
@@ -77,7 +104,7 @@ func (f *Fetcher) client() *http.Client {
 		return nil
 	}}
 	return &http.Client{
-		Transport: &http.Transport{DialContext: dialer.DialContext, Proxy: nil, ForceAttemptHTTP2: true},
+		Transport: &http.Transport{DialContext: dialer.DialContext, Proxy: nil, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 4},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return errors.New("more than 5 redirects")
@@ -121,7 +148,7 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 	if err != nil {
 		return fetchErr("%q is not a URL the server can fetch", raw)
 	}
-	res, err := f.client().Do(req)
+	res, err := f.http.Do(req)
 	if err != nil {
 		var fe *Error
 		switch {
