@@ -209,7 +209,7 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 		},
 		"max_bytes": map[string]any{
 			"type":        "integer",
-			"description": "File fields only: the largest file the field accepts, in bytes (at most the server's -max-file-size); omit for no per-field limit",
+			"description": "File fields only: the largest file the field accepts, in bytes; the server's -max-file-size still applies, so the lower limit wins; omit for no per-field limit",
 			"minimum":     1,
 		},
 		"media_types": map[string]any{

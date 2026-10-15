@@ -53,7 +53,9 @@ through the download endpoint and writes its result back as ordinary fields.
 
 **Declaring it.** `{"name": "recording", "type": "file"}`, with two optional constraints:
 
-- `max_bytes`: the largest blob the field accepts, at most the server's `-max-file-size`.
+- `max_bytes`: the largest blob the field accepts. The server's `-max-file-size` still applies, so
+  the lower of the two wins; a declaration is not checked against the flag, which can change
+  between restarts.
 - `media_types`: accepted media types, exact (`application/pdf`) or a top-level wildcard
   (`audio/*`).
 
@@ -314,7 +316,7 @@ stored file bytes after the sweep. No other operation's output changes shape.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-max-file-size` | `1GiB` | Largest single file; also the ceiling for a field's `max_bytes` |
+| `-max-file-size` | `1GiB` | Largest single file, whatever a field's `max_bytes` says |
 | `-max-namespace-files-size` | `0` | Largest total of one namespace's stored blobs, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`; `0` is unbounded |
 | `-files-store` | `local` | Blob store; `s3` arrives in slice 3 |
 | `-files-fetch-hosts` | empty | Hosts a `url` value may fetch from; empty disables fetching |

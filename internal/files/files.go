@@ -71,8 +71,6 @@ func New(cfg Config) *Store {
 	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}}
 }
 
-func (s *Store) MaxFileSize() int64 { return s.cfg.MaxFileSize }
-
 func (s *Store) nsDir(ns string) string {
 	return filepath.Join(s.cfg.Root, filepath.FromSlash(ns)+nsDirSuffix)
 }

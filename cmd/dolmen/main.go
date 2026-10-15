@@ -429,7 +429,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	maxOpenDefault, maxOpenErr := envIntOr("DOLMEN_MAX_OPEN_NAMESPACES", store.DefaultMaxOpenNamespaces, getenv)
 	maxOpenNamespaces := fs.Int("max-open-namespaces", maxOpenDefault, "namespaces held open at once; past it, the least recently used idle namespace is closed until it is next used (at least 1; sqlite engine)")
 	vectorCacheSize := fs.String("vector-cache-size", envOr("DOLMEN_VECTOR_CACHE_SIZE", "512MiB", getenv), "memory for decoded vectors kept between vector searches, e.g. 2GiB; 0 disables the cache and every search reads vectors from disk (sqlite engine)")
-	maxFileSize := fs.String("max-file-size", envOr("DOLMEN_MAX_FILE_SIZE", "1GiB", getenv), "largest single file a write may attach, e.g. 1GiB; also the ceiling for a file field's max_bytes")
+	maxFileSize := fs.String("max-file-size", envOr("DOLMEN_MAX_FILE_SIZE", "1GiB", getenv), "largest single file a write may attach, e.g. 1GiB; applies on top of a file field's max_bytes, so the lower limit wins")
 	maxNamespaceFiles := fs.String("max-namespace-files-size", envOr("DOLMEN_MAX_NAMESPACE_FILES_SIZE", "0", getenv), "largest total of one namespace's stored files, e.g. 50GiB; a write past it is refused with 507. 0 (default) is unbounded")
 	maxRequestFiles := fs.String("max-request-files-size", envOr("DOLMEN_MAX_REQUEST_FILES_SIZE", "2GiB", getenv), "most file bytes one multipart write may carry across its parts")
 	maxPendingFiles := fs.String("max-pending-files-size", envOr("DOLMEN_MAX_PENDING_FILES_SIZE", "8GiB", getenv), "most file bytes all in-flight writes may hold in temporary space at once; past it a write is refused with 503 storage_unavailable")
