@@ -1,0 +1,113 @@
+package files
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+)
+
+func TestFetchHostRules(t *testing.T) {
+	f := NewFetcher([]string{"files.example.com", "*.cdn.example.org"}, 0)
+	for host, want := range map[string]bool{
+		"files.example.com":      true,
+		"FILES.example.com.":     true,
+		"evil.files.example.com": false,
+		"a.cdn.example.org":      true,
+		"cdn.example.org":        false,
+		"example.com":            false,
+	} {
+		if got := f.allowed(host); got != want {
+			t.Errorf("allowed(%q) = %v, want %v", host, got, want)
+		}
+	}
+	if !NewFetcher([]string{"*"}, 0).allowed("anything.test") {
+		t.Fatal("* must allow any host")
+	}
+}
+
+func TestNonPublicAddresses(t *testing.T) {
+	for _, ip := range []string{"127.0.0.1", "::1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "fe80::1", "fc00::1", "0.0.0.0", "100.64.0.1", "224.0.0.1"} {
+		if !nonPublic(net.ParseIP(ip)) {
+			t.Errorf("%s must be refused", ip)
+		}
+	}
+	for _, ip := range []string{"8.8.8.8", "2606:4700::1111"} {
+		if nonPublic(net.ParseIP(ip)) {
+			t.Errorf("%s is public", ip)
+		}
+	}
+}
+
+func testFetcher(srv *httptest.Server) *Fetcher {
+	u, _ := url.Parse(srv.URL)
+	f := NewFetcher([]string{u.Hostname()}, 0)
+	f.blocked = func(net.IP) bool { return false }
+	return f
+}
+
+func TestFetchStreamsAPublicFileIntoAPart(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
+			t.Errorf("a fetch must carry no credentials: %v", r.Header)
+		}
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/reports/q3.pdf", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write([]byte("%PDF fetched bytes"))
+	}))
+	defer srv.Close()
+	s := New(Config{Root: t.TempDir()})
+	r := s.NewRequest()
+	defer r.Close()
+	if err := r.ReceiveURL(context.Background(), "u", srv.URL+"/old", testFetcher(srv)); err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.Describe("u")
+	if err != nil || b.Name != "q3.pdf" || b.MediaType != "application/pdf" || b.Size != 18 {
+		t.Fatalf("fetched part = %+v %v", b, err)
+	}
+}
+
+func TestFetchRefusals(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/away":
+			http.Redirect(w, r, "http://elsewhere.example/x", http.StatusFound)
+		case "/broken":
+			w.WriteHeader(http.StatusBadGateway)
+		case "/big":
+			w.Write([]byte(strings.Repeat("x", 100)))
+		default:
+			w.Write([]byte("ok"))
+		}
+	}))
+	defer srv.Close()
+	s := New(Config{Root: t.TempDir(), MaxFileSize: 50})
+	cases := []struct {
+		label, url string
+		f          *Fetcher
+		want       string
+	}{
+		{"disabled", srv.URL, NewFetcher(nil, 0), "does not fetch URLs"},
+		{"scheme", "file:///etc/passwd", testFetcher(srv), "not an http or https URL"},
+		{"host outside the list", "http://other.example/x", testFetcher(srv), "not in -files-fetch-hosts"},
+		{"loopback", srv.URL, func() *Fetcher { f := testFetcher(srv); f.blocked = nonPublic; return f }(), "not public"},
+		{"redirect off the list", srv.URL + "/away", testFetcher(srv), "not in -files-fetch-hosts"},
+		{"upstream error", srv.URL + "/broken", testFetcher(srv), "HTTP 502; the fetch may be retried"},
+		{"too large", srv.URL + "/big", testFetcher(srv), "-max-file-size"},
+	}
+	for _, tc := range cases {
+		r := s.NewRequest()
+		err := r.ReceiveURL(context.Background(), "u", tc.url, tc.f)
+		r.Close()
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v, want an error containing %q", tc.label, err, tc.want)
+		}
+	}
+}
