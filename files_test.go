@@ -87,10 +87,10 @@ func TestTheLibraryRefusesFilesItCannotStore(t *testing.T) {
 	if entries, _ := os.ReadDir(filepath.Join(dir, "app.files")); len(entries) != 0 {
 		t.Fatalf("a failed write left %d entries in the namespace's files", len(entries))
 	}
+	st.Insert(ctx, "app", "docs", []map[string]any{{"title": "x"}}, InsertOptions{})
 	if _, _, err := st.OpenFile(ctx, "app", "docs", 1, "title"); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("OpenFile on a string field: %v", err)
 	}
-	st.Insert(ctx, "app", "docs", []map[string]any{{"title": "x"}}, InsertOptions{})
 	if _, _, err := st.OpenFile(ctx, "app", "docs", 1, "doc"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("OpenFile on an empty file field: %v", err)
 	}
