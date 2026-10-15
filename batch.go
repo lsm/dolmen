@@ -78,11 +78,27 @@ func (s *Store) Batch(ctx context.Context, namespace string, writes []BatchWrite
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return BatchResult{}, facadeErr(ctx, err)
 	}
+	var maps []map[string]any
+	for _, w := range eng {
+		maps = append(append(maps, w.Records...), w.Set)
+	}
+	ctx, maps, fp, err := s.withFiles(ctx, maps)
+	if err != nil {
+		return BatchResult{}, facadeErr(ctx, err)
+	}
+	for i := 0; fp != nil && i < len(eng); i++ {
+		n := len(eng[i].Records)
+		if eng[i].Records != nil {
+			eng[i].Records = maps[:n:n]
+		}
+		eng[i].Set, maps = maps[n], maps[n+1:]
+	}
 	res, err := s.eng.Batch(ctx, ns, eng, store.BatchOpts{
 		IdempotencyKey: opts.IdempotencyKey,
 		Limit:          opts.Limit,
 		Confirm:        opts.Confirm,
 	}, s.embedder(), nil, store.Incarnation{})
+	fp.finish(err)
 	if err != nil {
 		return BatchResult{}, facadeErr(ctx, err)
 	}

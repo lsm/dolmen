@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/secret"
 	"github.com/lsm/dolmen/internal/store"
@@ -28,6 +29,7 @@ type Store struct {
 	eng             store.Engine
 	emb             ops.EmbeddingProvider
 	tracing         *telemetry.Tracing
+	files           *files.Store
 	changeRetention time.Duration
 
 	mu       sync.Mutex
@@ -72,7 +74,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 		ownersMu.Unlock()
 		return nil, derr.New(derr.Conflict, "data directory %s is already open in this process; close that store before reopening the directory", dataDir)
 	}
-	s := &Store{dir: dir, emb: cfg.embedding, tracing: tel, changeRetention: cfg.changeRetention, closing: make(chan struct{})}
+	s := &Store{dir: dir, emb: cfg.embedding, tracing: tel, changeRetention: cfg.changeRetention, closing: make(chan struct{}), files: files.New(files.Config{Root: dir})}
 	owners[dir] = s
 	ownersMu.Unlock()
 

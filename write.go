@@ -77,8 +77,13 @@ func (s *Store) Insert(ctx context.Context, namespace, table string, records []m
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
+	ctx, records, fp, err := s.withFiles(ctx, records)
+	if err != nil {
+		return InsertResult{}, facadeErr(ctx, err)
+	}
 	res, err := s.eng.Insert(ctx, ns, ops.NormalizeTable(table), records,
 		store.WriteOpts{IdempotencyKey: opts.IdempotencyKey}, s.embedder(), nil, store.Incarnation{})
+	fp.finish(err)
 	if err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
@@ -108,8 +113,13 @@ func (s *Store) UpsertByKey(ctx context.Context, namespace, table string, on []s
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
+	ctx, records, fp, err := s.withFiles(ctx, records)
+	if err != nil {
+		return InsertResult{}, facadeErr(ctx, err)
+	}
 	res, err := s.eng.UpsertByKey(ctx, ns, ops.NormalizeTable(table), on, records,
 		store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
+	fp.finish(err)
 	if err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
@@ -137,8 +147,13 @@ func (s *Store) Update(ctx context.Context, namespace, table string, opts Update
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return UpdateResult{}, facadeErr(ctx, err)
 	}
-	res, err := s.eng.Update(ctx, ns, ops.NormalizeTable(table), opts.Filter, args, opts.Set,
+	ctx, set, fp, err := s.withFiles(ctx, []map[string]any{opts.Set})
+	if err != nil {
+		return UpdateResult{}, facadeErr(ctx, err)
+	}
+	res, err := s.eng.Update(ctx, ns, ops.NormalizeTable(table), opts.Filter, args, set[0],
 		s.embedder(), nil, store.Incarnation{})
+	fp.finish(err)
 	if err != nil {
 		return UpdateResult{}, facadeErr(ctx, err)
 	}
