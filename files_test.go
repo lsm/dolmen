@@ -155,3 +155,16 @@ func TestAPanickingReaderLeavesNoTemporaryFile(t *testing.T) {
 		t.Fatalf("a panicking reader left %d temporary files", len(entries))
 	}
 }
+
+func TestDroppingANamespaceInTheLibraryRemovesItsFiles(t *testing.T) {
+	st, dir, ctx := openWithDocs(t)
+	if _, err := st.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileUpload{Reader: strings.NewReader("x"), Name: "a.txt"}}}, InsertOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DropNamespace(ctx, "app"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "app.files")); !os.IsNotExist(err) {
+		t.Fatalf("the namespace's files must be gone: %v", err)
+	}
+}
