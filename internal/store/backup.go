@@ -47,6 +47,11 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (B
 	if err := emptyOrAbsent(outDir); err != nil {
 		return BackupManifest{}, err
 	}
+	if ns, err := storedFiles(dataDir, "", 0); err != nil {
+		return BackupManifest{}, err
+	} else if ns != "" {
+		return BackupManifest{}, fmt.Errorf("namespace %s stores files from file fields, which dolmen backup cannot copy yet; stop the server and copy the whole data directory instead", ns)
+	}
 	var names []string
 	if err := walkNamespaces(dataDir, "", &names); err != nil {
 		return BackupManifest{}, fmt.Errorf("list namespaces in %s: %w", dataDir, err)
@@ -316,4 +321,42 @@ func activate(src, target string) error {
 		return err
 	}
 	return os.Remove(tmp)
+}
+
+func storedFiles(dir, prefix string, depth int) (string, error) {
+	if depth >= maxNSDepth {
+		return "", nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		child := name
+		if prefix != "" {
+			child = prefix + "/" + name
+		}
+		if stem, ok := strings.CutSuffix(name, ".files"); ok && nsSegmentRe.MatchString(stem) {
+			full := filepath.Join(dir, name)
+			sub, err := os.ReadDir(full)
+			if err != nil {
+				return "", err
+			}
+			if len(sub) > 0 {
+				return strings.TrimSuffix(child, ".files"), nil
+			}
+			continue
+		}
+		if !nsSegmentRe.MatchString(name) {
+			continue
+		}
+		if ns, err := storedFiles(filepath.Join(dir, name), child, depth+1); err != nil || ns != "" {
+			return ns, err
+		}
+	}
+	return "", nil
 }
