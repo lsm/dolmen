@@ -134,3 +134,34 @@ func TestABatchReplaysOnlyForTheSameBytesWhateverTheKeyCase(t *testing.T) {
 		t.Fatal("different bytes under the same key must not replay, even when the field is spelled in capitals")
 	}
 }
+
+func TestTheBatchFingerprintOfATableWithoutFilesIsUnchanged(t *testing.T) {
+	st, ctx := fileTable(t)
+	if _, err := st.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "title", Type: schema.String}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	writes := []BatchWrite{
+		{Kind: BatchWriteUpdate, Table: "notes", Filter: "id = ?", Args: []any{1}, Set: map[string]any{"TITLE": "x"}},
+		{Kind: BatchWriteDelete, Table: "notes", Filter: "id = ?", Args: []any{2}},
+	}
+	n, err := st.ns("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	sc, err := loadSchema(ctx, n.ro, "app", "notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := BatchPayloadHash(st.secrets, map[string]*schema.TableSchema{"notes": sc}, writes, BatchOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.batchPayloadHash(ctx, n.ro, "app", writes, BatchOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Primary != want.Primary {
+		t.Fatal("a stored batch fingerprint must keep matching: the hash of a batch without file fields changed")
+	}
+}
