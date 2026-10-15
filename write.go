@@ -81,9 +81,11 @@ func (s *Store) Insert(ctx context.Context, namespace, table string, records []m
 	if err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
+	var engErr error
+	defer func() { fp.finish(engErr) }()
 	res, err := s.eng.Insert(ctx, ns, ops.NormalizeTable(table), records,
 		store.WriteOpts{IdempotencyKey: opts.IdempotencyKey}, s.embedder(), nil, store.Incarnation{})
-	fp.finish(err)
+	engErr = err
 	if err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
@@ -117,9 +119,11 @@ func (s *Store) UpsertByKey(ctx context.Context, namespace, table string, on []s
 	if err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
+	var engErr error
+	defer func() { fp.finish(engErr) }()
 	res, err := s.eng.UpsertByKey(ctx, ns, ops.NormalizeTable(table), on, records,
 		store.WriteOpts{}, s.embedder(), nil, store.Incarnation{})
-	fp.finish(err)
+	engErr = err
 	if err != nil {
 		return InsertResult{}, facadeErr(ctx, err)
 	}
@@ -151,9 +155,11 @@ func (s *Store) Update(ctx context.Context, namespace, table string, opts Update
 	if err != nil {
 		return UpdateResult{}, facadeErr(ctx, err)
 	}
+	var engErr error
+	defer func() { fp.finish(engErr) }()
 	res, err := s.eng.Update(ctx, ns, ops.NormalizeTable(table), opts.Filter, args, set[0],
 		s.embedder(), nil, store.Incarnation{})
-	fp.finish(err)
+	engErr = err
 	if err != nil {
 		return UpdateResult{}, facadeErr(ctx, err)
 	}

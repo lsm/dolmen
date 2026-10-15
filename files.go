@@ -2,6 +2,8 @@ package dolmen
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,12 +30,19 @@ type FileInfo struct {
 }
 
 type fileParts struct {
-	req *files.Request
-	n   int
+	req  *files.Request
+	n    int
+	salt string
 }
 
 func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.Context, []map[string]any, *fileParts, error) {
 	var fp *fileParts
+	done := false
+	defer func() {
+		if !done {
+			fp.finish(nil)
+		}
+	}()
 	out := maps
 	copied := map[int]bool{}
 	for i, m := range maps {
@@ -43,15 +52,13 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 				continue
 			}
 			if s.files == nil {
-				fp.finish(nil)
 				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: this store cannot hold files; file fields need the SQLite engine", k)
 			}
 			if f.Reader == nil {
-				fp.finish(nil)
 				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: dolmen.FileUpload needs a Reader", k)
 			}
 			if fp == nil {
-				fp = &fileParts{req: s.files.NewRequest()}
+				fp = &fileParts{req: s.files.NewRequest(), salt: randomSalt()}
 				out = append([]map[string]any(nil), maps...)
 			}
 			if !copied[i] {
@@ -62,14 +69,14 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 				out[i], copied[i] = cp, true
 			}
 			fp.n++
-			part := fmt.Sprintf("file%d", fp.n)
+			part := fmt.Sprintf("upload-%s-%d", fp.salt, fp.n)
 			if err := fp.req.Receive(part, f.Name, f.MediaType, f.Reader); err != nil {
-				fp.finish(nil)
 				return ctx, nil, nil, err
 			}
 			out[i][k] = map[string]any{"part": part}
 		}
 	}
+	done = true
 	if fp == nil {
 		return ctx, maps, nil, nil
 	}
@@ -136,7 +143,13 @@ func (s *Store) OpenFile(ctx context.Context, namespace, table string, id int64,
 	}
 	f, err := s.files.Open(ns, info.SHA256)
 	if err != nil {
-		return nil, FileInfo{}, err
+		return nil, FileInfo{}, &derr.Error{Code: derr.Internal, Message: fmt.Sprintf("the file of %s row %d field %q cannot be read from the file store", table, id, field), Cause: err}
 	}
 	return f, info, nil
+}
+
+func randomSalt() string {
+	var b [12]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }

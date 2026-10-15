@@ -86,6 +86,8 @@ func (s *Store) Batch(ctx context.Context, namespace string, writes []BatchWrite
 	if err != nil {
 		return BatchResult{}, facadeErr(ctx, err)
 	}
+	var engErr error
+	defer func() { fp.finish(engErr) }()
 	for i := 0; fp != nil && i < len(eng); i++ {
 		n := len(eng[i].Records)
 		if eng[i].Records != nil {
@@ -98,7 +100,7 @@ func (s *Store) Batch(ctx context.Context, namespace string, writes []BatchWrite
 		Limit:          opts.Limit,
 		Confirm:        opts.Confirm,
 	}, s.embedder(), nil, store.Incarnation{})
-	fp.finish(err)
+	engErr = err
 	if err != nil {
 		return BatchResult{}, facadeErr(ctx, err)
 	}

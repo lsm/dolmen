@@ -107,3 +107,51 @@ func TestTheCallersRecordsAreNotRewritten(t *testing.T) {
 		t.Fatalf("Insert rewrote the caller's record: %v", rec)
 	}
 }
+
+func TestOpenFileClassifiesAMissingFile(t *testing.T) {
+	st, dir, ctx := openWithDocs(t)
+	res, err := st.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileUpload{Reader: strings.NewReader("gone"), Name: "a.txt"}}}, InsertOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, info := readFile(t, st, ctx, res.Ids[0])
+	if err := os.Remove(filepath.Join(dir, "app.files", info.SHA256[:2], info.SHA256)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = st.OpenFile(ctx, "app", "docs", res.Ids[0], "doc")
+	if !errors.Is(err, ErrInternal) || strings.Contains(err.Error(), dir) {
+		t.Fatalf("a missing file must be ErrInternal without the path, got %v", err)
+	}
+}
+
+func TestAPartMapCannotCaptureAnotherValuesUpload(t *testing.T) {
+	st, _, ctx := openWithDocs(t)
+	_, err := st.Insert(ctx, "app", "docs", []map[string]any{
+		{"doc": FileUpload{Reader: strings.NewReader("mine"), Name: "a.txt"}},
+		{"doc": map[string]any{"part": "file1"}},
+	}, InsertOptions{})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("a part map written through the library must be refused, got %v", err)
+	}
+}
+
+type panickyReader struct{ sent bool }
+
+func (p *panickyReader) Read(b []byte) (int, error) {
+	if !p.sent {
+		p.sent = true
+		return copy(b, "partial"), nil
+	}
+	panic("reader exploded")
+}
+
+func TestAPanickingReaderLeavesNoTemporaryFile(t *testing.T) {
+	st, dir, ctx := openWithDocs(t)
+	func() {
+		defer func() { recover() }()
+		st.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileUpload{Reader: &panickyReader{}, Name: "a.txt"}}}, InsertOptions{})
+	}()
+	if entries, _ := os.ReadDir(filepath.Join(dir, ".files-tmp")); len(entries) != 0 {
+		t.Fatalf("a panicking reader left %d temporary files", len(entries))
+	}
+}
