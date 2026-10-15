@@ -3,11 +3,15 @@ package files
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func TestPendingBytesAreReleasedWhenARequestEnds(t *testing.T) {
@@ -200,5 +204,131 @@ func TestAFailedWriteRemovesAFileOnlyItAttached(t *testing.T) {
 	r.Close()
 	if _, err := s.Open("app", blob.SHA256); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a file only the failed write attached must go: %v", err)
+	}
+}
+
+func TestASweepRemovesOnlyUnreferencedUnpinnedFiles(t *testing.T) {
+	root := t.TempDir()
+	s := New(Config{Root: root, MaxNamespaceFiles: 30})
+	place := func(data string) (store.FileBlob, *Request) {
+		r := s.NewRequest()
+		if err := r.Receive("f", "x", "", strings.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+		b, err := r.Attach(context.Background(), "app", "f")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b, r
+	}
+	kept, r1 := place("referenced")
+	r1.Close()
+	gone, r2 := place("orphan-1")
+	r2.Close()
+	pinned, inFlight := place("in-flight")
+	streaming := s.NewRequest()
+	defer streaming.Close()
+	if err := streaming.Receive("g", "y", "", strings.NewReader("still streaming")); err != nil {
+		t.Fatal(err)
+	}
+	orphanTmp := filepath.Join(root, tmpDirName, "part-crashed")
+	if err := os.WriteFile(orphanTmp, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := s.Sweep("app", map[string]bool{kept.SHA256: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Removed != 1 || res.RemovedBytes != gone.Size || res.Bytes != kept.Size+pinned.Size {
+		t.Fatalf("sweep = %+v", res)
+	}
+	for _, b := range []store.FileBlob{kept, pinned} {
+		if f, err := s.Open("app", b.SHA256); err != nil {
+			t.Fatalf("%s must stay: %v", b.SHA256, err)
+		} else {
+			f.Close()
+		}
+	}
+	if _, err := s.Open("app", gone.SHA256); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the unreferenced file must go: %v", err)
+	}
+	if _, err := os.Stat(orphanTmp); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("a temporary file no request holds must go")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(root, tmpDirName)); len(entries) != 1 {
+		t.Fatalf("the streaming request's temporary file must stay, got %v", entries)
+	}
+	inFlight.Close()
+	if _, r := place("0123456789"); r != nil {
+		r.Close()
+	}
+}
+
+func TestASweepNeverRemovesAPartBeingReceived(t *testing.T) {
+	s := New(Config{Root: t.TempDir()})
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				s.Sweep("app", map[string]bool{})
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for i := 0; i < 300; i++ {
+		r := s.NewRequest()
+		if err := r.Receive("f", "x", "", strings.NewReader(fmt.Sprintf("part %d", i))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Attach(context.Background(), "ns"+fmt.Sprint(i), "f"); err != nil {
+			r.Close()
+			t.Fatalf("attempt %d: a sweep removed a part still being received: %v", i, err)
+		}
+		r.Close()
+	}
+}
+
+func TestAnAbortedSweepStillReleasesWhatItRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not block reads on Windows")
+	}
+	root := t.TempDir()
+	s := New(Config{Root: root, MaxNamespaceFiles: 20})
+	r := s.NewRequest()
+	if err := r.Receive("f", "x", "", strings.NewReader("0123456789abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.Attach(context.Background(), "app", "f")
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.SHA256[:2] == "ff" {
+		t.Skip("the fixture's hash sorts after the unreadable directory")
+	}
+	locked := filepath.Join(root, "app.files", "ff")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if _, err := s.Sweep("app", map[string]bool{}); err == nil {
+		t.Skip("the walk did not fail; running with permissions that ignore mode bits")
+	}
+	r2 := s.NewRequest()
+	defer r2.Close()
+	if err := r2.Receive("g", "y", "", strings.NewReader("ABCDEFGHIJKLMNOP")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r2.Attach(context.Background(), "app", "g"); err != nil {
+		t.Fatalf("the removed file must stop counting toward the cap even when the sweep fails later: %v", err)
 	}
 }

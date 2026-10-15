@@ -57,6 +57,7 @@ type Store struct {
 	totals   map[string]int64
 	pins     map[string]map[string]int
 	attaches map[string]map[string]int
+	live     map[string]bool
 }
 
 func New(cfg Config) *Store {
@@ -69,7 +70,7 @@ func New(cfg Config) *Store {
 	if cfg.MaxPendingFiles <= 0 {
 		cfg.MaxPendingFiles = DefaultMaxPendingFiles
 	}
-	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}}
+	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}}
 }
 
 func (s *Store) tmpDir() string { return filepath.Join(s.cfg.Root, tmpDirName) }
@@ -101,6 +102,7 @@ type part struct {
 	sum       string
 	size      int64
 	pending   int64
+	tmpName   string
 	placed    map[string]bool
 }
 
@@ -135,11 +137,16 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	if err := os.MkdirAll(r.s.tmpDir(), 0o700); err != nil {
 		return err
 	}
+	r.s.mu.Lock()
 	f, err := os.CreateTemp(r.s.tmpDir(), "part-*")
+	if err == nil {
+		r.s.live[f.Name()] = true
+	}
+	r.s.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	p := &part{name: name, filename: BaseName(filename), tmp: f.Name(), placed: map[string]bool{}}
+	p := &part{name: name, filename: BaseName(filename), tmp: f.Name(), tmpName: f.Name(), placed: map[string]bool{}}
 	r.parts[name] = p
 	r.order = append(r.order, name)
 	h := sha256.New()
@@ -237,6 +244,9 @@ func (r *Request) Close() {
 	}
 	r.s.release(pending)
 	r.s.mu.Lock()
+	for _, p := range r.parts {
+		delete(r.s.live, p.tmpName)
+	}
 	for _, pin := range r.pinned {
 		r.s.unpin(pin[0], pin[1])
 	}
@@ -431,3 +441,55 @@ func (s *Store) forget(c created) {
 		delete(s.attaches, c.ns)
 	}
 }
+
+func (s *Store) Sweep(ns string, referenced map[string]bool) (store.FileSweep, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out store.FileSweep
+	dir := s.nsDir(ns)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if !d.Type().IsRegular() || !ValidHash(d.Name()) {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if referenced[d.Name()] || s.pins[ns][d.Name()] > 0 {
+			out.Bytes += info.Size()
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		os.Remove(filepath.Dir(path))
+		if t, ok := s.totals[ns]; ok {
+			s.totals[ns] = t - info.Size()
+		}
+		out.Removed++
+		out.RemovedBytes += info.Size()
+		return nil
+	})
+	if err != nil {
+		return store.FileSweep{}, err
+	}
+	s.totals[ns] = out.Bytes
+	entries, err := os.ReadDir(s.tmpDir())
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return store.FileSweep{}, err
+	}
+	for _, e := range entries {
+		if path := filepath.Join(s.tmpDir(), e.Name()); !s.live[path] {
+			os.Remove(path)
+		}
+	}
+	return out, nil
+}
+
+var _ store.FileSweeper = (*Store)(nil)

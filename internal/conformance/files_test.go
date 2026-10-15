@@ -218,3 +218,23 @@ func TestSetFileConstraints(t *testing.T) {
 		t.Fatalf("on a string field: %d %v", code, body)
 	}
 }
+
+func TestVacuumReportsTheFilesItRemoved(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"q3","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": []byte("quarterly notes")}); code != http.StatusOK {
+		t.Fatalf("multipart insert: %d %v", code, body)
+	}
+	h.mustHTTP("delete", map[string]any{"namespace": "fil", "table": "docs", "filter": "id = ?", "args": []any{1}})
+	res := h.mustHTTP("vacuum", map[string]any{"namespace": "fil"})
+	if res["files_removed"] != float64(1) || res["file_bytes"] != float64(0) {
+		t.Fatalf("http vacuum = %v", res)
+	}
+	again := h.mustMCP("vacuum", map[string]any{"namespace": "fil"})
+	if again["files_removed"] != float64(0) {
+		t.Fatalf("mcp vacuum = %v", again)
+	}
+}

@@ -213,9 +213,26 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, badRequest("field %q of %s is not a file field", field, table))
 		return
 	}
+	if s.beforeFileOpen != nil {
+		s.beforeFileOpen()
+	}
 	f, err := s.files.Open(normNS(ns), ref.sha)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			again, rerr := s.Dispatch(r.Context(), "read_rows", body)
+			if rerr != nil {
+				writeError(w, r, rerr)
+				return
+			}
+			now, rerr := fileRefFrom(again, table, id, field)
+			if rerr != nil {
+				writeError(w, r, rerr)
+				return
+			}
+			if now.sha != ref.sha {
+				writeError(w, r, notFound("the file of row %d changed while it was being downloaded; download it again", id))
+				return
+			}
 			writeError(w, r, internal(fmt.Errorf("file %s of %s row %d field %s is missing from the file store: %w", ref.sha, table, id, field, err)))
 			return
 		}

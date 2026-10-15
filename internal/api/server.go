@@ -48,6 +48,7 @@ type Server struct {
 	metrics            metrics
 	tracing            *telemetry.Tracing
 	files              *files.Store
+	beforeFileOpen     func()
 }
 
 type Option func(*Server)

@@ -560,6 +560,7 @@ var Ops = map[string]OpDef{
 			"On SQLite this rebuilds the namespace file (VACUUM) and truncates its write-ahead log; on PostgreSQL it runs VACUUM on the namespace's tables. " +
 			"Writes to the namespace wait while it runs (a write still waiting at its operation timeout answers timeout; retry it), and it needs free disk space about the size of the namespace. " +
 			"Returns the namespace's on-disk size in bytes before and after. " +
+			"On SQLite it also removes the stored files of file fields that no row references any more, and reports how many and how many bytes the namespace's files still take. " +
 			"Use it after large deletes, or when writes fail because the namespace reached -max-namespace-size. " +
 			"Answers not_found for a namespace that does not exist and creates nothing.",
 		InputSchema: map[string]any{
@@ -569,9 +570,12 @@ var Ops = map[string]OpDef{
 			"required":             []string{"namespace"},
 		},
 		OutputSchema: outSchema(map[string]any{
-			"namespace":    prop("string", "The vacuumed namespace name"),
-			"bytes_before": map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes before the vacuum"},
-			"bytes_after":  map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes after the vacuum"},
+			"namespace":          prop("string", "The vacuumed namespace name"),
+			"bytes_before":       map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes before the vacuum"},
+			"bytes_after":        map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes after the vacuum"},
+			"files_removed":      map[string]any{"type": "integer", "minimum": 0, "description": "Stored files of file fields that no row referenced, removed by this vacuum (SQLite)"},
+			"file_bytes_removed": map[string]any{"type": "integer", "minimum": 0, "description": "Bytes those removed files held (SQLite)"},
+			"file_bytes":         map[string]any{"type": "integer", "minimum": 0, "description": "Bytes of files the namespace still stores, counted once each, as -max-namespace-files-size counts them (SQLite)"},
 		}, "namespace", "bytes_before", "bytes_after"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req nsReq
@@ -579,11 +583,18 @@ var Ops = map[string]OpDef{
 				return nil, err
 			}
 			ns := normNS(req.Namespace)
+			if s.files != nil {
+				ctx = store.WithFileSweeper(ctx, s.files)
+			}
 			res, err := s.eng.Vacuum(ctx, ns)
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			return map[string]any{"namespace": ns, "bytes_before": res.BytesBefore, "bytes_after": res.BytesAfter}, nil
+			out := map[string]any{"namespace": ns, "bytes_before": res.BytesBefore, "bytes_after": res.BytesAfter}
+			if f := res.Files; f != nil {
+				out["files_removed"], out["file_bytes_removed"], out["file_bytes"] = f.Removed, f.RemovedBytes, f.Bytes
+			}
+			return out, nil
 		},
 	},
 	"rotate_secret_key": rotateSecretKeyOp,

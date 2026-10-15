@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -464,5 +466,64 @@ func TestDroppingANamespaceRemovesItsFiles(t *testing.T) {
 	createMeetings(t, srv.URL, nil)
 	if code, body := postMultipart(t, srv.URL, "insert", req, filePart{name: "f", filename: "b.bin", data: []byte("abcdefgh")}); code != http.StatusOK {
 		t.Fatalf("a recreated namespace must start with an empty file total: %d %v", code, body)
+	}
+}
+
+func TestVacuumRemovesFilesNoRowReferences(t *testing.T) {
+	srv, dir := newFileServer(t, files.Config{})
+	createMeetings(t, srv.URL, nil)
+	if code, body := postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"title":"a","recording":{"part":"f"}},{"title":"b","recording":{"part":"g"}}]}`,
+		filePart{name: "f", filename: "a.bin", data: []byte("keep me")}, filePart{name: "g", filename: "b.bin", data: []byte("drop")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	dropped, _ := readRow(t, srv.URL, 2)["recording"].(map[string]any)
+	if code, body := post(t, srv.URL, "update", map[string]any{"namespace": "app", "table": "meetings", "filter": "id = ?", "args": []any{2}, "set": map[string]any{"recording": nil}}); code != http.StatusOK {
+		t.Fatalf("update: %d %v", code, body)
+	}
+	code, body := post(t, srv.URL, "vacuum", map[string]any{"namespace": "app"})
+	if code != http.StatusOK {
+		t.Fatalf("vacuum: %d %v", code, body)
+	}
+	data := body["data"].(map[string]any)
+	if data["files_removed"] != float64(1) || data["file_bytes_removed"] != float64(4) || data["file_bytes"] != float64(7) {
+		t.Fatalf("vacuum result = %v", data)
+	}
+	sum := dropped["sha256"].(string)
+	if _, err := os.Stat(filepath.Join(dir, "app.files", sum[:2], sum)); !os.IsNotExist(err) {
+		t.Fatalf("the unreferenced file must be gone: %v", err)
+	}
+	storedFile(t, dir, "app", readRow(t, srv.URL, 1)["recording"].(map[string]any))
+}
+
+func TestADownloadRacingAVacuumAnswersNotFound(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	api := New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: dir})))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+	createMeetings(t, srv.URL, nil)
+	if code, body := postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"f"}}]}`,
+		filePart{name: "f", filename: "a.bin", data: []byte("racing")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	var raced sync.Once
+	api.beforeFileOpen = func() {
+		raced.Do(func() {
+			ctx := context.Background()
+			api.Dispatch(ctx, "update", []byte(`{"namespace":"app","table":"meetings","filter":"id = ?","args":[1],"set":{"recording":null}}`))
+			api.Dispatch(store.WithFileSweeper(ctx, api.files), "vacuum", []byte(`{"namespace":"app"}`))
+		})
+	}
+	res, err := http.Get(srv.URL + "/v1/files?namespace=app&table=meetings&id=1&field=recording")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a file removed between reading its row and opening it: got %d, want 404", res.StatusCode)
 	}
 }
