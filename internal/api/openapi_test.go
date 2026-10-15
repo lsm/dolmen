@@ -197,6 +197,12 @@ func assertOpenAPIDoc(t *testing.T, doc map[string]any) {
 			t.Fatalf("operation %s must be documented as a POST", name)
 		}
 	}
+	for name := range fileWriteOps {
+		content := paths["/v1/"+name].(map[string]any)["post"].(map[string]any)["requestBody"].(map[string]any)["content"].(map[string]any)
+		if _, ok := content["multipart/form-data"]; !ok {
+			t.Fatalf("%s must document its multipart/form-data body, which carries files", name)
+		}
+	}
 	sub, ok := paths["/v1/subscribe"].(map[string]any)
 	if !ok {
 		t.Fatal("the subscribe stream must be documented: a client working from openapi.json alone must be able to discover live changes")

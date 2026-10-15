@@ -1102,6 +1102,24 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   tool) is not detected, and racing in-flight requests on the namespace may fail, so quiesce writers
   before dropping. A small registry inside each file holds table schemas, versions, and a migration
   log (surfaced by `list_migrations`).
+- **Files**: a `file` field holds a reference to bytes stored beside the namespace in
+  `<data>/<ns>.files/`, content-addressed by SHA-256, so identical bytes are stored once however
+  many rows reference them. A write attaches files in the same call: `insert`, `update`, `upsert`,
+  `upsert_by_key` and `batch` accept `multipart/form-data`, with the JSON request in a first part
+  named `request` and each file in its own part, referenced as `{"part": "<part name>"}`:
+
+  ```bash
+  curl -s http://127.0.0.1:8790/v1/insert \
+    -F 'request={"namespace":"app","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
+    -F 'rec=@standup.ogg'
+  ```
+
+  The media type comes from the part's `Content-Type`, or from the file name's extension when the
+  client sends `application/octet-stream`; a value may set `name` and `media_type` itself. Every
+  read returns the reference `{"sha256", "size", "media_type", "name"}`, never the bytes. A field
+  may declare `max_bytes` and `media_types` (exact, or `audio/*`). MCP calls cannot carry files.
+  File fields exist on the SQLite engine only; PostgreSQL and the lakehouse refuse them for now.
+  `docs/design/object-storage.md` has the design.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Enum-validated writes**: a string field declared `enum: [...]` accepts only those values on every
   write path (`insert`, `update`/`upsert` `set`, `upsert_by_key`) — exact match, no case folding, values
@@ -1300,6 +1318,8 @@ Every row has two implicit columns:
 | `query` / search result bytes | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body size | 32 MiB | rejected with `413 Request Entity Too Large` |
+| One file | `-max-file-size` (1 GiB by default), and the field's `max_bytes` when set | `413` `invalid_request` naming the limit |
+| Files per multipart write | 100 parts, `-max-request-files-size` (2 GiB by default) across them; the `request` part answers to the 32 MiB body limit | `413` `invalid_request` |
 | `query` `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |
 | Column label in `query` | 4096 bytes | rejected |

@@ -139,11 +139,15 @@ func (s *Server) OpenAPIDoc(baseURL string) map[string]any {
 		if dataSchema == nil {
 			dataSchema = map[string]any{"type": "object"}
 		}
+		body := requestBody(def.InputSchema)
+		if fileWriteOps[name] {
+			body["content"].(map[string]any)["multipart/form-data"] = multipartBody()
+		}
 		paths["/v1/"+name] = map[string]any{
 			"post": map[string]any{
 				"operationId": name,
 				"summary":     def.Description,
-				"requestBody": requestBody(def.InputSchema),
+				"requestBody": body,
 				"responses":   opResponses(dataSchema),
 			},
 		}
@@ -442,6 +446,20 @@ func errorResponse(description string) map[string]any {
 			"application/json": map[string]any{
 				"schema": ref("ErrorEnvelope"),
 			},
+		},
+	}
+}
+
+func multipartBody() map[string]any {
+	return map[string]any{
+		"schema": map[string]any{
+			"type":        "object",
+			"description": "The operation's JSON request in the first part, named request, and each file in its own part. A file field's value {\"part\": \"<part name>\"} attaches that part, as curl -F 'request=<json>' -F 'rec=@path'.",
+			"properties": map[string]any{
+				"request": map[string]any{"type": "string", "description": "The operation's JSON request; must be the first part"},
+			},
+			"required":             []string{"request"},
+			"additionalProperties": map[string]any{"type": "string", "format": "binary"},
 		},
 	}
 }

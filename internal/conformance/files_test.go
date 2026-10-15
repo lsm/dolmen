@@ -1,6 +1,11 @@
 package conformance
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"testing"
@@ -83,5 +88,52 @@ func TestAFileValueWithoutItsBytesTeachesMultipart(t *testing.T) {
 	env := h.mcpCall("insert", rec).toolError()
 	if msg, _ := env["message"].(string); !strings.Contains(msg, "curl -F") {
 		t.Fatalf("mcp: %v", env)
+	}
+}
+
+func (h *harness) multipartCall(op, request string, parts map[string][]byte) (int, map[string]any) {
+	h.t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.WriteField("request", request)
+	for name, data := range parts {
+		w, _ := mw.CreateFormFile(name, name+".txt")
+		w.Write(data)
+	}
+	mw.Close()
+	res, err := http.Post(h.srv.URL+"/v1/"+op, mw.FormDataContentType(), &buf)
+	if err != nil {
+		h.t.Fatalf("multipart %s: %v", op, err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		h.t.Fatalf("decode multipart %s: %v", op, err)
+	}
+	return res.StatusCode, out
+}
+
+func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("file fields are SQLite-only for now")
+	}
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	data := []byte("quarterly notes")
+	code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"q3","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": data})
+	if code != http.StatusOK {
+		t.Fatalf("multipart insert: %d %v", code, body)
+	}
+	sum := sha256.Sum256(data)
+	want, _ := json.Marshal(map[string]any{"sha256": hex.EncodeToString(sum[:]), "size": len(data), "media_type": "text/plain", "name": "notes.txt"})
+	reads := map[string]any{
+		"http":  h.mustHTTP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"],
+		"mcp":   h.mustMCP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"],
+		"query": h.mustHTTP("query", map[string]any{"namespace": "fil", "sql": "SELECT doc FROM docs WHERE id = 1"})["rows"].([]any)[0].(map[string]any)["doc"],
+	}
+	for label, v := range reads {
+		if got, _ := json.Marshal(v); string(got) != string(want) {
+			t.Fatalf("%s read of a file field = %s, want %s", label, got, want)
+		}
 	}
 }

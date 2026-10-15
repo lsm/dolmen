@@ -227,6 +227,34 @@ Searches answer with `results`, where `query` and `read_rows` answer with `rows`
 {"ok":true,"data":{"results":[{"id":1,"created_at":"2026-09-23T16:19:06.326Z","title":"auth flow","body":"token expiry not checked","_score":0.9046}],"truncated":false,"skipped_vectors":0,"limit":10}}
 ```
 
+## Files
+
+A `file` field holds a reference to bytes the server stores beside the namespace. Attach a file
+in the same call as the write: send the operation as `multipart/form-data` to `/v1/{operation}`,
+with the JSON request in a first part named `request` and each file in its own part, and write
+`{"part": "<part name>"}` as the field's value. `insert`, `update`, `upsert`, `upsert_by_key` and
+`batch` accept this; you never read the file yourself:
+
+```bash
+base='{{ .BaseURL }}'
+curl -s "${base%/}/v1/insert" \
+  -F 'request={"namespace":"research","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
+  -F 'rec=@/tmp/standup.ogg'
+```
+
+The media type is taken from the part's `Content-Type`, or, when curl sends the default
+`application/octet-stream`, from the file name's extension; add `"media_type": "audio/ogg"` to the
+value to set it yourself, and `"name": "q3.ogg"` to store a different file name. Several records,
+or several fields, may reference the same part. `null` clears the field. A read returns the
+reference, never the bytes: `{"sha256": "9f86…", "size": 48213, "media_type": "audio/ogg",
+"name": "standup.ogg"}`.
+
+MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
+use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
+write: a refusal for size answers `413`, and one for type answers `415` and names the accepted
+types. `storage_unavailable` (503) means the server is holding as much in-flight file data as it
+allows: retry the write shortly. File fields exist on the SQLite engine only for now.
+
 ## JSON-RPC fallback
 
 When the `dolmen` tools are not connected and no user is available to re-run the connection
@@ -383,7 +411,7 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 ## Quick reference
 
 - Core tools: `describe_server`, `whoami` (only when authentication is on), `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `read_rows` (takes `namespace`, `table` and `ids`, up to 1,000 per call, and optional `reveal`), `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
-- Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and `secret` (a string encrypted at rest; see below).
+- Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), `secret` (a string encrypted at rest; see below), and `file` (a reference to stored bytes; see "Files").
 - `secret` fields read back as the fixed mask `"••••"` (or `null` when unset) in every read: `read_rows`, both searches, and `query`. To get the plaintext, name the field in `reveal` on `read_rows`, `search_fulltext` or `search_vector` (`"reveal": ["api_token"]`); `query` never reveals. `query` reads the mask in place of the stored bytes, whatever alias or expression you wrap it in, and search `filter`s evaluate against the ciphertext, so never filter or join on a secret field. Under `-auth on` reveal needs the `reveal` verb (a `forbidden` error names it; `admin` does not imply it), and every reveal is audit-logged without the value. Writing a secret needs the server's secret key; without it the write is refused. Never write a masked value back: `"••••"` is refused as a secret value, because storing it would destroy the real one — pass the real value, `reveal` it first, or omit the field to leave it alone.
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member), `shape` on a `json` field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>` — writes of any other shape are rejected naming the field, the expected shape and what arrived, so send tags as `["db","sqlite"]`, never `"db,sqlite"`; omit it for free-form JSON).
 - `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_state`, which says what the next vectorized write or `text` search will meet: `cached` (the weights are complete on the server, so nothing is downloaded), `download_on_first_use` (an ordinary first run — that first operation downloads a Hugging Face model from the Hub, which can take ten seconds or more and can fail transiently, so retry or pre-seed the cache), or `incomplete` (`DOLMEN_EMBED_MODEL` names a model directory that is not complete, which no download repairs — an operator has to fix or replace it). Read the state before deciding whether semantic search is safe: `download_on_first_use` is a normal cold start, not a broken feature. `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
@@ -585,6 +613,8 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
+| One file | the server's `-max-file-size`, 1 GiB by default, and the field's `max_bytes` when set | `invalid_request` (413) naming the limit |
+| Files per multipart write | 100 parts, 2 GiB across them by default; the `request` part answers to the 32 MiB body limit | `invalid_request` (413) |
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
 {{ if eq .Dialect "postgresql" }}| Database connections | the database's own connection limit, shared by every request and open subscription | `timeout` (504) saying the database is at its connection limit: nothing was started, so retry shortly |
 {{ end }}| `query` / search filter `args` | 100 | rejected |
