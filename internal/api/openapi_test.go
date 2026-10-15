@@ -362,6 +362,10 @@ func TestOpenAPIOutputSchemasMarkRequiredGuaranteedFields(t *testing.T) {
 
 		"read_rows.next_after_id": true,
 
+		"vacuum.files_removed":      true,
+		"vacuum.file_bytes_removed": true,
+		"vacuum.file_bytes":         true,
+
 		"describe_server.auth":         true,
 		"describe_server.capabilities": true,
 	}

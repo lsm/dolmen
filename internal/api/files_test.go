@@ -447,3 +447,29 @@ func TestADownloadServesTheBytesWithSafeHeaders(t *testing.T) {
 		t.Fatalf("range: %d %q", res.StatusCode, got)
 	}
 }
+
+func TestVacuumRemovesFilesNoRowReferences(t *testing.T) {
+	srv, dir := newFileServer(t, files.Config{})
+	createMeetings(t, srv.URL, nil)
+	if code, body := postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"title":"a","recording":{"part":"f"}},{"title":"b","recording":{"part":"g"}}]}`,
+		filePart{name: "f", filename: "a.bin", data: []byte("keep me")}, filePart{name: "g", filename: "b.bin", data: []byte("drop")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	dropped, _ := readRow(t, srv.URL, 2)["recording"].(map[string]any)
+	if code, body := post(t, srv.URL, "update", map[string]any{"namespace": "app", "table": "meetings", "filter": "id = ?", "args": []any{2}, "set": map[string]any{"recording": nil}}); code != http.StatusOK {
+		t.Fatalf("update: %d %v", code, body)
+	}
+	code, body := post(t, srv.URL, "vacuum", map[string]any{"namespace": "app"})
+	if code != http.StatusOK {
+		t.Fatalf("vacuum: %d %v", code, body)
+	}
+	data := body["data"].(map[string]any)
+	if data["files_removed"] != float64(1) || data["file_bytes_removed"] != float64(4) || data["file_bytes"] != float64(7) {
+		t.Fatalf("vacuum result = %v", data)
+	}
+	sum := dropped["sha256"].(string)
+	if _, err := os.Stat(filepath.Join(dir, "app.files", sum[:2], sum)); !os.IsNotExist(err) {
+		t.Fatalf("the unreferenced file must be gone: %v", err)
+	}
+	storedFile(t, dir, "app", readRow(t, srv.URL, 1)["recording"].(map[string]any))
+}
