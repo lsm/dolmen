@@ -305,3 +305,23 @@ func TestCopyFromReusesAReadableRowsFile(t *testing.T) {
 		t.Fatalf("a copy must satisfy the target field's media_types: %v", err)
 	}
 }
+
+func TestCopyFromNormalizesTheSourceTable(t *testing.T) {
+	st, ctx := fileTable(t)
+	src := &fakeFiles{parts: map[string]FileBlob{"f": blob("a", 5)}}
+	if _, err := st.Insert(WithFileSource(ctx, src), "app", "docs", []map[string]any{{"doc": map[string]any{"part": "f"}}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	var reached string
+	cctx := WithCopyReach(WithFileSource(ctx, src), func(_ context.Context, _, table string) (*RowScope, error) {
+		reached = table
+		return nil, nil
+	})
+	rec := map[string]any{"doc": map[string]any{"copy_from": map[string]any{"table": " DOCS ", "id": 1, "field": "doc"}}}
+	if _, err := st.Insert(cctx, "app", "docs", []map[string]any{rec}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatalf("a source table spelled with spaces and capitals must resolve: %v", err)
+	}
+	if reached != "docs" {
+		t.Fatalf("authorization saw table %q, want the normalized name", reached)
+	}
+}

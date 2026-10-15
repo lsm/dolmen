@@ -138,6 +138,8 @@ func parseFileCopy(field string, raw any) (*fileCopy, error) {
 	c := &fileCopy{}
 	c.table, _ = m["table"].(string)
 	c.field, _ = m["field"].(string)
+	c.table = strings.ToLower(strings.TrimSpace(c.table))
+	c.field = strings.ToLower(strings.TrimSpace(c.field))
 	switch id := m["id"].(type) {
 	case json.Number:
 		n, err := id.Int64()
