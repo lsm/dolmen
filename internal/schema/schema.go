@@ -23,6 +23,7 @@ const (
 	JSON      FieldType = "json"
 	Vector    FieldType = "vector"
 	Secret    FieldType = "secret"
+	File      FieldType = "file"
 )
 
 const MaxVectorDim = 4096
@@ -42,6 +43,10 @@ type Field struct {
 	Shape string `json:"shape,omitempty"`
 
 	Default any `json:"default,omitempty"`
+
+	MaxBytes int64 `json:"max_bytes,omitempty"`
+
+	MediaTypes []string `json:"media_types,omitempty"`
 }
 
 type TableSchema struct {
@@ -339,14 +344,21 @@ func validate(fields []Field, legacy map[string]Field) error {
 		}
 		seen[f.Name] = true
 		switch f.Type {
-		case String, Text, Number, Boolean, Timestamp, JSON, Vector, Secret:
+		case String, Text, Number, Boolean, Timestamp, JSON, Vector, Secret, File:
 		default:
-			return fmt.Errorf("field %q: unknown type %q (valid: string, text, number, boolean, timestamp, json, vector, secret)", f.Name, f.Type)
+			return fmt.Errorf("field %q: unknown type %q (valid: string, text, number, boolean, timestamp, json, vector, secret, file)", f.Name, f.Type)
 		}
 		if f.Type == Secret {
 			if err := secretRefusal(f); err != nil {
 				return err
 			}
+		}
+		if f.Type == File {
+			if err := fileRefusal(f); err != nil {
+				return err
+			}
+		} else if f.MaxBytes != 0 || f.MediaTypes != nil {
+			return fmt.Errorf("field %q: max_bytes and media_types are only allowed on file fields (this field has type %s)", f.Name, f.Type)
 		}
 		if f.Fulltext && f.Type != String && f.Type != Text {
 			return fmt.Errorf("field %q: fulltext is only allowed on string or text fields", f.Name)
@@ -429,6 +441,79 @@ func secretRefusal(f Field) error {
 		return SecretRefusal(f.Name, "default")
 	}
 	return nil
+}
+
+func FileRefusal(field, option string) error {
+	return fmt.Errorf("field %q: %s is not allowed on file fields, because a file field holds a reference to stored bytes, not text or a value the schema can describe; keep searchable text or a fixed value in a separate field", field, option)
+}
+
+func fileRefusal(f Field) error {
+	switch {
+	case f.Fulltext:
+		return FileRefusal(f.Name, "fulltext")
+	case f.Vectorize:
+		return FileRefusal(f.Name, "vectorize")
+	case f.Enum != nil:
+		return FileRefusal(f.Name, "enum")
+	case f.Shape != "":
+		return FileRefusal(f.Name, "shape")
+	case f.Default != nil:
+		return FileRefusal(f.Name, "default")
+	}
+	return ValidateFileConstraints(f.Name, f.MaxBytes, f.MediaTypes)
+}
+
+func ValidateFileConstraints(field string, maxBytes int64, mediaTypes []string) error {
+	if maxBytes < 0 {
+		return fmt.Errorf("field %q: max_bytes must be positive; omit it to accept any file up to the server's -max-file-size", field)
+	}
+	if mediaTypes != nil && len(mediaTypes) == 0 {
+		return fmt.Errorf("field %q: media_types must list at least one type; omit it to accept any media type", field)
+	}
+	seen := map[string]bool{}
+	for _, m := range mediaTypes {
+		if err := validMediaTypePattern(m); err != nil {
+			return fmt.Errorf("field %q: media_types entry %q %s", field, m, err)
+		}
+		if seen[m] {
+			return fmt.Errorf("field %q: media_types lists %q twice", field, m)
+		}
+		seen[m] = true
+	}
+	return nil
+}
+
+var mediaTokenRe = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$`)
+
+func validMediaTypePattern(m string) error {
+	typ, sub, ok := strings.Cut(m, "/")
+	if !ok || !mediaTokenRe.MatchString(typ) || (sub != "*" && !mediaTokenRe.MatchString(sub)) {
+		return fmt.Errorf("is not a media type: use lowercase type/subtype, such as application/pdf, or type/* for a whole top-level type, such as audio/*")
+	}
+	return nil
+}
+
+func MediaTypeAllowed(patterns []string, mediaType string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	typ, _, _ := strings.Cut(mediaType, "/")
+	for _, p := range patterns {
+		if p == mediaType || p == typ+"/*" {
+			return true
+		}
+	}
+	return false
+}
+
+func (t TableSchema) FileFields() []Field {
+	var out []Field
+	for _, f := range t.Fields {
+		if f.Type == File {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func (t TableSchema) SecretFields() []Field {

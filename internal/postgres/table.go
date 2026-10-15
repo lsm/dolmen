@@ -137,6 +137,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	if err := store.RequireSecretKey(s.secrets, fields); err != nil {
 		return nil, err
 	}
+	if err := store.RefuseFileFields("postgres", fields); err != nil {
+		return nil, err
+	}
 	if err := schema.ValidateRowAccess(opts.RowAccess); err != nil {
 		return nil, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}

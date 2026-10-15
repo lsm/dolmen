@@ -668,6 +668,9 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
+	if err := store.RefuseFileFields("postgres", addedFields(changes)); err != nil {
+		return nil, err
+	}
 	if err := store.RequireSecretKey(s.secrets, addedFields(changes)); err != nil {
 		return nil, err
 	}
@@ -723,6 +726,9 @@ func (s *Store) Migrate(ctx context.Context, ns, table string, changes []schema.
 func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*schema.TableSchema, error) {
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
+	}
+	if err := store.RefuseFileFields("postgres", addedFields(changes)); err != nil {
+		return nil, err
 	}
 	if err := store.RequireSecretKey(s.secrets, addedFields(changes)); err != nil {
 		return nil, err

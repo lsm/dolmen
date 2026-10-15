@@ -253,7 +253,7 @@ func queryParam(name, desc string, required bool, schema map[string]any) map[str
 func components(authOn bool) map[string]any {
 	fieldTypeEnum := []schema.FieldType{
 		schema.String, schema.Text, schema.Number, schema.Boolean,
-		schema.Timestamp, schema.JSON, schema.Vector, schema.Secret,
+		schema.Timestamp, schema.JSON, schema.Vector, schema.Secret, schema.File,
 	}
 	return map[string]any{
 		"schemas": map[string]any{
@@ -282,7 +282,13 @@ func components(authOn bool) map[string]any {
 					"description": "Required JSON shape of this json field (present when set); writes of any other shape are rejected",
 					"enum":        schema.Shapes,
 				},
-				"default": map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set) — \"now()\" on a timestamp field stamps the server's current time at each write"},
+				"default":   map[string]any{"description": "Value stored when an insert omits the field; exactly as declared (present when set) — \"now()\" on a timestamp field stamps the server's current time at each write"},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "description": "Largest file this file field accepts, in bytes (present when set)"},
+				"media_types": map[string]any{
+					"type":        "array",
+					"description": "Media types this file field accepts, exact or type/* (present when set)",
+					"items":       map[string]any{"type": "string"},
+				},
 			}, []string{"name", "type"}),
 			"TableSchema": tableSchemaComponent(authOn),
 			"Row": map[string]any{
