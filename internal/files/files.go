@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/store"
@@ -135,7 +136,7 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 		return invalid(http.StatusBadRequest, "a request may carry at most %d file parts; split the write into several requests", MaxPartsPerRequest)
 	}
 	if err := os.MkdirAll(r.s.tmpDir(), 0o700); err != nil {
-		return err
+		return storageErr(err)
 	}
 	r.s.mu.Lock()
 	f, err := os.CreateTemp(r.s.tmpDir(), "part-*")
@@ -144,7 +145,7 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	}
 	r.s.mu.Unlock()
 	if err != nil {
-		return err
+		return storageErr(err)
 	}
 	p := &part{name: name, filename: BaseName(filename), tmp: f.Name(), tmpName: f.Name(), placed: map[string]bool{}}
 	r.parts[name] = p
@@ -173,7 +174,7 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 			}
 			if _, err := f.Write(buf[:n]); err != nil {
 				f.Close()
-				return err
+				return storageErr(err)
 			}
 			h.Write(buf[:n])
 			p.size += int64(n)
@@ -189,10 +190,10 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return err
+		return storageErr(err)
 	}
 	if err := f.Close(); err != nil {
-		return err
+		return storageErr(err)
 	}
 	p.sum = hex.EncodeToString(h.Sum(nil))
 	p.mediaType = InferMediaType(contentType, filename, head)
@@ -493,3 +494,10 @@ func (s *Store) Sweep(ns string, referenced map[string]bool) (store.FileSweep, e
 }
 
 var _ store.FileSweeper = (*Store)(nil)
+
+func storageErr(err error) error {
+	if errors.Is(err, syscall.ENOSPC) {
+		return &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: "the server's disk is full, so nothing was written; have the operator free disk space"}
+	}
+	return err
+}

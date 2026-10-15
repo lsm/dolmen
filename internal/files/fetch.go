@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"mime"
 	"net"
 	"net/http"
@@ -106,7 +107,7 @@ func (f *Fetcher) client() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{DialContext: dialer.DialContext, Proxy: nil, ForceAttemptHTTP2: true, IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 4},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
+			if len(via) > 5 {
 				return fetchErr("fetching from %s followed more than 5 redirects; give the file's final URL, or download it with curl -o and send it as a multipart part", via[0].URL.Hostname())
 			}
 			return f.check(req.URL)
@@ -178,8 +179,9 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 	}
 	err = r.Receive(name, filename, res.Header.Get("Content-Type"), res.Body)
 	var fe *Error
+	var pe *fs.PathError
 	switch {
-	case err == nil || errors.As(err, &fe):
+	case err == nil || errors.As(err, &fe) || errors.As(err, &pe):
 		return err
 	case ctx.Err() != nil:
 		return fetchErr("fetching from %s took longer than -files-fetch-timeout (%s); the fetch may be retried", u.Hostname(), f.timeout)

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -230,5 +232,36 @@ func TestFetchRefusalsNameTheCauseAndTheAlternative(t *testing.T) {
 				t.Errorf("%s: %v, want %q and no retry advice", raw, err, w)
 			}
 		}
+	}
+}
+
+func TestFiveRedirectsAreFollowed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := 0
+		fmt.Sscanf(r.URL.Path, "/hop/%d", &n)
+		if n < 5 {
+			http.Redirect(w, r, fmt.Sprintf("/hop/%d", n+1), http.StatusFound)
+			return
+		}
+		w.Write([]byte("arrived"))
+	}))
+	defer srv.Close()
+	s := New(Config{Root: t.TempDir()})
+	r := s.NewRequest()
+	defer r.Close()
+	if err := r.ReceiveURL(context.Background(), "u", srv.URL+"/hop/0", testFetcher(srv)); err != nil {
+		t.Fatalf("a chain of exactly 5 redirects must be followed: %v", err)
+	}
+}
+
+func TestAFullDiskIsInsufficientStorage(t *testing.T) {
+	err := storageErr(&fs.PathError{Op: "write", Path: "/data/.files-tmp/part-1", Err: syscall.ENOSPC})
+	var fe *Error
+	if !errors.As(err, &fe) || fe.Status != http.StatusInsufficientStorage || strings.Contains(fe.Message, "/data") {
+		t.Fatalf("a full disk must be a 507 without the path, got %v", err)
+	}
+	other := &fs.PathError{Op: "open", Path: "/x", Err: syscall.EACCES}
+	if storageErr(other) != error(other) {
+		t.Fatal("other storage errors pass through unchanged")
 	}
 }
