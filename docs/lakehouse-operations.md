@@ -76,12 +76,24 @@ process stops between the two, the next open replays the log.
 A `batch` first snapshots `catalog.db`, so it costs a copy of that file. When any write fails, or the
 process stops before the batch commits, the snapshot is restored and nothing from the batch remains.
 
+## File fields
+
+A `file` field stores its JSON reference as a Parquet string. Attach bytes with a multipart write,
+name a URL the server may fetch with `{"url": "https://…"}`, or reuse a readable row's file with
+`{"copy_from": {"table", "id", "field"}}`, exactly as on SQLite. Blobs live in the sibling
+`<data>/<namespace>.files/` directory and download through `GET /v1/files` with row access checks.
+`set_file_constraints` validates stored sizes and media types and changes only schema metadata.
+Dropping a namespace removes its blobs; dropping a table or field leaves them for `vacuum`.
+See [object storage](design/object-storage.md) for request forms, limits and fetch safeguards.
+
 ## Maintenance and backup
 
 Updates and deletes leave position-delete files, and each write adds a data file, so reads slow
 down as a table takes many small writes. `vacuum` compacts every table in the namespace: it
 rewrites each table's live rows into one Parquet file, drops the delete files, expires every older
-snapshot and removes the files only they referenced, then compacts `catalog.db`. Run it during a
+snapshot and removes the files only they referenced, then compacts `catalog.db`. After successful
+maintenance it scans current file columns and sweeps unreferenced blobs, reporting `files_removed`,
+`file_bytes_removed` and `file_bytes`; failed maintenance or scanning does not sweep. Run it during a
 quiet period: it holds the namespace's writer, and it waits for running queries and holds new ones
 until it finishes. It does not remove every superseded file: each write's earlier
 `vN.metadata.json` stays in the table's `metadata/` directory, and a crash in the middle of a

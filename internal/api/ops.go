@@ -560,7 +560,7 @@ var Ops = map[string]OpDef{
 			"On SQLite this rebuilds the namespace file (VACUUM) and truncates its write-ahead log; on PostgreSQL it runs VACUUM on the namespace's tables. " +
 			"Writes to the namespace wait while it runs (a write still waiting at its operation timeout answers timeout; retry it), and it needs free disk space about the size of the namespace. " +
 			"Returns the namespace's on-disk size in bytes before and after. " +
-			"On SQLite it also removes the stored files of file fields that no row references any more, and reports how many and how many bytes the namespace's files still take. " +
+			"On SQLite and lakehouse it also removes the stored files of file fields that no row references any more, and reports how many and how many bytes the namespace's files still take. " +
 			"Use it after large deletes, or when writes fail because the namespace reached -max-namespace-size. " +
 			"Answers not_found for a namespace that does not exist and creates nothing.",
 		InputSchema: map[string]any{

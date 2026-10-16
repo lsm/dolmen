@@ -70,7 +70,7 @@ func TestFileWritesAcrossOperationsAndReplay(t *testing.T) {
 		if code != http.StatusOK || body["data"].(map[string]any)["replayed"] != true {
 			t.Fatalf("%s replay: %d %v", op, code, body)
 		}
-		if code, body := h.multipartCall(op, request("first"), map[string][]byte{"first": []byte("different bytes")}); code != http.StatusConflict || errCode(body) != "conflict" {
+		if code, body := h.multipartCall(op, request("first"), map[string][]byte{"first": []byte("different bytes")}); code != http.StatusBadRequest || errCode(body) != "conflict" {
 			t.Fatalf("%s different bytes: %d %v", op, code, body)
 		}
 	}

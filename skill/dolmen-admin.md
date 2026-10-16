@@ -831,9 +831,9 @@ match, before ranking.
 - Files are stored once per namespace however many rows reference them, and `drop_namespace`
   deletes them with the namespace. A file stays on disk after the rows referencing it are deleted
   or cleared until `vacuum` removes it; `vacuum` reports `files_removed`, `file_bytes_removed` and
-  `file_bytes`, the total `-max-namespace-files-size` counts. File fields exist only on
-  the SQLite engine for now; `create_table` and `migrate add_field` refuse them on PostgreSQL and
-  the lakehouse.
+  `file_bytes`, the total `-max-namespace-files-size` counts. File fields work on SQLite and
+  lakehouse; `create_table` and `migrate add_field` refuse them on PostgreSQL until the S3 file
+  store lands.
 - `storage_unavailable` (503) means the server holds as much in-flight file data as
   `-max-pending-files-size` allows; the write may be retried. A namespace over
   `-max-namespace-files-size` refuses new files with `507`.
@@ -1054,10 +1054,9 @@ search_fulltext(namespace="research", table="findings", query="auth")   # needs 
 query(namespace="research", sql="SELECT * FROM findings WHERE created_at >= ? ORDER BY created_at DESC", args=["2026-09-01"])
 ```
 
-Internal lakehouse development includes table lifecycle and empty-table schema evolution,
-version guards, dry-run plans and migration history, alongside namespace lifecycle. These
-APIs run directly in SQLite/lakehouse conformance; `-engine lakehouse` remains refused until
-the public-selector slice. Writes and populated-table backfills follow in later slices.
+The lakehouse engine (`-engine lakehouse`) supports table and namespace lifecycle, writes,
+populated-table migrations, version guards, dry-run plans and migration history. File fields
+support the same multipart, URL and `copy_from` values, downloads and vacuum sweeping as SQLite.
 Schema and native Iceberg evolution publish together; stale incarnations cannot drop a
 recreated table on either backend.
 

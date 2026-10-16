@@ -2,11 +2,10 @@
 
 ## Unreleased
 
-- Lakehouse file-constraint migrations validate stored references and update schema metadata
-  without rewriting data. File declarations remain disabled until the parity enablement.
-
-- Lakehouse `vacuum` reports file sweep accounting after successful maintenance. File
-  declarations remain disabled until the remaining parity work lands.
+- **Lakehouse file fields**: multipart, URL and `copy_from` writes, idempotent replay,
+  downloads with row authorization, namespace cleanup, vacuum sweeping and schema-only
+  `set_file_constraints` now share SQLite's behavior. References are stored as Parquet strings;
+  blobs stay beside each namespace in its own `.files` directory.
 
 - Go library: `dolmen.FileCopy` and `dolmen.FileURL` record values, and `WithFileFetch(hosts,
   timeout)` to let `FileURL` fetch.
@@ -23,7 +22,7 @@
   files in the same call as `multipart/form-data` (`curl -F 'request=<json>' -F 'rec=@file'`), and
   `GET /v1/files` downloads one by row. New flags
   `-max-file-size`, `-max-namespace-files-size`, `-max-request-files-size` and
-  `-max-pending-files-size`. SQLite engine only for now.
+  `-max-pending-files-size`. SQLite and lakehouse engines.
 
 - **New error code `storage_unavailable`** (503), reserved for the file store of `file` fields: the
   store cannot take the write right now, and it may be retried. The Go library exports it as

@@ -68,7 +68,7 @@ func TestFileURLWritesReplayAcrossTransportsWithoutFetching(t *testing.T) {
 		t.Fatalf("replays fetched an expired URL: %d", calls.Load())
 	}
 	changed := map[string]any{"namespace": "fil", "table": "docs", "idempotency_key": "url-insert", "records": []any{map[string]any{"doc": map[string]any{"url": "https://files.example/a.txt", "name": "changed.txt"}}}}
-	if code, out := h.httpCall("insert", changed); code != http.StatusConflict || errCode(out) != "conflict" || calls.Load() != 2 {
+	if code, out := h.httpCall("insert", changed); code != http.StatusBadRequest || errCode(out) != "conflict" || calls.Load() != 2 {
 		t.Fatalf("changed override: %d %v, fetches %d", code, out, calls.Load())
 	}
 	insert["idempotency_key"] = "new-url"

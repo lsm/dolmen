@@ -124,9 +124,12 @@ func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
 		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarness(t)
-	h.seedTable("fil", "docs", fileTableFields())
+	fields := fileTableFields()
+	fields[0]["fulltext"] = true
+	fields = append(fields, map[string]any{"name": "v", "type": "vector", "dim": 2})
+	h.seedTable("fil", "docs", fields)
 	data := []byte("quarterly notes")
-	code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"q3","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": data})
+	code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"quarterly","v":[1,0],"doc":{"part":"notes"}}]}`, map[string][]byte{"notes": data})
 	if code != http.StatusOK {
 		t.Fatalf("multipart insert: %d %v", code, body)
 	}
@@ -136,6 +139,18 @@ func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
 		"http":  h.mustHTTP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"],
 		"mcp":   h.mustMCP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"],
 		"query": h.mustHTTP("query", map[string]any{"namespace": "fil", "sql": "SELECT doc FROM docs WHERE id = 1"})["rows"].([]any)[0].(map[string]any)["doc"],
+	}
+	for transport, call := range map[string]func(string, any) map[string]any{"http": h.mustHTTP, "mcp": h.mustMCP} {
+		for op, input := range map[string]map[string]any{
+			"search_fulltext": {"namespace": "fil", "table": "docs", "query": "quarterly"},
+			"search_vector":   {"namespace": "fil", "table": "docs", "column": "v", "vector": []any{1, 0}},
+		} {
+			results := call(op, input)["results"].([]any)
+			if len(results) != 1 {
+				t.Fatalf("%s %s: %v", transport, op, results)
+			}
+			reads[transport+op] = results[0].(map[string]any)["doc"]
+		}
 	}
 	for label, v := range reads {
 		if got, _ := json.Marshal(v); string(got) != string(want) {
@@ -160,7 +175,7 @@ func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
 	}
 	got, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || !bytes.Equal(got, data) || res.Header.Get("X-Content-Type-Options") != "nosniff" || res.Header.Get("Content-Type") != "text/plain" {
+	if res.StatusCode != http.StatusOK || !bytes.Equal(got, data) || res.Header.Get("X-Content-Type-Options") != "nosniff" || res.Header.Get("Content-Type") != "text/plain" || res.Header.Get("Content-Security-Policy") != "sandbox" || !strings.HasPrefix(res.Header.Get("Content-Disposition"), "attachment;") {
 		t.Fatalf("download: %d %q %v", res.StatusCode, got, res.Header)
 	}
 	for query, status := range map[string]int{
