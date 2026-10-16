@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Lakehouse file-constraint migrations validate stored references and update schema metadata
+  without rewriting data. File declarations remain disabled until the parity enablement.
+
 - Lakehouse `vacuum` reports file sweep accounting after successful maintenance. File
   declarations remain disabled until the remaining parity work lands.
 

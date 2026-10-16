@@ -75,6 +75,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 		if err := store.ShapeChangeArgs(i, ch); err != nil {
 			return nil, nil, err
 		}
+		if err := store.FileConstraintArgs(i, ch); err != nil {
+			return nil, nil, err
+		}
 		if next.HasOwner {
 			names := []string{ch.Name, ch.To}
 			if ch.Field != nil {
@@ -247,7 +250,16 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			}
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_row_access %t", *ch.Value))
 		case schema.OpSetFileConstraints:
-			return nil, nil, invalidf("field %q: file fields are not supported on this engine yet, so there are no file constraints to set", ch.Name)
+			index, err := find(ch.Name)
+			if err != nil {
+				return nil, nil, err
+			}
+			field, err := store.FileConstraintField(next.Fields[index], ch)
+			if err != nil {
+				return nil, nil, err
+			}
+			next.Fields[index] = field
+			plan.Operations = append(plan.Operations, fmt.Sprintf("set_file_constraints %s max_bytes=%d media_types=%v", ch.Name, field.MaxBytes, field.MediaTypes))
 		default:
 			return nil, nil, invalidf("unknown migration op %q", ch.Op)
 		}

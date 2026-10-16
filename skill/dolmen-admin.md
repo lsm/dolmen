@@ -816,6 +816,8 @@ match, before ranking.
   `{"sha256", "size", "media_type", "name"}`. Declare one with optional `max_bytes` (the largest
   file it accepts) and `media_types` (exact types such as `application/pdf`, or `audio/*`):
   `{"name":"recording","type":"file","media_types":["audio/*"],"max_bytes":104857600}`.
+- `set_file_constraints` changes `max_bytes` and `media_types` in metadata without rewriting
+  bytes. Stored files must fit; otherwise the refusal names the rows to clear or replace first.
 - `fulltext`, `vectorize`, `enum`, `shape` and `default` are refused on a file field, and a file
   field cannot be an `upsert_by_key` key. Keep searchable text, such as a transcript, in its own
   field.
