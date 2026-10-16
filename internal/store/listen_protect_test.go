@@ -285,12 +285,16 @@ func TestListenProtectQueueSurvivesPrune(t *testing.T) {
 	sess := protectedSession(t, st)
 	sess.queue = []loggedChange{{seq: 5, rec: ChangeRecord{RowID: 2}}, {seq: 6, rec: ChangeRecord{RowID: 3}}}
 	sess.protectQueue()
+	if sess.queueChain == nil {
+		t.Fatal("the queue never received a protective cursor")
+	}
+	protectedAt := time.UnixMilli(sess.queueChain.Start).Add(st.changeRetention / 2)
 
 	tx, err = n.rw.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := pruneChanges(ctx, tx, time.Now(), st.changeRetention); err != nil {
+	if err := pruneChanges(ctx, tx, protectedAt, st.changeRetention); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
