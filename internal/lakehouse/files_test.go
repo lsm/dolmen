@@ -140,3 +140,29 @@ func TestDormantCopyReadsAndAuthorizesInsideTheNamespaceGate(t *testing.T) {
 		t.Fatalf("copy touches %+v", src)
 	}
 }
+
+func TestDormantFileBatchReplayAndValidation(t *testing.T) {
+	s := dormantFileStore(t)
+	src := &testFiles{}
+	ctx := store.WithFileSource(t.Context(), src)
+	writes := []store.BatchWrite{{Kind: store.BatchWriteInsert, Table: "docs", Records: []map[string]any{{"doc": map[string]any{"part": "f"}}}}, {Kind: store.BatchWriteUpdate, Table: "docs", Filter: "id = 1", Set: map[string]any{"doc": map[string]any{"part": "f", "name": "batch.txt"}}}}
+	opts := store.BatchOpts{IdempotencyKey: "batch"}
+	if _, err := s.Batch(ctx, "ns", writes, opts, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if src.attached != 2 {
+		t.Fatalf("batch attached %d times", src.attached)
+	}
+	replay, err := s.Batch(ctx, "ns", writes, opts, store.Embedder{}, nil, store.Incarnation{})
+	if err != nil || !replay.Replayed || src.attached != 2 {
+		t.Fatalf("batch replay %+v, %+v, %v", replay, src, err)
+	}
+	for _, v := range []any{map[string]any{"part": "f", "media_type": "image/png"}, map[string]any{"sha256": strings.Repeat("a", 64)}, map[string]any{"url": "https://x", "part": "f"}} {
+		if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": v}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); !errors.Is(err, store.ErrInvalid) {
+			t.Fatalf("bad file %v: %v", v, err)
+		}
+	}
+	if src.attached != 2 {
+		t.Fatalf("invalid input attached files: %+v", src)
+	}
+}

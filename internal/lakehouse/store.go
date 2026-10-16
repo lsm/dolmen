@@ -185,9 +185,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) withNamespace(ctx context.Context, name string, fn func(*namespace) error) error {
-	if held, ok := ctx.Value(batchKey{}).(string); ok {
+	if held, ok := ctx.Value(namespaceHeldKey{}).(string); ok {
 		if held != name {
-			return invalidf("a batch writes one namespace")
+			return invalidf("an operation holds one namespace")
 		}
 		return s.inNamespace(ctx, name, fn)
 	}

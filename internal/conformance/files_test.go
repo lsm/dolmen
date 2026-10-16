@@ -41,6 +41,11 @@ func TestFileFieldDeclaration(t *testing.T) {
 		if code == http.StatusOK || !strings.Contains(errMessage(body), "file fields are not supported on the") {
 			t.Fatalf("engine %s must refuse a file field with an explanation: %d %v", testEngine(t), code, body)
 		}
+		h.seedTable("fil", "plain", []map[string]any{{"name": "title", "type": "string"}})
+		code, body = h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "plain", "changes": []any{map[string]any{"op": "add_field", "field": map[string]any{"name": "doc", "type": "file"}}}})
+		if code == http.StatusOK || !strings.Contains(errMessage(body), "file fields are not supported on the") {
+			t.Fatalf("engine %s must refuse adding a file field: %d %v", testEngine(t), code, body)
+		}
 		return
 	}
 	h.seedTable("fil", "docs", fileTableFields())

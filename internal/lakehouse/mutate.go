@@ -112,7 +112,7 @@ func (s *Store) currentRows(ctx context.Context, state tableState, ids []int64) 
 	return out, nil
 }
 
-func (s *Store) checkSet(state tableState, set map[string]any) (map[string]any, []string, error) {
+func (s *Store) checkSet(ctx context.Context, ns string, state tableState, set map[string]any, parseOnly bool) (map[string]any, []string, error) {
 	sc := state.schema
 	values := map[string]any{}
 	var cleared []string
@@ -128,7 +128,13 @@ func (s *Store) checkSet(state tableState, set map[string]any) (map[string]any, 
 			cleared = append(cleared, f.Name)
 			continue
 		}
-		coerced, err := s.coerceField(*f, v, "")
+		if parseOnly && f.Type == schema.File {
+			if err := store.ValidateFileValue(*f, v); err != nil {
+				return nil, nil, err
+			}
+			continue
+		}
+		coerced, err := s.coerceField(ctx, ns, *f, v, "")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -137,9 +143,9 @@ func (s *Store) checkSet(state tableState, set map[string]any) (map[string]any, 
 	return values, cleared, nil
 }
 
-func (s *Store) prepareSet(ctx context.Context, state tableState, set map[string]any, emb store.Embedder) (map[string]any, []string, error) {
+func (s *Store) prepareSet(ctx context.Context, ns string, state tableState, set map[string]any, emb store.Embedder) (map[string]any, []string, error) {
 	sc := state.schema
-	values, cleared, err := s.checkSet(state, set)
+	values, cleared, err := s.checkSet(ctx, ns, state, set, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -167,7 +173,10 @@ func (s *Store) prepareSet(ctx context.Context, state tableState, set map[string
 	return values, cleared, nil
 }
 
-func (s *Store) coerceField(f schema.Field, v any, stamp string) (any, error) {
+func (s *Store) coerceField(ctx context.Context, ns string, f schema.Field, v any, stamp string) (any, error) {
+	if f.Type == schema.File {
+		return store.CoerceFile(context.WithValue(ctx, namespaceHeldKey{}, ns), s, ns, f, v)
+	}
 	if f.Type == schema.Timestamp && stamp != "" && schema.IsNowDefault(v) {
 		v = stamp
 	}
@@ -471,7 +480,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 			return err
 		}
 		if !allowInsert {
-			if _, _, err := s.checkSet(state, set); err != nil {
+			if _, _, err := s.checkSet(ctx, ns, state, set, true); err != nil {
 				return err
 			}
 		}
@@ -485,7 +494,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 			if !allowInsert {
 				return nil
 			}
-			rows, err := s.prepareRows(ctx, state, []map[string]any{set}, emb, stamp, opts.Owner)
+			rows, err := s.prepareRows(ctx, ns, state, []map[string]any{set}, emb, stamp, opts.Owner)
 			if err != nil {
 				return err
 			}
@@ -508,7 +517,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 			s.materialize(ctx, n, ns)
 			return nil
 		}
-		values, cleared, err := s.prepareSet(ctx, state, set, emb)
+		values, cleared, err := s.prepareSet(ctx, ns, state, set, emb)
 		if err != nil {
 			return err
 		}
@@ -581,7 +590,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			switch f.Type {
 			case schema.String, schema.Text, schema.Number, schema.Boolean, schema.Timestamp:
 			default:
-				return invalidf("key field %q has type %s; natural keys must be string, text, number, boolean, or timestamp fields (vector and json values do not compare reliably, and secret values are encrypted under a fresh nonce so equal values never match)", k, f.Type)
+				return invalidf("key field %q has type %s; natural keys must be string, text, number, boolean, or timestamp fields (file, vector and json values do not compare reliably, and secret values are encrypted under a fresh nonce so equal values never match)", k, f.Type)
 			}
 		}
 		stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -609,7 +618,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 					return invalidf("records[%d]: key field %q is required", i, k)
 				}
 				f := state.schema.Field(k)
-				coerced, err := s.coerceField(*f, v, stamp)
+				coerced, err := s.coerceField(ctx, ns, *f, v, stamp)
 				if err != nil {
 					return err
 				}
@@ -632,7 +641,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			signature := sig.String()
 			if id, ok := pending[signature]; ok {
 				row := findRow(inserts, updates, id)
-				values, cleared, err := s.prepareSet(ctx, state, rec, emb)
+				values, cleared, err := s.prepareSet(ctx, ns, state, rec, emb)
 				if err != nil {
 					return err
 				}
@@ -653,7 +662,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 				return err
 			}
 			if len(ids) == 0 {
-				rows, err := s.prepareRows(ctx, state, []map[string]any{rec}, emb, stamp, opts.Owner)
+				rows, err := s.prepareRows(ctx, ns, state, []map[string]any{rec}, emb, stamp, opts.Owner)
 				if err != nil {
 					return fmt.Errorf("records[%d]: %w", i, err)
 				}
@@ -685,7 +694,7 @@ func (s *Store) UpsertByKey(ctx context.Context, ns, name string, on []string, r
 			if !ok {
 				return fmt.Errorf("lakehouse row %d matched its key but could not be read", id)
 			}
-			values, cleared, err := s.prepareSet(ctx, state, rec, emb)
+			values, cleared, err := s.prepareSet(ctx, ns, state, rec, emb)
 			if err != nil {
 				return fmt.Errorf("records[%d]: %w", i, err)
 			}

@@ -112,6 +112,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			}
 			var backfill any
 			if ch.Default != nil {
+				if field.Type == schema.File {
+					return nil, nil, invalidf("%s", schema.FileRefusal(field.Name, "default"))
+				}
 				if field.Type == schema.Secret {
 					return nil, nil, invalidf("%s", schema.SecretRefusal(field.Name, "default"))
 				}

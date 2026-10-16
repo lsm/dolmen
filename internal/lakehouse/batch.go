@@ -16,7 +16,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-type batchKey struct{}
+type namespaceHeldKey struct{}
 
 const batchJournal = "catalog.db.batch"
 
@@ -65,7 +65,7 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 		if err := s.beginBatch(ctx, n, ns); err != nil {
 			return err
 		}
-		res, err := s.runBatch(context.WithValue(ctx, batchKey{}, ns), ns, writes, opts, emb, scope)
+		res, err := s.runBatch(context.WithValue(ctx, namespaceHeldKey{}, ns), ns, writes, opts, emb, scope)
 		if err == nil {
 			n = s.namespaces[ns]
 			err = s.commitBatch(ctx, n, opts, hash, res, batchTables(writes))
