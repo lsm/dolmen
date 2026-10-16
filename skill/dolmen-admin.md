@@ -549,7 +549,9 @@ locked-out server.
   disk about the size of the namespace. Run it when a namespace refuses writes at
   `-max-namespace-size` after you deleted rows to make room. Like every read, it never creates a
   namespace. A `conflict` means another process held the file or a reader held the log; the
-  message says which, and retrying once it lets go is safe.
+  message says which, and retrying once it lets go is safe. SQLite and lakehouse also report
+  `files_removed`, `file_bytes_removed` and `file_bytes` after a successful file sweep; failed
+  maintenance does not sweep files.
 - `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
   changes and timestamps — check it after `migrate` to confirm what changed; the newest entry's
   `to_version` is the current schema version.

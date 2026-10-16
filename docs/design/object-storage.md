@@ -301,6 +301,11 @@ sweep looks at it, and the file is kept, or places it after, and finds it gone a
 A write that committed before the sweep is marked by its reference; one still in flight holds a pin.
 Neither order leaves a row pointing at a deleted file.
 
+On lakehouse, the namespace gate and exclusive maintenance barrier cover compaction,
+checkpointing, a streaming scan of the current snapshots' file columns, and the sweep. A failed
+maintenance or reference scan does not sweep any blobs. File bytes stay outside the namespace's
+row/catalog size accounting.
+
 The same pass deletes temporary files under `.files-tmp/` that no request in this process holds
 open; after a restart every one is an orphan. Pins live in memory, which is sound because one data
 directory has one live server.

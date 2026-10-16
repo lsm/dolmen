@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Lakehouse `vacuum` reports file sweep accounting after successful maintenance. File
+  declarations remain disabled until the remaining parity work lands.
+
 - Go library: `dolmen.FileCopy` and `dolmen.FileURL` record values, and `WithFileFetch(hosts,
   timeout)` to let `FileURL` fetch.
 

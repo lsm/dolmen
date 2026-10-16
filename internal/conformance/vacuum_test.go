@@ -26,6 +26,13 @@ func TestVacuumReportsSizesOnBothTransports(t *testing.T) {
 		if out["namespace"] != "vac" {
 			t.Fatalf("%s: namespace %v", name, out["namespace"])
 		}
+		if testEngine(t) == store.EngineSQLite || testEngine(t) == store.EngineLakehouse {
+			for _, key := range []string{"files_removed", "file_bytes_removed", "file_bytes"} {
+				if n, ok := toFloat(out[key]); !ok || n != 0 {
+					t.Fatalf("%s: empty file store %s = %v", name, key, out[key])
+				}
+			}
+		}
 		for _, k := range []string{"bytes_before", "bytes_after"} {
 			n, ok := out[k].(json.Number)
 			if !ok {
