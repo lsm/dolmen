@@ -379,8 +379,10 @@ Each one a PR from main.
    shared coercion/copy helpers and request fingerprints; dormant lakehouse write coercion;
    vacuum reference scans and sweeping; stored-reference checks for `set_file_constraints`;
    then declaration enablement, transport conformance and documentation. The shared copy helper
-   reads only table metadata and rows; lakehouse must supply a reader inside its namespace gate
-   so a copy does not try to acquire that gate again. The fingerprint helpers take the request's
+   reads only table metadata and rows; lakehouse marks the namespace gate as already held while resolving a file, so both the
+   copy reader and its authorization callback can read metadata without reacquiring the gate.
+   Write pre-checks parse file values without fetching, attaching or pinning; coercion resolves
+   them once after matching rows. File fields stay disabled until sweeping and constraint checks land. The fingerprint helpers take the request's
    context and canonicalize file values for every engine, retaining SQLite's existing hashes.
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store.

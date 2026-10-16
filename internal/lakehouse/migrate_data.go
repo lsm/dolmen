@@ -62,6 +62,9 @@ func (s *Store) planData(ctx context.Context, n *namespace, state tableState, ch
 			f := schema.Normalize([]schema.Field{*ch.Field})[0]
 			delete(source, f.Name)
 			if ch.Default != nil {
+				if f.Type == schema.File {
+					return nil, invalidf("%s", schema.FileRefusal(f.Name, "default"))
+				}
 				work.defaults[f.Name] = ch.Default
 				plan.BackfillRows += int64(visible)
 			}
@@ -256,7 +259,7 @@ func (s *Store) rewriteForMigration(ctx context.Context, tx *table.Transaction, 
 		if f == nil {
 			continue
 		}
-		stored, err := s.coerceField(*f, raw, stamp)
+		stored, err := s.coerceField(ctx, state.schema.Namespace, *f, raw, stamp)
 		if err != nil {
 			return err
 		}

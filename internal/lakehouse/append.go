@@ -28,7 +28,6 @@ import (
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
-	"github.com/lsm/dolmen/internal/value"
 )
 
 const commitProperty = "dolmen.commit"
@@ -128,7 +127,7 @@ func canonicalNumber(v any) string {
 	return text
 }
 
-func (s *Store) prepareRows(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder, stamp, owner string) ([]map[string]any, error) {
+func (s *Store) prepareRows(ctx context.Context, ns string, state tableState, records []map[string]any, emb store.Embedder, stamp, owner string) ([]map[string]any, error) {
 	sc := state.schema
 	out := make([]map[string]any, len(records))
 	texts := []string{}
@@ -155,21 +154,9 @@ func (s *Store) prepareRows(ctx context.Context, state tableState, records []map
 				}
 				continue
 			}
-			coerced, err := value.Coerce(f, v)
+			coerced, err := s.coerceField(ctx, ns, f, v, "")
 			if err != nil {
-				return nil, fmt.Errorf("%w: %w", store.ErrInvalid, err)
-			}
-			switch f.Type {
-			case schema.Boolean:
-				coerced = coerced.(int64) != 0
-			case schema.Number:
-				coerced = canonicalNumber(coerced)
-			case schema.Secret:
-				sealed, err := store.SealSecret(s.secrets, f, coerced)
-				if err != nil {
-					return nil, err
-				}
-				coerced = sealed
+				return nil, err
 			}
 			if coerced == nil {
 				continue
@@ -276,7 +263,7 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		}
 		stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 		space, dim := state.schema.EmbedSpace, state.schema.EmbedDim
-		rows, err := s.prepareRows(ctx, state, records, emb, stamp, opts.Owner)
+		rows, err := s.prepareRows(ctx, ns, state, records, emb, stamp, opts.Owner)
 		if err != nil {
 			return err
 		}
