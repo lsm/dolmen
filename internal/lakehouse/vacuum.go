@@ -32,6 +32,17 @@ func (s *Store) Vacuum(ctx context.Context, ns string) (store.VacuumResult, erro
 		if _, err := n.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 			return err
 		}
+		if sw := store.FileSweeperFrom(ctx); sw != nil {
+			refs, err := fileReferences(ctx, n, ns)
+			if err != nil {
+				return err
+			}
+			swept, err := sw.Sweep(ns, refs)
+			if err != nil {
+				return err
+			}
+			res.Files = &swept
+		}
 		res.BytesAfter, err = treeBytes(dir)
 		return err
 	})
@@ -130,4 +141,58 @@ func (s *Store) compact(ctx context.Context, n *namespace, state tableState) err
 		err = errors.Join(err, s.syncMetadata(native, n))
 	}
 	return err
+}
+
+func fileReferences(ctx context.Context, n *namespace, ns string) (map[string]bool, error) {
+	refs := map[string]bool{}
+	for ident, err := range n.catalog.ListTables(ctx, table.Identifier(strings.Split(ns, "/"))) {
+		if err != nil {
+			return nil, err
+		}
+		state, err := loadTable(ctx, n, ns, ident[len(ident)-1])
+		if err != nil {
+			return nil, err
+		}
+		fields := state.schema.FileFields()
+		if len(fields) == 0 || state.native.Metadata().CurrentSnapshot() == nil {
+			continue
+		}
+		names := make([]string, len(fields))
+		for i, f := range fields {
+			names[i] = f.Name
+		}
+		_, records, err := state.native.Scan(table.WithSelectedFields(names...)).ToArrowRecords(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for rec, err := range records {
+			if err != nil {
+				return nil, err
+			}
+			scanErr := func() error {
+				defer rec.Release()
+				for row := 0; row < int(rec.NumRows()); row++ {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					for col := 0; col < int(rec.NumCols()); col++ {
+						v := cellValue(rec.Column(col), row)
+						if v == nil {
+							continue
+						}
+						ref, err := store.ParseFileReference(v)
+						if err != nil {
+							return err
+						}
+						refs[ref.SHA256] = true
+					}
+				}
+				return nil
+			}()
+			if scanErr != nil {
+				return nil, scanErr
+			}
+		}
+	}
+	return refs, nil
 }

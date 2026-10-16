@@ -264,3 +264,33 @@ func TestDormantFileVacuumDoesNotSweepWhenMaintenanceFails(t *testing.T) {
 		t.Fatalf("failed maintenance swept files %d times", sw.calls)
 	}
 }
+
+func TestDormantFileVacuumRefusesUnreadableReferences(t *testing.T) {
+	s := dormantFileStore(t)
+	ctx := t.Context()
+	changeType := func(typ schema.FieldType) {
+		t.Helper()
+		if err := s.withNamespace(ctx, "ns", func(n *namespace) error {
+			state, err := loadTable(ctx, n, "ns", "docs")
+			if err != nil {
+				return err
+			}
+			state.schema.Fields[1].Type = typ
+			return s.publishSchema(ctx, n, state)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changeType(schema.JSON)
+	if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": map[string]any{"not": "a reference"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	changeType(schema.File)
+	sw := &testFileSweeper{}
+	if _, err := s.Vacuum(store.WithFileSweeper(ctx, sw), "ns"); !errors.Is(err, store.ErrCatalogCorrupt) {
+		t.Fatalf("corrupt reference: %v", err)
+	}
+	if sw.calls != 0 {
+		t.Fatal("an incomplete reference scan must never sweep")
+	}
+}
