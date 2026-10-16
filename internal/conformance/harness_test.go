@@ -149,11 +149,12 @@ type harness struct {
 	st  store.Engine
 	emb *fakeProvider
 
-	api    *api.Server
-	grants *auth.Registry
-	authn  *auth.Authenticator
-	oidc   *auth.OIDCSource
-	client *http.Client
+	fileStore *files.Store
+	api       *api.Server
+	grants    *auth.Registry
+	authn     *auth.Authenticator
+	oidc      *auth.OIDCSource
+	client    *http.Client
 
 	mode harnessMode
 
@@ -266,7 +267,8 @@ func (h *harness) serveAPI() {
 	if h.authn != nil {
 		authn = h.authn
 	}
-	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn), api.WithFiles(files.New(files.Config{Root: h.dir})))
+	h.fileStore = files.New(files.Config{Root: h.dir})
+	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn), api.WithFiles(h.fileStore))
 	if h.tracerProvider != nil {
 		tracing, err := telemetry.NewWithMeter(h.tracerProvider, nil, propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}), false)
 		if err != nil {

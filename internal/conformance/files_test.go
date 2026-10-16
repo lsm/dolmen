@@ -35,7 +35,7 @@ func errMessage(body map[string]any) string {
 
 func TestFileFieldDeclaration(t *testing.T) {
 	h := newHarness(t)
-	if testEngine(t) != store.EngineSQLite {
+	if testEngine(t) == store.EnginePostgres {
 		h.ensureNS("fil")
 		code, body := h.httpCall("create_table", map[string]any{"namespace": "fil", "table": "docs", "fields": fileTableFields()})
 		if code == http.StatusOK || !strings.Contains(errMessage(body), "file fields are not supported on the") {
@@ -81,8 +81,8 @@ func TestFileFieldDeclaration(t *testing.T) {
 }
 
 func TestAFileValueWithoutItsBytesTeachesMultipart(t *testing.T) {
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("file fields are SQLite-only for now")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
@@ -120,8 +120,8 @@ func (h *harness) multipartCall(op, request string, parts map[string][]byte) (in
 }
 
 func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("file fields are SQLite-only for now")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
@@ -145,8 +145,8 @@ func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
 }
 
 func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("file fields are SQLite-only for now")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
@@ -181,15 +181,7 @@ func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
 
 func TestSetFileConstraints(t *testing.T) {
 	h := newHarness(t)
-	if testEngine(t) == store.EngineLakehouse {
-		h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
-		code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 1}}})
-		if code != http.StatusBadRequest || !strings.Contains(errMessage(body), "only allowed on file fields") {
-			t.Fatalf("lakehouse non-file constraints: %d %v", code, body)
-		}
-		return
-	}
-	if testEngine(t) != store.EngineSQLite {
+	if testEngine(t) == store.EnginePostgres {
 		h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
 		code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 1}}})
 		if code == http.StatusOK || !strings.Contains(errMessage(body), "not supported on this engine") {
@@ -233,8 +225,8 @@ func TestSetFileConstraints(t *testing.T) {
 }
 
 func TestVacuumReportsTheFilesItRemoved(t *testing.T) {
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("file fields are SQLite-only for now")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
@@ -276,8 +268,8 @@ func (h *harness) multipartAs(t *testing.T, principal, op, request string, parts
 }
 
 func TestCopyFromReusesAFileWithoutReuploading(t *testing.T) {
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("file fields are SQLite-only for now")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
@@ -301,8 +293,8 @@ func TestCopyFromReusesAFileWithoutReuploading(t *testing.T) {
 }
 
 func TestCopyFromNeverReachesAnotherPrincipalsRow(t *testing.T) {
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("file fields are SQLite-only for now")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarnessMode(t, authGateway)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
@@ -324,8 +316,8 @@ func TestCopyFromNeverReachesAnotherPrincipalsRow(t *testing.T) {
 }
 
 func TestAURLValueTeachesTheAlternativeWhenFetchingIsOff(t *testing.T) {
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("file fields are SQLite-only for now")
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL")
 	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())

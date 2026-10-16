@@ -99,3 +99,11 @@ func TestDormantFileConstraintsHideViolatingRowsFromAScopedPlan(t *testing.T) {
 }
 
 func filePtr[T any](v T) *T { return &v }
+
+func TestDormantFileEnumRefusalExplainsFileFields(t *testing.T) {
+	s := dormantFileStore(t)
+	_, err := s.PlanMigration(t.Context(), "ns", "docs", []schema.Change{{Op: schema.OpSetEnum, Name: "doc", Enum: filePtr([]string{"a"})}}, store.Embedder{}, store.Incarnation{}, nil, store.Incarnation{})
+	if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "not allowed on file fields") {
+		t.Fatalf("file enum refusal: %v", err)
+	}
+}
