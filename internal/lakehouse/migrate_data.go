@@ -52,8 +52,12 @@ func (s *Store) planData(ctx context.Context, n *namespace, state tableState, ch
 	}
 	held := len(work.rows)
 	source := map[string]string{}
+	files := map[string]schema.Field{}
 	for _, f := range state.schema.Fields {
 		source[f.Name] = f.Name
+		if f.Type == schema.File {
+			files[f.Name] = f
+		}
 	}
 	rowAccess := state.schema.RowAccess
 	for _, ch := range changes {
@@ -61,6 +65,9 @@ func (s *Store) planData(ctx context.Context, n *namespace, state tableState, ch
 		case schema.OpAddField:
 			f := schema.Normalize([]schema.Field{*ch.Field})[0]
 			delete(source, f.Name)
+			if f.Type == schema.File {
+				files[f.Name] = f
+			}
 			if ch.Default != nil {
 				if f.Type == schema.File {
 					return nil, invalidf("%s", schema.FileRefusal(f.Name, "default"))
@@ -78,6 +85,11 @@ func (s *Store) planData(ctx context.Context, n *namespace, state tableState, ch
 			if ch.To == ch.From {
 				continue
 			}
+			if field, ok := files[ch.From]; ok {
+				field.Name = ch.To
+				files[ch.To] = field
+				delete(files, ch.From)
+			}
 			if src, ok := source[ch.From]; ok {
 				source[ch.To] = src
 				delete(source, ch.From)
@@ -89,6 +101,7 @@ func (s *Store) planData(ctx context.Context, n *namespace, state tableState, ch
 			work.secrets = append(work.secrets, secretMove{from: ch.From, to: ch.To})
 		case schema.OpDropField:
 			delete(source, ch.Name)
+			delete(files, ch.Name)
 			delete(work.defaults, ch.Name)
 			work.secrets = append(work.secrets, secretMove{from: ch.Name, drop: true})
 		case schema.OpSetEnum:
@@ -138,6 +151,39 @@ func (s *Store) planData(ctx context.Context, n *namespace, state tableState, ch
 			}
 			if violating > 0 {
 				return nil, store.ShapeRowsRefusal(ch.Name, *ch.Shape, violating, sample, scope != nil)
+			}
+		case schema.OpSetFileConstraints:
+			field, err := store.FileConstraintField(files[ch.Name], ch)
+			if err != nil {
+				return nil, err
+			}
+			files[ch.Name] = field
+			src, ok := source[ch.Name]
+			if !ok {
+				continue
+			}
+			var violating int64
+			var sample []int64
+			for _, row := range work.rows {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if row[src] == nil {
+					continue
+				}
+				ref, err := store.ParseFileReference(row[src])
+				if err != nil {
+					return nil, err
+				}
+				if field.MaxBytes > 0 && ref.Size > field.MaxBytes || !schema.MediaTypeAllowed(field.MediaTypes, ref.MediaType) {
+					violating++
+					if len(sample) < 5 {
+						sample = append(sample, row["id"].(int64))
+					}
+				}
+			}
+			if violating > 0 {
+				return nil, store.FileRowsRefusal(ch.Name, violating, sample, scope != nil)
 			}
 		case schema.OpSetRowAccess:
 			if *ch.Value && rowAccess != schema.RowAccessOwn && held > 0 {

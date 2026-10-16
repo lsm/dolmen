@@ -64,7 +64,10 @@ through the download endpoint and writes its result back as ordinary fields.
 `upsert_by_key` key. `required` is allowed. `migrate` gains `set_file_constraints` to change
 `max_bytes` and `media_types`. Like `set_enum` it refuses when stored references violate the new
 constraint, reporting how many rows do, and like `set_shape` it names their ids, withholding both
-from a row-scoped caller as those ops do. Because it reads rows, it joins `Change.ReadsRows` and needs
+from a row-scoped caller as those ops do. On lakehouse the plan follows logical file fields
+through rename/drop/add changes, validates each constraint in order against stored reference
+sizes and media types, and changes only catalog metadata; it does not rewrite Parquet or blobs.
+Because it reads rows, it joins `Change.ReadsRows` and needs
 the `read` verb under `-auth on`.
 
 **The value on read.** A non-null file value reads back as an object:

@@ -181,6 +181,14 @@ func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
 
 func TestSetFileConstraints(t *testing.T) {
 	h := newHarness(t)
+	if testEngine(t) == store.EngineLakehouse {
+		h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
+		code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 1}}})
+		if code != http.StatusBadRequest || !strings.Contains(errMessage(body), "only allowed on file fields") {
+			t.Fatalf("lakehouse non-file constraints: %d %v", code, body)
+		}
+		return
+	}
 	if testEngine(t) != store.EngineSQLite {
 		h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
 		code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 1}}})

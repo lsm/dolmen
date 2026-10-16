@@ -17,14 +17,18 @@ type testFiles struct {
 }
 
 func (f *testFiles) Describe(part string) (store.FileBlob, error) {
-	if part != "f" && part != "g" {
+	if part != "f" && part != "g" && part != "large" {
 		return store.FileBlob{}, errors.New("missing part")
 	}
 	sum := "a"
 	if part == "g" {
 		sum = "b"
 	}
-	return store.FileBlob{SHA256: strings.Repeat(sum, 64), Size: 5, MediaType: "text/plain", Name: "a.txt"}, nil
+	size := int64(5)
+	if part == "large" {
+		sum, size = "c", 6
+	}
+	return store.FileBlob{SHA256: strings.Repeat(sum, 64), Size: size, MediaType: "text/plain", Name: "a.txt"}, nil
 }
 func (f *testFiles) Attach(_ context.Context, _, part string) (store.FileBlob, error) {
 	f.attached++

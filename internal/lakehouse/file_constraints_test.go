@@ -77,6 +77,9 @@ func TestDormantFileConstraintsAreSchemaOnlyAndApplyToTheNextWrite(t *testing.T)
 	if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": map[string]any{"part": "f", "media_type": "image/png"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatalf("cleared media constraint: %v", err)
 	}
+	if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": map[string]any{"part": "large"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "max_bytes") {
+		t.Fatalf("new size constraint: %v", err)
+	}
 	history, err := s.ListMigrations(ctx, "ns", "docs", store.Incarnation{})
 	if err != nil || len(history) != 1 {
 		t.Fatalf("history %+v %v", history, err)
