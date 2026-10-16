@@ -3,6 +3,7 @@ package lakehouse
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,14 @@ type testFiles struct {
 }
 
 func (f *testFiles) Describe(part string) (store.FileBlob, error) {
-	if part != "f" {
+	if part != "f" && part != "g" {
 		return store.FileBlob{}, errors.New("missing part")
 	}
-	return store.FileBlob{SHA256: strings.Repeat("a", 64), Size: 5, MediaType: "text/plain", Name: "a.txt"}, nil
+	sum := "a"
+	if part == "g" {
+		sum = "b"
+	}
+	return store.FileBlob{SHA256: strings.Repeat(sum, 64), Size: 5, MediaType: "text/plain", Name: "a.txt"}, nil
 }
 func (f *testFiles) Attach(_ context.Context, _, part string) (store.FileBlob, error) {
 	f.attached++
@@ -164,5 +169,98 @@ func TestDormantFileBatchReplayAndValidation(t *testing.T) {
 	}
 	if src.attached != 2 {
 		t.Fatalf("invalid input attached files: %+v", src)
+	}
+}
+
+type testFileSweeper struct {
+	refs  map[string]bool
+	calls int
+	err   error
+}
+
+func (s *testFileSweeper) Sweep(_ string, refs map[string]bool) (store.FileSweep, error) {
+	s.calls++
+	s.refs = refs
+	return store.FileSweep{Removed: 1, RemovedBytes: 5, Bytes: 10}, s.err
+}
+
+func TestDormantFileVacuumMarksOnlyLiveReferences(t *testing.T) {
+	s := dormantFileStore(t)
+	ctx := store.WithFileSource(t.Context(), &testFiles{})
+	if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": map[string]any{"part": "f"}}, {"doc": map[string]any{"part": "g"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update(ctx, "ns", "docs", "id = 2", nil, map[string]any{"doc": nil}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "other", []schema.Field{{Name: "doc", Type: schema.JSON}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.withNamespace(ctx, "ns", func(n *namespace) error {
+		state, err := loadTable(ctx, n, "ns", "other")
+		if err != nil {
+			return err
+		}
+		state.schema.Fields[0].Type = schema.File
+		return s.publishSchema(ctx, n, state)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "other", []map[string]any{{"doc": map[string]any{"part": "g"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	sw := &testFileSweeper{}
+	res, err := s.Vacuum(store.WithFileSweeper(ctx, sw), "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.calls != 1 || len(sw.refs) != 2 || !sw.refs[strings.Repeat("a", 64)] || !sw.refs[strings.Repeat("b", 64)] {
+		t.Fatalf("live references: %+v", sw)
+	}
+	if res.Files == nil || *res.Files != (store.FileSweep{Removed: 1, RemovedBytes: 5, Bytes: 10}) {
+		t.Fatalf("vacuum result: %+v", res)
+	}
+	if err := s.DropTable(ctx, "ns", "other", store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Vacuum(store.WithFileSweeper(ctx, sw), "ns"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sw.refs) != 1 || !sw.refs[strings.Repeat("a", 64)] {
+		t.Fatalf("dropped table still marked: %v", sw.refs)
+	}
+	plain, err := s.Vacuum(ctx, "ns")
+	if err != nil || plain.Files != nil {
+		t.Fatalf("without sweeper: %+v %v", plain, err)
+	}
+}
+
+func TestDormantFileVacuumDoesNotSweepWhenMaintenanceFails(t *testing.T) {
+	s := dormantFileStore(t)
+	ctx := store.WithFileSource(t.Context(), &testFiles{})
+	for range 2 {
+		if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": map[string]any{"part": "f"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.withNamespace(ctx, "ns", func(n *namespace) error {
+		state, err := loadTable(ctx, n, "ns", "docs")
+		if err != nil {
+			return err
+		}
+		tasks, err := state.native.Scan().PlanFiles(ctx)
+		if err != nil {
+			return err
+		}
+		return os.Remove(localPath(tasks[0].File.FilePath()))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sw := &testFileSweeper{}
+	if _, err := s.Vacuum(store.WithFileSweeper(ctx, sw), "ns"); err == nil {
+		t.Fatal("missing data file must prevent maintenance")
+	}
+	if sw.calls != 0 {
+		t.Fatalf("failed maintenance swept files %d times", sw.calls)
 	}
 }
