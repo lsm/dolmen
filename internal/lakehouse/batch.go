@@ -53,7 +53,7 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 				schemas[w.Table] = state.schema
 			}
 			var err error
-			if hash, err = store.BatchPayloadHash(s.secrets, schemas, writes, opts); err != nil {
+			if hash, err = store.BatchPayloadHash(ctx, s.secrets, schemas, writes, opts); err != nil {
 				return err
 			}
 			replay, found, err := lookupBatch(ctx, n.db, opts.Owner, opts.IdempotencyKey, hash)

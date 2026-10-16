@@ -196,7 +196,40 @@ func fileReference(b FileBlob) (string, error) {
 	return string(raw), nil
 }
 
-func (s *Store) coerceFile(ctx context.Context, nsName string, f schema.Field, v any) (any, error) {
+type FileReader interface {
+	TableState(context.Context, string, string, []AuthBinding) (*schema.TableSchema, Incarnation, error)
+	GetRows(context.Context, string, string, []int64, *RowScope, Incarnation) (QueryResult, error)
+}
+
+func ValidateFileValue(f schema.Field, v any) error {
+	if v == nil {
+		return nil
+	}
+	_, err := parseFileValue(f, v)
+	return err
+}
+
+func ParseFileReference(v any) (FileBlob, error) {
+	raw, err := json.Marshal(v)
+	if text, ok := v.(string); ok {
+		raw = []byte(text)
+	}
+	if err != nil {
+		return FileBlob{}, fmt.Errorf("%w: invalid file reference", ErrCatalogCorrupt)
+	}
+	var ref struct {
+		SHA256    string `json:"sha256"`
+		Size      int64  `json:"size"`
+		MediaType string `json:"media_type"`
+		Name      string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &ref); err != nil || ref.SHA256 == "" || ref.MediaType == "" || ref.Size < 0 {
+		return FileBlob{}, fmt.Errorf("%w: invalid file reference", ErrCatalogCorrupt)
+	}
+	return FileBlob{SHA256: ref.SHA256, Size: ref.Size, MediaType: ref.MediaType, Name: ref.Name}, nil
+}
+
+func CoerceFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, v any) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -205,7 +238,7 @@ func (s *Store) coerceFile(ctx context.Context, nsName string, f schema.Field, v
 		return nil, err
 	}
 	if fv.copy != nil {
-		return s.copyFile(ctx, nsName, f, fv)
+		return copyFile(ctx, reader, nsName, f, fv)
 	}
 	src := fileSourceFrom(ctx)
 	if fv.url != "" {
@@ -246,7 +279,7 @@ func fileLimits(f schema.Field, what string, b FileBlob) error {
 	return nil
 }
 
-func (s *Store) copyFile(ctx context.Context, nsName string, f schema.Field, fv fileValue) (any, error) {
+func copyFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, fv fileValue) (any, error) {
 	c := fv.copy
 	unreadable := invalidf("field %q: copy_from names no file you can read: table %s has no readable row %d with a file in field %q", f.Name, c.table, c.id, c.field)
 	var scope *RowScope
@@ -256,27 +289,20 @@ func (s *Store) copyFile(ctx context.Context, nsName string, f schema.Field, fv 
 			return nil, unreadable
 		}
 	}
-	sc, _, err := s.TableState(ctx, nsName, c.table, nil)
+	sc, _, err := reader.TableState(ctx, nsName, c.table, nil)
 	if err != nil {
 		return nil, unreadable
 	}
 	if src := sc.Field(c.field); src == nil || src.Type != schema.File {
 		return nil, unreadable
 	}
-	res, err := s.GetRows(ctx, nsName, c.table, []int64{c.id}, scope, Incarnation{})
+	res, err := reader.GetRows(ctx, nsName, c.table, []int64{c.id}, scope, Incarnation{})
 	if err != nil || len(res.Rows) == 0 {
 		return nil, unreadable
 	}
-	ref, _ := res.Rows[0][c.field].(map[string]any)
-	if ref == nil {
+	b, err := ParseFileReference(res.Rows[0][c.field])
+	if err != nil {
 		return nil, unreadable
-	}
-	b := FileBlob{}
-	b.SHA256, _ = ref["sha256"].(string)
-	b.MediaType, _ = ref["media_type"].(string)
-	b.Name, _ = ref["name"].(string)
-	if n, ok := ref["size"].(json.Number); ok {
-		b.Size, _ = n.Int64()
 	}
 	b = fv.apply(b)
 	if err := fileLimits(f, fmt.Sprintf("the file of %s row %d", c.table, c.id), b); err != nil {
@@ -350,7 +376,7 @@ func WithFileSweeper(ctx context.Context, sw FileSweeper) context.Context {
 	return context.WithValue(ctx, fileSweeperKey{}, sw)
 }
 
-func fileSweeperFrom(ctx context.Context) FileSweeper {
+func FileSweeperFrom(ctx context.Context) FileSweeper {
 	sw, _ := ctx.Value(fileSweeperKey{}).(FileSweeper)
 	return sw
 }

@@ -82,7 +82,7 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 }
 
 func (s *Store) payloadHash(ctx context.Context, sc *schema.TableSchema, records []map[string]any) IdemHash {
-	h, err := RequestHash(s.secrets, sc, canonicalFiles(ctx, sc, records))
+	h, err := RequestHash(ctx, s.secrets, sc, records)
 	if err != nil {
 		sum := sha256.Sum256([]byte("marshal error: " + err.Error()))
 		return IdemHash{Primary: hex.EncodeToString(sum[:])}

@@ -32,8 +32,8 @@ func (s *Store) presentSecret(reveal map[string]bool, f schema.Field, v any) (an
 	return plain, true, nil
 }
 
-func (s *Store) recordHash(sc *schema.TableSchema, records []map[string]any) (store.IdemHash, error) {
-	return store.RequestHash(s.secrets, sc, records)
+func (s *Store) recordHash(ctx context.Context, sc *schema.TableSchema, records []map[string]any) (store.IdemHash, error) {
+	return store.RequestHash(ctx, s.secrets, sc, records)
 }
 
 func addedFields(changes []schema.Change) []schema.Field {

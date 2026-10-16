@@ -146,6 +146,10 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 		}
 		schemas[w.Table] = sc
 	}
+	return BatchPayloadHash(ctx, s.secrets, schemas, writes, opts)
+}
+
+func BatchPayloadHash(ctx context.Context, keys *secret.Keyring, schemas map[string]*schema.TableSchema, writes []BatchWrite, opts BatchOpts) (IdemHash, error) {
 	canon := make([]BatchWrite, len(writes))
 	for i, w := range writes {
 		if sc := schemas[w.Table]; len(sc.FileFields()) > 0 {
@@ -158,10 +162,7 @@ func (s *Store) batchPayloadHash(ctx context.Context, q rowQuerier, nsName strin
 		}
 		canon[i] = w
 	}
-	return BatchPayloadHash(s.secrets, schemas, canon, opts)
-}
-
-func BatchPayloadHash(keys *secret.Keyring, schemas map[string]*schema.TableSchema, writes []BatchWrite, opts BatchOpts) (IdemHash, error) {
+	writes = canon
 	secrets := false
 	for _, sc := range schemas {
 		if len(sc.SecretFields()) > 0 {

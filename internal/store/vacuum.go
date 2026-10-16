@@ -49,7 +49,7 @@ func (s *Store) Vacuum(ctx context.Context, nsName string) (_ VacuumResult, err 
 		return VacuumResult{}, derr.New(derr.Conflict, "vacuum of namespace %s rebuilt its file, but a reader held the write-ahead log open, so the log was not truncated and its space is not yet returned; retry vacuum once those reads finish (an open subscribe stream or long query counts)", nsName)
 	}
 	var swept *FileSweep
-	if sw := fileSweeperFrom(ctx); sw != nil {
+	if sw := FileSweeperFrom(ctx); sw != nil {
 		refs, err := fileReferences(ctx, conn)
 		if err != nil {
 			return VacuumResult{}, err

@@ -250,7 +250,7 @@ func (s *Store) insertRows(ctx context.Context, ns, table string, records []map[
 			return nil
 		}
 		var err error
-		hash, err = s.recordHash(sc, records)
+		hash, err = s.recordHash(ctx, sc, records)
 		return err
 	}
 	for attempt := 0; attempt < 3; attempt++ {

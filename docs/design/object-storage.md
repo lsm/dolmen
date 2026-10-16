@@ -375,7 +375,13 @@ Each one a PR from main.
      data directory that stores files, naming the namespace, since it cannot copy them yet.
    - 1b: the sweep in `vacuum` and `drop_namespace` removing the store, `set_file_constraints`,
      and the facade's `dolmen.File` and `OpenFile`.
-2. Lakehouse parity, `copy_from`, and server-side fetch.
+2. Lakehouse parity, `copy_from`, and server-side fetch. Lakehouse parity lands in five PRs:
+   shared coercion/copy helpers and request fingerprints; dormant lakehouse write coercion;
+   vacuum reference scans and sweeping; stored-reference checks for `set_file_constraints`;
+   then declaration enablement, transport conformance and documentation. The shared copy helper
+   reads only table metadata and rows; lakehouse must supply a reader inside its namespace gate
+   so a copy does not try to acquire that gate again. The fingerprint helpers take the request's
+   context and canonicalize file values for every engine, retaining SQLite's existing hashes.
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store.
 4. `dolmen backup` and `restore` with blobs.
