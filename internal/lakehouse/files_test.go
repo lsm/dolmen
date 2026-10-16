@@ -37,7 +37,7 @@ func (f *testFiles) Attach(_ context.Context, _, part string) (store.FileBlob, e
 func (f *testFiles) Pin(_, _ string) error                         { f.pinned++; return nil }
 func (f *testFiles) Fetch(context.Context, string) (string, error) { f.fetched++; return "f", nil }
 
-func dormantFileStore(t *testing.T) *Store {
+func fileTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(t.TempDir(), WithSharedFilter(true))
 	if err != nil {
@@ -48,24 +48,15 @@ func dormantFileStore(t *testing.T) *Store {
 	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateTable(ctx, "ns", "docs", []schema.Field{{Name: "title", Type: schema.String}, {Name: "doc", Type: schema.JSON}}, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
+	if _, err := s.CreateTable(ctx, "ns", "docs", []schema.Field{{Name: "title", Type: schema.String}, {Name: "doc", Type: schema.File, MaxBytes: 100, MediaTypes: []string{"text/*"}}}, store.TableOpts{RowAccess: schema.RowAccessOwn}, [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.withNamespace(ctx, "ns", func(n *namespace) error {
-		state, err := loadTable(ctx, n, "ns", "docs")
-		if err != nil {
-			return err
-		}
-		state.schema.Fields[1] = schema.Field{Name: "doc", Type: schema.File, MaxBytes: 100, MediaTypes: []string{"text/*"}}
-		return s.publishSchema(ctx, n, state)
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 	return s
 }
 
-func TestDormantFileWritesAttachOnceAndReplayBeforeFetching(t *testing.T) {
-	s := dormantFileStore(t)
+func TestLakehouseFileWritesAttachOnceAndReplayBeforeFetching(t *testing.T) {
+	s := fileTestStore(t)
 	src := &testFiles{}
 	ctx, cancel := context.WithTimeout(store.WithFileSource(t.Context(), src), 10*time.Second)
 	defer cancel()
@@ -109,8 +100,8 @@ func TestDormantFileWritesAttachOnceAndReplayBeforeFetching(t *testing.T) {
 	}
 }
 
-func TestDormantCopyReadsAndAuthorizesInsideTheNamespaceGate(t *testing.T) {
-	s := dormantFileStore(t)
+func TestLakehouseCopyReadsAndAuthorizesInsideTheNamespaceGate(t *testing.T) {
+	s := fileTestStore(t)
 	src := &testFiles{}
 	ctx, cancel := context.WithTimeout(store.WithFileSource(t.Context(), src), 10*time.Second)
 	defer cancel()
@@ -150,8 +141,8 @@ func TestDormantCopyReadsAndAuthorizesInsideTheNamespaceGate(t *testing.T) {
 	}
 }
 
-func TestDormantFileBatchReplayAndValidation(t *testing.T) {
-	s := dormantFileStore(t)
+func TestLakehouseFileBatchReplayAndValidation(t *testing.T) {
+	s := fileTestStore(t)
 	src := &testFiles{}
 	ctx := store.WithFileSource(t.Context(), src)
 	writes := []store.BatchWrite{{Kind: store.BatchWriteInsert, Table: "docs", Records: []map[string]any{{"doc": map[string]any{"part": "f"}}}}, {Kind: store.BatchWriteUpdate, Table: "docs", Filter: "id = 1", Set: map[string]any{"doc": map[string]any{"part": "f", "name": "batch.txt"}}}}
@@ -188,8 +179,8 @@ func (s *testFileSweeper) Sweep(_ string, refs map[string]bool) (store.FileSweep
 	return store.FileSweep{Removed: 1, RemovedBytes: 5, Bytes: 10}, s.err
 }
 
-func TestDormantFileVacuumMarksOnlyLiveReferences(t *testing.T) {
-	s := dormantFileStore(t)
+func TestLakehouseFileVacuumMarksOnlyLiveReferences(t *testing.T) {
+	s := fileTestStore(t)
 	ctx := store.WithFileSource(t.Context(), &testFiles{})
 	if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": map[string]any{"part": "f"}}, {"doc": map[string]any{"part": "g"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatal(err)
@@ -197,19 +188,10 @@ func TestDormantFileVacuumMarksOnlyLiveReferences(t *testing.T) {
 	if _, err := s.Update(ctx, "ns", "docs", "id = 2", nil, map[string]any{"doc": nil}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateTable(ctx, "ns", "other", []schema.Field{{Name: "doc", Type: schema.JSON}}, store.TableOpts{}, [16]byte{}); err != nil {
+	if _, err := s.CreateTable(ctx, "ns", "other", []schema.Field{{Name: "doc", Type: schema.File}}, store.TableOpts{}, [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.withNamespace(ctx, "ns", func(n *namespace) error {
-		state, err := loadTable(ctx, n, "ns", "other")
-		if err != nil {
-			return err
-		}
-		state.schema.Fields[0].Type = schema.File
-		return s.publishSchema(ctx, n, state)
-	}); err != nil {
-		t.Fatal(err)
-	}
+
 	if _, err := s.Insert(ctx, "ns", "other", []map[string]any{{"doc": map[string]any{"part": "g"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
@@ -239,8 +221,8 @@ func TestDormantFileVacuumMarksOnlyLiveReferences(t *testing.T) {
 	}
 }
 
-func TestDormantFileVacuumDoesNotSweepWhenMaintenanceFails(t *testing.T) {
-	s := dormantFileStore(t)
+func TestLakehouseFileVacuumDoesNotSweepWhenMaintenanceFails(t *testing.T) {
+	s := fileTestStore(t)
 	ctx := store.WithFileSource(t.Context(), &testFiles{})
 	for range 2 {
 		if _, err := s.Insert(ctx, "ns", "docs", []map[string]any{{"doc": map[string]any{"part": "f"}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
@@ -269,8 +251,8 @@ func TestDormantFileVacuumDoesNotSweepWhenMaintenanceFails(t *testing.T) {
 	}
 }
 
-func TestDormantFileVacuumRefusesUnreadableReferences(t *testing.T) {
-	s := dormantFileStore(t)
+func TestLakehouseFileVacuumRefusesUnreadableReferences(t *testing.T) {
+	s := fileTestStore(t)
 	ctx := t.Context()
 	changeType := func(typ schema.FieldType) {
 		t.Helper()

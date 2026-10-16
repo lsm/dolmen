@@ -1132,7 +1132,7 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   `read_rows` on that row, as an attachment with `X-Content-Type-Options: nosniff` and a sandbox
   CSP, supporting `Range` and `ETag`. A field
   may declare `max_bytes` and `media_types` (exact, or `audio/*`). MCP calls cannot carry files.
-  File fields exist on the SQLite engine only; PostgreSQL and the lakehouse refuse them for now.
+  File fields work on SQLite and lakehouse; PostgreSQL refuses them until the S3 file store lands.
   `docs/design/object-storage.md` has the design.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Enum-validated writes**: a string field declared `enum: [...]` accepts only those values on every
@@ -1198,18 +1198,19 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   Tables are never implicit — call `create_table` before inserting, `drop_table` (confirm-guarded)
   to remove one completely. No other management surface to operate.
 
-The lakehouse namespace foundation is available internally for development: each namespace has its
+The lakehouse engine (`-engine lakehouse`) uses local Iceberg tables: each namespace has its
 own SQLite Iceberg catalog at `<data>/<namespace>.lakehouse/catalog.db` and a separate `data/`
 directory for Parquet and Iceberg metadata. Lifecycle conformance runs alongside SQLite, including
 reopen, leaf-only drop and drop/recreate lifetimes. An unpinned drop can remove an unreadable
 catalog or incomplete namespace directory; listing skips incomplete namespaces and valid children
 still block a parent drop. Generation-pinned drops require a readable, matching lifetime. Deploy one process
 per local data directory.
-Internal table lifecycle and schema evolution are also available: create/list/describe/drop,
+Table lifecycle and schema evolution are available: create/list/describe/drop,
 versioned add/rename/drop and metadata migrations, dry-run plans and migration history. Schema
 properties and native Iceberg evolution publish in one catalog update; SQLite tombstones protect
-drop/recreate lifetimes. Populated-table backfills, writes, the DuckDB query sidecar and public
-engine selection follow in later slices; `-engine lakehouse` is still refused. See [the lane plan](docs/design/lakehouse-plan.md).
+drop/recreate lifetimes. The engine supports writes, populated-table backfills, the DuckDB query
+sidecar and file fields with the same attachment, copy, download and vacuum behavior as SQLite.
+See [operations](docs/lakehouse-operations.md) and [the lane plan](docs/design/lakehouse-plan.md).
 
 Storage sits behind the store layer, so engines like DuckDB-over-Parquet or Iceberg-over-S3 can be
 added as adapters without touching the API or MCP surface.

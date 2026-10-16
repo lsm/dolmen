@@ -110,9 +110,6 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err := store.RequireSecretKey(s.secrets, []schema.Field{field}); err != nil {
 				return nil, nil, err
 			}
-			if err := store.RefuseFileFields("lakehouse", []schema.Field{field}); err != nil {
-				return nil, nil, err
-			}
 			var backfill any
 			if ch.Default != nil {
 				if field.Type == schema.File {
@@ -205,6 +202,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			index, err := find(ch.Name)
 			if err != nil {
 				return nil, nil, err
+			}
+			if next.Fields[index].Type == schema.File && len(*ch.Enum) > 0 {
+				return nil, nil, invalidf("%s", schema.FileRefusal(ch.Name, "enum"))
 			}
 			if next.Fields[index].Type != schema.String {
 				return nil, nil, invalidf("enum is only allowed on string fields")

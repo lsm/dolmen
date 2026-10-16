@@ -383,15 +383,18 @@ Each one a PR from main.
      data directory that stores files, naming the namespace, since it cannot copy them yet.
    - 1b: the sweep in `vacuum` and `drop_namespace` removing the store, `set_file_constraints`,
      and the facade's `dolmen.File` and `OpenFile`.
-2. Lakehouse parity, `copy_from`, and server-side fetch. Lakehouse parity lands in five PRs:
+2. Lakehouse parity, `copy_from`, and server-side fetch. Lakehouse parity is implemented in five PRs:
    shared coercion/copy helpers and request fingerprints; dormant lakehouse write coercion;
    vacuum reference scans and sweeping; stored-reference checks for `set_file_constraints`;
    then declaration enablement, transport conformance and documentation. The shared copy helper
-   reads only table metadata and rows; lakehouse marks the namespace gate as already held while resolving a file, so both the
-   copy reader and its authorization callback can read metadata without reacquiring the gate.
+   reads only table metadata and rows; lakehouse marks the namespace gate as already held while
+   resolving a file, so both the copy reader and its authorization callback can read metadata
+   without reacquiring the gate.
    Write pre-checks parse file values without fetching, attaching or pinning; coercion resolves
-   them once after matching rows. File fields stay disabled until sweeping and constraint checks land. The fingerprint helpers take the request's
-   context and canonicalize file values for every engine, retaining SQLite's existing hashes.
+   them once after matching rows. Declarations stayed disabled until sweeping and constraint
+   checks landed. The fingerprint helpers take the request's context and canonicalize file values
+   for every engine, retaining SQLite's existing hashes. SQLite and lakehouse now accept file
+   declarations; PostgreSQL still refuses them until the S3 store exists.
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store.
 4. `dolmen backup` and `restore` with blobs.

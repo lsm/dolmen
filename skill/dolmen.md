@@ -262,7 +262,7 @@ MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused w
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
 write: a refusal for size answers `413`, and one for type answers `415` and names the accepted
 types. `storage_unavailable` (503) means the server is holding as much in-flight file data as it
-allows: retry the write shortly. File fields exist on the SQLite engine only for now.
+allows: retry the write shortly. File fields work on SQLite and lakehouse; PostgreSQL needs the future S3 file store.
 
 ## JSON-RPC fallback
 
@@ -744,9 +744,8 @@ Two things this export cannot carry, which is why restoring from one is a re-imp
   value the server refuses to store. An export of a table with secrets therefore cannot be re-imported
   faithfully. Back that namespace up on the server instead, and keep the bytes out of the conversation.
 
-Internal lakehouse development includes table lifecycle and empty-table schema evolution,
-version guards, dry-run plans and migration history, alongside namespace lifecycle. These
-APIs run directly in SQLite/lakehouse conformance; `-engine lakehouse` remains refused until
-the public-selector slice. Writes and populated-table backfills follow in later slices.
+The lakehouse engine (`-engine lakehouse`) supports table and namespace lifecycle, writes,
+populated-table migrations, version guards, dry-run plans and migration history. File fields
+support the same multipart, URL and `copy_from` values, downloads and vacuum sweeping as SQLite.
 Schema and native Iceberg evolution publish together; stale incarnations cannot drop a
 recreated table on either backend.
