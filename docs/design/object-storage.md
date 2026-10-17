@@ -280,6 +280,26 @@ only the file column and the reference scan the sweep needs.
 renamed. Neither name is a valid namespace segment, so `list_namespaces` never sees them.
 SQLite and the lakehouse put it beside the namespace's `.db` or `.lakehouse/` directory.
 
+**S3** (slice 3). `-files-store s3` keeps blobs in an S3-compatible bucket through `minio-go`, which
+is pure Go. A blob is the object `<prefix><ns>.files/<first two hex>/<sha256>`, mirroring the
+local layout, so dropping `a` never touches `a/b`'s blobs. Parts and fetches still stream to
+`<data>/.files-tmp/` under the same limits, then upload once their hash is known; an object that
+already exists is not uploaded again. The store is configured by flags, each with a
+`DOLMEN_FILES_S3_*` environment variable:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-files-s3-bucket` | none, required | Bucket name |
+| `-files-s3-endpoint` | `https://s3.amazonaws.com` | Endpoint URL; `http://` is allowed, for a local MinIO |
+| `-files-s3-region` | empty | Region; empty lets the client discover it |
+| `-files-s3-prefix` | empty | Key prefix, so one bucket can serve several deployments |
+| `-files-s3-path-style` | `false` | Path-style addressing, which MinIO and some other S3-compatible stores need |
+
+Credentials never come from flags. The client's standard chain reads `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, then `~/.aws/credentials`, then an IAM or IRSA
+role. Startup checks that the bucket is reachable and refuses to start otherwise, naming the
+bucket and the error class. Once running, a store error is `503` `storage_unavailable`.
+
 **PostgreSQL.** Rows live in the database but the local store is on one server's disk, so two servers
 on one catalog would each see half the blobs, and nothing in the engine can tell that a second
 server exists. So until the S3 store exists (slice 3), the postgres engine refuses a `file` field at
@@ -313,6 +333,15 @@ The same pass deletes temporary files under `.files-tmp/` that no request in thi
 open; after a restart every one is an orphan. Pins live in memory, which is sound because one data
 directory has one live server.
 
+**On S3 the pins are not enough.** Several servers can share one PostgreSQL catalog and one bucket,
+and each holds only its own pins, so one server's sweep could delete a blob another server has just
+attached but not yet committed. On S3 the sweep therefore also skips every blob whose object was
+modified within `-files-sweep-grace` (default `24h`). A write that attaches a blob already stored
+and last modified more than half the grace ago refreshes the object's timestamp with an in-place
+copy before it commits, so a blob being re-attached is always inside the window. A write that
+takes longer than half the grace to commit is the one case left uncovered, which is why the grace
+is long. The local store keeps the exact pin rule.
+
 Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`, `batch`
 with its rollback, `drop_field`, `drop_table`, the lakehouse's replayed commit log) would have to keep
 them exact, and one missed decrement leaks a blob forever while one extra deletes a blob a row still
@@ -328,7 +357,8 @@ stored file bytes after the sweep. No other operation's output changes shape.
 |---|---|---|
 | `-max-file-size` | `1GiB` | Largest single file, whatever a field's `max_bytes` says |
 | `-max-namespace-files-size` | `0` | Largest total of one namespace's stored blobs, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`; `0` is unbounded |
-| `-files-store` | `local` | Blob store; `s3` arrives in slice 3 |
+| `-files-store` | `local` | Blob store: `local`, or `s3` (configured as in "Blob store") |
+| `-files-sweep-grace` | `24h` | On S3, how recently modified a blob may be and still be kept by the sweep |
 | `-files-fetch-hosts` | empty | Hosts a `url` value may fetch from; empty disables fetching |
 | `-files-fetch-timeout` | `5m` | Longest one server-side fetch may take |
 | `-max-request-files-size` | `2GiB` | Most file bytes one request may stream, across all its parts and `url` fetches |
@@ -348,7 +378,11 @@ as its own streamed bytes pass `-max-request-files-size`, refused as `413` `inva
 the flag, and a chunk that would push the server's in-flight total past `-max-pending-files-size` is
 refused as `503` `storage_unavailable`, saying the server is busy with other uploads and the write
 may be retried. So `.files-tmp/` never holds more than `-max-pending-files-size`, whatever the number of
-parts or concurrent requests, and a refused write frees its share at once. The refusal of a write
+parts or concurrent requests, and a refused write frees its share at once.
+
+The namespace total is kept in one server's memory, which several servers sharing a bucket cannot
+keep exact, so a non-zero `-max-namespace-files-size` with `-files-store s3` refuses to start,
+saying the cap needs the local store. The temporary-space flags stay per server and apply to S3. The refusal of a write
 over the namespace cap names the namespace's current file bytes, and `vacuum` reports them.
 
 ## Change feed, backup, auth
@@ -396,7 +430,10 @@ Each one a PR from main.
    for every engine, retaining SQLite's existing hashes. SQLite and lakehouse now accept file
    declarations; PostgreSQL still refuses them until the S3 store exists.
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
-   the S3 store.
+   the S3 store, in PRs of their own: the `BlobStore` interface with the local store behind it;
+   `file_url` with signed local URLs; the S3 store and its flags; the sweep's grace window and the
+   refresh on re-attach; then PostgreSQL accepting `file` fields with the S3 store, with transport
+   conformance and documentation.
 4. `dolmen backup` and `restore` with blobs.
 
 ## Decisions
@@ -416,3 +453,16 @@ Settled on 2026-10-14.
 4. **A separate `-max-namespace-files-size`.** Blobs stay out of `-max-namespace-size`, so a large
    file cannot block row writes.
 5. **`copy_from` is allowed**, in slice 2.
+
+Settled on 2026-10-17.
+
+6. **The S3 sweep keeps recent blobs for a grace window**, and re-attaching an old blob refreshes it,
+   because servers sharing a bucket cannot see each other's pins. Pins in PostgreSQL were rejected:
+   every file write would pay extra round trips, and a crashed server's pins would need expiry
+   anyway. Leaving S3 to bucket lifecycle rules was rejected because blobs would leak by default.
+   The per-namespace files cap is refused with S3 rather than enforced inexactly.
+7. **`minio-go` is the S3 client**: one pure-Go module that works with any S3-compatible service,
+   with presigned `GET` and a standard credential chain built in. `aws-sdk-go-v2` was heavier, and
+   hand-rolled SigV4 would make us own the signing code.
+8. **S3 is configured by flags, with credentials from the standard chain only**, never from a flag,
+   so secrets stay out of `ps` and IAM roles work on Kubernetes.
