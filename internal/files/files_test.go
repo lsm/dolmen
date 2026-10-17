@@ -114,7 +114,7 @@ func TestAnAttachedHashStaysPinnedUntilItsRequestEnds(t *testing.T) {
 	if s.Pinned("team/app", b.SHA256) {
 		t.Fatal("closing the request must unpin its hashes")
 	}
-	f, err := s.Open("team/app", b.SHA256)
+	f, err := s.Open(context.Background(), "team/app", b.SHA256)
 	if err != nil {
 		t.Fatalf("a placed file must stay after its request ends: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestIdenticalBytesArePlacedOnceAndTheCapCountsThemOnce(t *testing.T) {
 func TestOpenRefusesWhatIsNotAHash(t *testing.T) {
 	s := New(Config{Root: t.TempDir()})
 	for _, sum := range []string{"", "../x", strings.Repeat("A", 64), strings.Repeat("a", 63)} {
-		if _, err := s.Open("app", sum); !errors.Is(err, fs.ErrNotExist) {
+		if _, err := s.Open(context.Background(), "app", sum); !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("Open(%q) = %v, want not-exist", sum, err)
 		}
 	}
@@ -183,7 +183,7 @@ func TestAFailedWriteKeepsAFileAnotherRequestAttached(t *testing.T) {
 	b.Close()
 	a.Discard()
 	a.Close()
-	f, err := s.Open("app", blob.SHA256)
+	f, err := s.Open(context.Background(), "app", blob.SHA256)
 	if err != nil {
 		t.Fatalf("another request attached this file and may have committed a reference to it: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestAFailedWriteRemovesAFileOnlyItAttached(t *testing.T) {
 	}
 	r.Discard()
 	r.Close()
-	if _, err := s.Open("app", blob.SHA256); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := s.Open(context.Background(), "app", blob.SHA256); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a file only the failed write attached must go: %v", err)
 	}
 }
@@ -236,7 +236,7 @@ func TestASweepRemovesOnlyUnreferencedUnpinnedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := s.Sweep("app", map[string]bool{kept.SHA256: true})
+	res, err := s.Sweep(context.Background(), "app", map[string]bool{kept.SHA256: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,13 +244,13 @@ func TestASweepRemovesOnlyUnreferencedUnpinnedFiles(t *testing.T) {
 		t.Fatalf("sweep = %+v", res)
 	}
 	for _, b := range []store.FileBlob{kept, pinned} {
-		if f, err := s.Open("app", b.SHA256); err != nil {
+		if f, err := s.Open(context.Background(), "app", b.SHA256); err != nil {
 			t.Fatalf("%s must stay: %v", b.SHA256, err)
 		} else {
 			f.Close()
 		}
 	}
-	if _, err := s.Open("app", gone.SHA256); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := s.Open(context.Background(), "app", gone.SHA256); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("the unreferenced file must go: %v", err)
 	}
 	if _, err := os.Stat(orphanTmp); !errors.Is(err, fs.ErrNotExist) {
@@ -276,7 +276,7 @@ func TestASweepNeverRemovesAPartBeingReceived(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				s.Sweep("app", map[string]bool{})
+				s.Sweep(context.Background(), "app", map[string]bool{})
 			}
 		}
 	}()
@@ -320,7 +320,7 @@ func TestAnAbortedSweepStillReleasesWhatItRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(locked, 0o755) })
-	if _, err := s.Sweep("app", map[string]bool{}); err == nil {
+	if _, err := s.Sweep(context.Background(), "app", map[string]bool{}); err == nil {
 		t.Skip("the walk did not fail; running with permissions that ignore mode bits")
 	}
 	r2 := s.NewRequest()
@@ -330,5 +330,40 @@ func TestAnAbortedSweepStillReleasesWhatItRemoved(t *testing.T) {
 	}
 	if _, err := r2.Attach(context.Background(), "app", "g"); err != nil {
 		t.Fatalf("the removed file must stop counting toward the cap even when the sweep fails later: %v", err)
+	}
+}
+
+func TestTheStoreKeepsBlobsInItsConfiguredBlobStore(t *testing.T) {
+	root, blobs := t.TempDir(), t.TempDir()
+	s := New(Config{Root: root, Blobs: NewLocal(blobs)})
+	r := s.NewRequest()
+	if err := r.Receive("f", "a.txt", "", strings.NewReader("hello")); err != nil {
+		t.Fatal(err)
+	}
+	b, err := r.Attach(context.Background(), "app", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	if _, err := os.Stat(filepath.Join(blobs, "app.files", b.SHA256[:2], b.SHA256)); err != nil {
+		t.Fatalf("blob not in the configured blob store: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "app.files")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("blob also written under the data directory: %v", err)
+	}
+	f, err := s.Open(context.Background(), "app", b.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Size() != 5 {
+		t.Fatalf("size = %d, want 5", f.Size())
+	}
+	f.Close()
+	res, err := s.Sweep(context.Background(), "app", map[string]bool{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Removed != 1 {
+		t.Fatalf("sweep removed %d blobs from the configured store, want 1", res.Removed)
 	}
 }

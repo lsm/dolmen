@@ -173,7 +173,7 @@ type testFileSweeper struct {
 	err   error
 }
 
-func (s *testFileSweeper) Sweep(_ string, refs map[string]bool) (store.FileSweep, error) {
+func (s *testFileSweeper) Sweep(_ context.Context, _ string, refs map[string]bool) (store.FileSweep, error) {
 	s.calls++
 	s.refs = refs
 	return store.FileSweep{Removed: 1, RemovedBytes: 5, Bytes: 10}, s.err

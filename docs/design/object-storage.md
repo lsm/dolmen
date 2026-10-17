@@ -263,16 +263,20 @@ environment. Every other rule is the same.
 
 ```go
 type BlobStore interface {
-	Create(ctx context.Context, ns string) (BlobWriter, error)
+	Stat(ctx context.Context, ns, sha256 string) (BlobInfo, error)
+	Put(ctx context.Context, ns, sha256, path string) error
 	Open(ctx context.Context, ns, sha256 string) (Blob, error)
 	Delete(ctx context.Context, ns, sha256 string) error
-	List(ctx context.Context, ns string, fn func(sha256 string, modified time.Time) error) error
+	List(ctx context.Context, ns string, fn func(sha256 string, info BlobInfo) error) error
 	DropNamespace(ctx context.Context, ns string) error
 }
 ```
 
-`BlobWriter` hashes as it writes and commits under its hash; `Blob` is an `io.ReadSeekCloser` with
-its size. The engine never sees bytes. A new `internal/files` package owns the interface, the local
+Parts and fetches are hashed while they stream to `.files-tmp/`, so a store never hashes: `Put`
+takes a finished temporary file already named by its hash, and the file is gone once it returns.
+`BlobInfo` is the blob's size and modification time; `Blob` is an `io.ReadSeekCloser` with its
+size. Pins, attach counts and the namespace totals stay in `files.Store` above the interface, so
+every store shares them. The engine never sees bytes. A new `internal/files` package owns the interface, the local
 implementation, multipart and fetch streaming, the download handler and the sweep; each engine owns
 only the file column and the reference scan the sweep needs.
 
