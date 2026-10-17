@@ -30,6 +30,9 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 	if err := sqliteDataOnly(getenv, "backup"); err != nil {
 		return usageError(fs, stderr, err.Error())
 	}
+	if err := localFilesOnly(getenv, *dataDir, "backup"); err != nil {
+		return usageError(fs, stderr, err.Error())
+	}
 	m, err := store.Backup(context.Background(), *dataDir, *outDir, []string{auth.RegistryFile})
 	if err != nil {
 		return err
@@ -58,6 +61,9 @@ func runRestore(args []string, getenv func(string) string, stdout, stderr io.Wri
 		return usageError(fs, stderr, "-from is required: name the directory dolmen backup wrote")
 	}
 	if err := sqliteDataOnly(getenv, "restore"); err != nil {
+		return usageError(fs, stderr, err.Error())
+	}
+	if err := localFilesOnly(getenv, *dataDir, "restore"); err != nil {
 		return usageError(fs, stderr, err.Error())
 	}
 	m, err := store.Restore(context.Background(), *fromDir, *dataDir)
@@ -92,9 +98,6 @@ func usageError(fs *flag.FlagSet, stderr io.Writer, msg string) error {
 }
 
 func sqliteDataOnly(getenv func(string) string, what string) error {
-	if getenv("DOLMEN_FILES_STORE") == "s3" {
-		return fmt.Errorf("%s copies files from the data directory, but DOLMEN_FILES_STORE=s3 keeps them in an S3 bucket; back up the bucket with your own S3 tooling, and use this command only with the local file store", what)
-	}
 	switch getenv("DOLMEN_ENGINE") {
 	case store.EnginePostgres:
 		return fmt.Errorf("%s works on a SQLite data directory; for a PostgreSQL deployment use pg_dump and pg_restore (see docs/postgresql-operations.md)", what)

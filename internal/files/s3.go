@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -163,18 +165,66 @@ func (b *s3Blobs) List(ctx context.Context, ns string, fn func(sum string, info 
 	return nil
 }
 
+const dropTimeout = 10 * time.Minute
+
 func (b *s3Blobs) DropNamespace(ctx context.Context, ns string) error {
-	var sums []string
-	if err := b.List(ctx, ns, func(sum string, _ BlobInfo) error {
-		sums = append(sums, sum)
-		return nil
-	}); err != nil {
-		return err
-	}
-	for _, sum := range sums {
-		if err := b.Delete(ctx, ns, sum); err != nil {
-			return err
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dropTimeout)
+	defer cancel()
+	var failed error
+	for attempt := 0; attempt < 3; attempt++ {
+		objects := make(chan minio.ObjectInfo)
+		go func() {
+			defer close(objects)
+			for obj := range b.client.ListObjects(ctx, b.bucket, minio.ListObjectsOptions{Prefix: b.nsPrefix(ns), Recursive: true}) {
+				if obj.Err != nil {
+					return
+				}
+				objects <- obj
+			}
+		}()
+		failed = nil
+		for res := range b.client.RemoveObjects(ctx, b.bucket, objects, minio.RemoveObjectsOptions{}) {
+			if res.Err != nil && failed == nil {
+				failed = unavailable(res.Err)
+			}
+		}
+		if failed == nil {
+			left := false
+			for obj := range b.client.ListObjects(ctx, b.bucket, minio.ListObjectsOptions{Prefix: b.nsPrefix(ns), Recursive: true, MaxKeys: 1}) {
+				if obj.Err != nil {
+					failed = unavailable(obj.Err)
+				} else {
+					left = true
+				}
+				break
+			}
+			if failed == nil && !left {
+				return nil
+			}
 		}
 	}
-	return nil
+	if failed == nil {
+		failed = errors.New("objects remained under the namespace's prefix after three passes")
+	}
+	return failed
+}
+
+const storeMarkerFile = "files.store"
+
+func MarkS3(dataDir string) error {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dataDir, storeMarkerFile), []byte("s3\n"), 0o644)
+}
+
+func UsesS3(dataDir string) (bool, error) {
+	b, err := os.ReadFile(filepath.Join(dataDir, storeMarkerFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(b)) == "s3", nil
 }

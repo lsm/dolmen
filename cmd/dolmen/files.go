@@ -55,6 +55,17 @@ func checkFilesStore(kind, bucket string, cfg files.Config) error {
 	return nil
 }
 
+func localFilesOnly(getenv func(string) string, dataDir, what string) error {
+	inS3, err := files.UsesS3(dataDir)
+	if err != nil {
+		return err
+	}
+	if getenv("DOLMEN_FILES_STORE") == "s3" || inS3 {
+		return fmt.Errorf("%s copies files through the data directory, but this deployment keeps them in an S3 bucket (-files-store s3); back up the bucket with your own S3 tooling, and use this command only with the local file store", what)
+	}
+	return nil
+}
+
 func newFileStore(cfg *config) (*files.Store, error) {
 	c := cfg.Files
 	c.Root = cfg.DataDir
@@ -63,6 +74,9 @@ func newFileStore(cfg *config) (*files.Store, error) {
 		defer cancel()
 		blobs, err := files.NewS3(ctx, cfg.FilesS3)
 		if err != nil {
+			return nil, err
+		}
+		if err := files.MarkS3(cfg.DataDir); err != nil {
 			return nil, err
 		}
 		c.Blobs = blobs

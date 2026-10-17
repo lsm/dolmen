@@ -356,20 +356,27 @@ func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, 
 			s.attaches[ns][p.sum] = n + 1
 		}
 	case err == nil || errors.Is(err, fs.ErrNotExist):
-		total, terr := s.namespaceTotal(ns)
-		if terr != nil {
-			return store.FileBlob{}, terr
+		var total int64
+		capped := s.cfg.MaxNamespaceFiles > 0
+		if capped {
+			t, terr := s.namespaceTotal(ns)
+			if terr != nil {
+				return store.FileBlob{}, terr
+			}
+			total = t
 		}
 		if err == nil {
 			total -= info.Size
 		}
-		if s.cfg.MaxNamespaceFiles > 0 && total+p.size > s.cfg.MaxNamespaceFiles {
+		if capped && total+p.size > s.cfg.MaxNamespaceFiles {
 			return store.FileBlob{}, &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
 		}
 		if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
 			return store.FileBlob{}, storageErr(err)
 		}
-		s.totals[ns] = total + p.size
+		if capped {
+			s.totals[ns] = total + p.size
+		}
 		if s.attaches[ns] == nil {
 			s.attaches[ns] = map[string]int{}
 		}
@@ -415,8 +422,8 @@ func (r *Request) Discard() {
 	defer s.mu.Unlock()
 	for _, c := range r.created {
 		if s.attaches[c.ns][c.sum] == 1 {
-			if s.blobs.Delete(context.Background(), c.ns, c.sum) == nil {
-				s.totals[c.ns] -= c.size
+			if t, ok := s.totals[c.ns]; s.blobs.Delete(context.Background(), c.ns, c.sum) == nil && ok {
+				s.totals[c.ns] = t - c.size
 			}
 		}
 		s.forget(c)

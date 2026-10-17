@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -96,6 +97,20 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 				return ""
 			}
 			return runBackup([]string{"-out", t.TempDir()}, s3, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "back up the bucket with your own S3 tooling"},
+		{"backup of a data directory a flag-configured S3 server used", func() error {
+			dir := t.TempDir()
+			if err := files.MarkS3(dir); err != nil {
+				return err
+			}
+			return runBackup([]string{"-out", t.TempDir(), "-data", dir}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "back up the bucket with your own S3 tooling"},
+		{"restore into a data directory an S3 server uses", func() error {
+			dir := t.TempDir()
+			if err := files.MarkS3(dir); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", t.TempDir(), "-data", dir}, env, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "back up the bucket with your own S3 tooling"},
 		{"backup on the lakehouse engine", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})

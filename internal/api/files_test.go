@@ -18,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -515,5 +516,44 @@ func TestADownloadRacingAVacuumAnswersNotFound(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("a file removed between reading its row and opening it: got %d, want 404", res.StatusCode)
+	}
+}
+
+type unreachableOpens struct {
+	files.BlobStore
+	down bool
+}
+
+func (u *unreachableOpens) Open(ctx context.Context, ns, sum string) (files.Blob, error) {
+	if u.down {
+		return nil, &files.Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: "the file store did not answer"}
+	}
+	return u.BlobStore.Open(ctx, ns, sum)
+}
+
+func TestADownloadFromAnUnreachableStoreIsStorageUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	blobs := &unreachableOpens{BlobStore: files.NewLocal(dir)}
+	api := New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: dir, Blobs: blobs})))
+	srv := httptest.NewServer(api.Handler())
+	t.Cleanup(srv.Close)
+	createMeetings(t, srv.URL, nil)
+	if code, body := postMultipart(t, srv.URL, "insert", `{"namespace":"app","table":"meetings","records":[{"recording":{"part":"f"}}]}`,
+		filePart{name: "f", filename: "a.bin", data: []byte("bytes")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	blobs.down = true
+	res, err := http.Get(srv.URL + "/v1/files?namespace=app&table=meetings&id=1&field=recording")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a download while the file store is unreachable: got %d, want 503", res.StatusCode)
 	}
 }
