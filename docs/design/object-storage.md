@@ -230,7 +230,9 @@ A local URL is absolute, built from the same public base URL the served skills u
 (`DOLMEN_BASE_URL`, else the request's host and forwarding headers, plus `-prefix`). Over the
 stdio MCP transport there is no HTTP endpoint to link to, so `file_url` there is
 `invalid_request` saying to call it over HTTP. A signed download needs no credential: the
-signature is the authorization, checked against the row's current hash before any byte is served.
+signature is the authorization. The link carries the hash it was issued for as `sha256`, so the
+signature is checked over the link's own parameters before any row is read; only then is the row
+read and its current hash compared with the link's.
 A link that is expired answers `403` `forbidden` naming its expiry; one whose signature does not
 match, whose row is gone, or whose file was replaced answers one `403` `forbidden` for all three,
 so a forged link learns nothing about which rows exist. Both say to call `file_url` again.
