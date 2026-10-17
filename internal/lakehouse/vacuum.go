@@ -23,6 +23,10 @@ func (s *Store) Vacuum(ctx context.Context, ns string) (store.VacuumResult, erro
 		if res.BytesBefore, err = treeBytes(dir); err != nil {
 			return err
 		}
+		if err := s.stampVacuum(ns, false); err != nil {
+			return err
+		}
+		defer s.stampVacuum(ns, true)
 		if err := s.maintain(ctx, n, ns); err != nil {
 			return err
 		}
