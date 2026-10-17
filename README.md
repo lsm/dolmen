@@ -1130,7 +1130,10 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   read returns the reference `{"sha256", "size", "media_type", "name"}`, never the bytes.
   `GET /v1/files?namespace=&table=&id=&field=` downloads them with the same authorization as
   `read_rows` on that row, as an attachment with `X-Content-Type-Options: nosniff` and a sandbox
-  CSP, supporting `Range` and `ETag`. A field
+  CSP, supporting `Range` and `ETag`. `file_url` returns `{"url", "expires_at"}`, a link to that
+  download that needs no credentials, for `ttl_seconds` (default 900, at most 3600); it is signed
+  with HMAC-SHA256 under a key kept at `<data>/files.key`, and stops working once the row's file is
+  replaced. A field
   may declare `max_bytes` and `media_types` (exact, or `audio/*`). MCP calls cannot carry files.
   File fields work on SQLite and lakehouse; PostgreSQL refuses them until the S3 file store lands.
   `docs/design/object-storage.md` has the design.

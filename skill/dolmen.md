@@ -258,6 +258,11 @@ as `read_rows` on that row, and supports `Range`:
 curl -s -o standup.ogg "${base%/}/v1/files?namespace=research&table=meetings&id=1&field=recording"
 ```
 
+To hand a file to a tool that has no dolmen credentials, call `file_url` with the same
+`namespace`, `table`, `id` and `field`. It returns `{"url", "expires_at"}`: a link that anyone
+holding it can GET, for `ttl_seconds` (default 900, at most 3600), and only until the row's file
+is replaced. Treat the URL like a password for that one file.
+
 MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
 write: a refusal for size answers `413`, and one for type answers `415` and names the accepted

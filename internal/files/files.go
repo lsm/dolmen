@@ -66,6 +66,7 @@ type Store struct {
 	live     map[string]bool
 	fetcher  *Fetcher
 	blobs    BlobStore
+	signer   *Signer
 }
 
 func New(cfg Config) *Store {
@@ -85,7 +86,7 @@ func New(cfg Config) *Store {
 	if cfg.Blobs == nil {
 		cfg.Blobs = NewLocal(cfg.Root)
 	}
-	return &Store{cfg: cfg, blobs: cfg.Blobs, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
+	return &Store{cfg: cfg, blobs: cfg.Blobs, signer: &Signer{path: filepath.Join(cfg.Root, signingKeyFile)}, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
 }
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }

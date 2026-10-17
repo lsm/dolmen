@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/store"
@@ -515,5 +517,18 @@ func TestADownloadRacingAVacuumAnswersNotFound(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("a file removed between reading its row and opening it: got %d, want 404", res.StatusCode)
+	}
+}
+
+func TestASignedDownloadPastItsExpiryIsRefused(t *testing.T) {
+	q := url.Values{"exp": {"1000"}, "sig": {"00"}}
+	if _, _, err := signedDownloadContext(context.Background(), q, time.Unix(1001, 0)); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("a link past exp must be refused as expired, got %v", err)
+	}
+	if _, exp, err := signedDownloadContext(context.Background(), q, time.Unix(1000, 0)); err != nil || exp != 1000 {
+		t.Fatalf("a link at its exp second still works, got %d %v", exp, err)
+	}
+	if _, _, err := signedDownloadContext(context.Background(), url.Values{"sig": {"00"}}, time.Unix(0, 0)); err == nil {
+		t.Fatal("a link without exp must be refused")
 	}
 }

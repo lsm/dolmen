@@ -125,6 +125,10 @@ func parityScript() []parityStep {
 	}
 }
 
+var parityPinnedElsewhere = map[string]string{
+	"file_url": "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
+}
+
 func TestTransportParityAllOperations(t *testing.T) {
 	httpH := newHarness(t)
 	mcpH := newHarness(t)
@@ -136,7 +140,7 @@ func TestTransportParityAllOperations(t *testing.T) {
 		covered[step.op] = true
 	}
 	for _, name := range api.OpNames() {
-		if !covered[name] {
+		if !covered[name] && parityPinnedElsewhere[name] == "" {
 			t.Errorf("parity script never exercises operation %q", name)
 		}
 	}

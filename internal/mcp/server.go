@@ -67,6 +67,7 @@ var toolAnnotations = map[string]map[string]any{
 	"batch":           {"title": "Batch writes", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"upsert_by_key":   {"title": "Upsert by natural key", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"file_url":        {"title": "Get a file download URL", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"read_rows":       {"title": "Read rows by id", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"tokenize":        {"title": "Tokenize text", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
@@ -204,7 +205,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	instr := skill.MCPInstructions(s.api.PublicContext(r))
-	result, rpcErr := s.handle(r.Context(), msg, instr)
+	result, rpcErr := s.handle(api.WithPublicBase(r.Context(), s.api.PublicBase(r)), msg, instr)
 	if rpcErr != nil {
 		s.api.ArmResponseWrite(w)
 		writeRPCError(w, msg.ID, rpcErr.Code, rpcErr.Message)
