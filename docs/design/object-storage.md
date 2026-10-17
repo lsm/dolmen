@@ -310,7 +310,8 @@ PostgreSQL. From slice 3 it accepts them only with the S3 store configured.
 
 **Metadata.** There is no blob table. The store's directory is the set of stored hashes, and each
 reference carries its size. A blob table would have to be written in the same transaction as every
-write on every engine; the pins below give the same safety with no schema change.
+write on every engine; the pins below (and on S3, PostgreSQL's namespace lock) give the same
+safety with no schema change.
 
 ## Garbage collection
 
@@ -342,7 +343,8 @@ every write takes the namespace's catalog row `FOR NO KEY UPDATE` in its transac
 design orders blobs by that lock instead of by pins:
 
 - A part or fetched file uploads to its final key before the write takes the lock, so the lock is
-  never held for an upload.
+  not held for the ordinary upload; only the re-upload below, after a sweep raced the write, runs
+  under it.
 - Inside the write's transaction, after taking the lock, attaching a blob (a `part`, a `url` or a
   `copy_from`) checks that its object exists. If a sweep removed it in between, a `part` or `url`
   re-uploads it from the request's temporary file, which lives until the request ends; a
