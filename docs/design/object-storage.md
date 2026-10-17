@@ -284,7 +284,9 @@ SQLite and the lakehouse put it beside the namespace's `.db` or `.lakehouse/` di
 is pure Go. A blob is the object `<prefix><ns>.files/<first two hex>/<sha256>`, mirroring the
 local layout, so dropping `a` never touches `a/b`'s blobs. Parts and fetches still stream to
 `<data>/.files-tmp/` under the same limits, then upload once their hash is known; an object that
-already exists is not uploaded again. The store is configured by flags, each with a
+already exists is not uploaded again. S3 caps a single `PUT` and a single server-side copy at
+5 GiB, so a blob larger than that uploads as a multipart upload and is copied part by part
+(`UploadPartCopy`), which keeps `-max-file-size` unbounded on S3 as on the local store. The store is configured by flags, each with a
 `DOLMEN_FILES_S3_*` environment variable:
 
 | Flag | Default | Meaning |
@@ -338,7 +340,7 @@ and each holds only its own pins, so one server's sweep could delete a blob anot
 attached but not yet committed. On S3 the sweep therefore also skips every blob whose object was
 modified within `-files-sweep-grace` (default `24h`). A write that attaches a blob already stored
 and last modified more than half the grace ago refreshes the object's timestamp with an in-place
-copy before it commits, so a blob being re-attached is always inside the window. A write that
+copy (multipart past 5 GiB, as above) before it commits, so a blob being re-attached is always inside the window. A write that
 takes longer than half the grace to commit is the one case left uncovered, which is why the grace
 is long. The local store keeps the exact pin rule.
 
