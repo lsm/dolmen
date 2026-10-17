@@ -102,8 +102,6 @@ func embeddedEngineOption(t *testing.T, dir string) dolmen.Option {
 	switch testEngine(t) {
 	case store.EnginePostgres:
 		return postgresFacadeOption(t, dir)
-	case store.EngineLakehouse:
-		t.Skip("the Go library does not open the lakehouse engine; it is served by dolmen -engine lakehouse only")
 	}
 	return dolmen.WithEngine(testEngine(t))
 }
