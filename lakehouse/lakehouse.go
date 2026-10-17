@@ -3,6 +3,7 @@ package lakehouse
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/lsm/dolmen"
@@ -21,6 +22,9 @@ type Config struct {
 
 func With(cfg Config) dolmen.Option {
 	return dolmen.WithEngineOpener(store.EngineLakehouse, store.EngineLakehouse, func(ctx context.Context, retention time.Duration) (store.Engine, error) {
+		if cfg.MaxOpenNamespaces < 0 {
+			return nil, fmt.Errorf("%w: lakehouse.Config.MaxOpenNamespaces is %d; give at least 1, or 0 for the default of %d", store.ErrInvalid, cfg.MaxOpenNamespaces, lakehouse.DefaultMaxOpenNamespaces)
+		}
 		dir := store.OpenDirFrom(ctx)
 		if dir == "" {
 			return nil, errors.New("the lakehouse engine opens a data directory; pass one to dolmen.Open")

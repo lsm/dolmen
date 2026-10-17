@@ -54,6 +54,9 @@ func TestTheLakehouseEngineNamesWhatItNeeds(t *testing.T) {
 	if _, err := dolmen.Open(t.TempDir(), dolmen.WithEngine("lakehouse")); !errors.Is(err, dolmen.ErrInvalidRequest) || !strings.Contains(err.Error(), "lakehouse.With") {
 		t.Fatalf("WithEngine(lakehouse) alone: %v", err)
 	}
+	if _, err := dolmen.Open(t.TempDir(), lakehouse.With(lakehouse.Config{MaxOpenNamespaces: -1})); !errors.Is(err, dolmen.ErrInvalidRequest) || !strings.Contains(err.Error(), "MaxOpenNamespaces") {
+		t.Fatalf("a negative MaxOpenNamespaces: %v", err)
+	}
 	if _, err := dolmen.Open("", lakehouse.With(lakehouse.Config{})); !errors.Is(err, dolmen.ErrInvalidRequest) {
 		t.Fatalf("no data directory: %v", err)
 	}
