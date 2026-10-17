@@ -2,6 +2,7 @@ package lakehouse
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"net/url"
 	"runtime"
@@ -21,7 +22,12 @@ func (f localFS) WriteFile(name string, content []byte) error {
 	return f.LocalFS.WriteFile(localPath(name), content)
 }
 
-func (f localFS) Remove(name string) error { return f.LocalFS.Remove(localPath(name)) }
+func (f localFS) Remove(name string) error {
+	if err := f.LocalFS.Remove(localPath(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
 
 func (f localFS) WalkDir(root string, fn fs.WalkDirFunc) error {
 	return f.LocalFS.WalkDir(localPath(root), fn)
