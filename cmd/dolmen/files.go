@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -34,10 +35,39 @@ func parseFilesConfig(maxFile, maxNamespace, maxRequest, maxPending string) (fil
 	return cfg, nil
 }
 
-func newFileStore(cfg *config) *files.Store {
+func checkFilesStore(kind, bucket string, cfg files.Config) error {
+	switch kind {
+	case "local":
+		return nil
+	case "s3":
+	default:
+		return fmt.Errorf("-files-store must be local or s3, got %q", kind)
+	}
+	if bucket == "" {
+		return fmt.Errorf("-files-store s3 needs -files-s3-bucket (DOLMEN_FILES_S3_BUCKET)")
+	}
+	if cfg.MaxNamespaceFiles > 0 {
+		return fmt.Errorf("-max-namespace-files-size needs the local file store: servers sharing an S3 bucket cannot keep one namespace's total exact; unset it, or use -files-store local")
+	}
+	if cfg.MaxFileSize > files.MaxS3FileSize {
+		return fmt.Errorf("-max-file-size is above S3's 5TiB object limit; lower it to 5TiB or less with -files-store s3")
+	}
+	return nil
+}
+
+func newFileStore(cfg *config) (*files.Store, error) {
 	c := cfg.Files
 	c.Root = cfg.DataDir
-	return files.New(c)
+	if cfg.FilesStore == "s3" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		blobs, err := files.NewS3(ctx, cfg.FilesS3)
+		if err != nil {
+			return nil, err
+		}
+		c.Blobs = blobs
+	}
+	return files.New(c), nil
 }
 
 func parseFetchConfig(hosts, rawTimeout string) ([]string, time.Duration, error) {

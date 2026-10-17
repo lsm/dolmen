@@ -111,7 +111,11 @@ func run() error {
 		return err
 	}
 
-	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing), api.WithFiles(newFileStore(cfg)))
+	fileStore, err := newFileStore(cfg)
+	if err != nil {
+		return err
+	}
+	apiSrv := api.New(st, emb, api.WithBaseURL(cfg.BaseURL), api.WithNamespaceHint(cfg.SkillNamespaceHint), api.WithPrefix(cfg.Prefix), api.WithMaxSubscriptionAge(cfg.MaxSubscriptionAge), api.WithAuth(cfg.Auth), api.WithGrants(grants), api.WithOIDC(oidcSrc), api.WithTimeouts(cfg.Timeouts), api.WithTracing(tel.Tracing), api.WithFiles(fileStore))
 	mcpSrv := newMCPServer(cfg, apiSrv)
 
 	sub := http.NewServeMux()
@@ -391,6 +395,8 @@ type config struct {
 	Sync               store.SyncMode
 	MaxNamespaceSize   int64
 	Files              files.Config
+	FilesStore         string
+	FilesS3            files.S3Config
 	VectorCacheSize    int64
 	LogLevel           slog.Level
 	ShutdownGrace      time.Duration
@@ -434,6 +440,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	maxRequestFiles := fs.String("max-request-files-size", envOr("DOLMEN_MAX_REQUEST_FILES_SIZE", "2GiB", getenv), "most file bytes one multipart write may carry across its parts")
 	fetchHosts := fs.String("files-fetch-hosts", envOr("DOLMEN_FILES_FETCH_HOSTS", "", getenv), "comma-separated hosts a {\"url\": ...} file value may be fetched from: exact names, *.example.com for subdomains, or * for any public host. Empty (default) disables fetching")
 	fetchTimeout := fs.String("files-fetch-timeout", envOr("DOLMEN_FILES_FETCH_TIMEOUT", files.DefaultFetchTimeout.String(), getenv), "longest one server-side file fetch may take, 1s to 24h")
+	filesStore := fs.String("files-store", envOr("DOLMEN_FILES_STORE", "local", getenv), "where file fields keep their bytes: local (beside each namespace) or s3 (an S3-compatible bucket, configured by the -files-s3-* flags)")
+	s3Bucket := fs.String("files-s3-bucket", envOr("DOLMEN_FILES_S3_BUCKET", "", getenv), "S3 bucket for file bytes, required with -files-store s3")
+	s3Endpoint := fs.String("files-s3-endpoint", envOr("DOLMEN_FILES_S3_ENDPOINT", "https://s3.amazonaws.com", getenv), "S3 endpoint URL; http:// is allowed, for a local MinIO")
+	s3Region := fs.String("files-s3-region", envOr("DOLMEN_FILES_S3_REGION", "", getenv), "S3 region; empty lets the client discover it")
+	s3Prefix := fs.String("files-s3-prefix", envOr("DOLMEN_FILES_S3_PREFIX", "", getenv), "key prefix for file bytes, so one bucket can serve several deployments")
+	s3PathStyle := fs.Bool("files-s3-path-style", envTrue(getenv("DOLMEN_FILES_S3_PATH_STYLE")), "use path-style S3 addressing, which MinIO and some other S3-compatible stores need")
 	maxPendingFiles := fs.String("max-pending-files-size", envOr("DOLMEN_MAX_PENDING_FILES_SIZE", "8GiB", getenv), "most file bytes all in-flight writes may hold in temporary space at once; past it a write is refused with 503 storage_unavailable")
 	maxNamespaceSize := fs.String("max-namespace-size", envOr("DOLMEN_MAX_NAMESPACE_SIZE", "0", getenv), "largest a namespace file may grow, e.g. 10GiB; a write past it is refused with 507 and nothing is written. 0 (default) is unbounded; sqlite engine")
 	logLevel := fs.String("log-level", envOr("DOLMEN_LOG_LEVEL", "info", getenv), "log verbosity: debug (adds one line per operation: op, outcome, status, duration, request size, request id), info (default), warn, or error")
@@ -610,6 +622,9 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	if err == nil {
 		filesCfg.FetchHosts, filesCfg.FetchTimeout, err = parseFetchConfig(*fetchHosts, *fetchTimeout)
 	}
+	if err == nil {
+		err = checkFilesStore(*filesStore, *s3Bucket, filesCfg)
+	}
 	if err != nil {
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
@@ -714,6 +729,8 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		Sync:               sync,
 		MaxNamespaceSize:   nsSize,
 		Files:              filesCfg,
+		FilesStore:         *filesStore,
+		FilesS3:            files.S3Config{Bucket: *s3Bucket, Endpoint: *s3Endpoint, Region: *s3Region, Prefix: *s3Prefix, PathStyle: *s3PathStyle},
 		VectorCacheSize:    vcSize,
 		LogLevel:           level,
 		ShutdownGrace:      grace,
@@ -812,6 +829,11 @@ func envIntOr(key string, fallback int, getenv func(string) string) (int, error)
 		return 0, fmt.Errorf("invalid %s %q: must be a whole number", key, raw)
 	}
 	return n, nil
+}
+
+func envTrue(v string) bool {
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
 }
 
 func envOr(key, fallback string, getenv func(string) string) string {

@@ -88,6 +88,15 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		{"backup on PostgreSQL", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, pg, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "use pg_dump"},
+		{"backup with the S3 file store", func() error {
+			s3 := func(k string) string {
+				if k == "DOLMEN_FILES_STORE" {
+					return "s3"
+				}
+				return ""
+			}
+			return runBackup([]string{"-out", t.TempDir()}, s3, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "back up the bucket with your own S3 tooling"},
 		{"backup on the lakehouse engine", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "stop the server and copy the whole data directory"},

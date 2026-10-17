@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `-files-store s3` keeps file bytes in an S3-compatible bucket (AWS, MinIO, R2 and others),
+  configured by `-files-s3-bucket`, `-files-s3-endpoint`, `-files-s3-region`, `-files-s3-prefix`
+  and `-files-s3-path-style`, with credentials from the standard AWS chain. An unreachable store
+  answers `503` `storage_unavailable`.
+
 - `dolmen backup` copies the files that `file` fields reference, listing each with its SHA-256 in
   the manifest (format 2 when there are any), and `dolmen restore` verifies and restores them.
   Backup no longer refuses a data directory that stores files.
