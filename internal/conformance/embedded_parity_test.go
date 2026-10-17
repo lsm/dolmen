@@ -15,6 +15,7 @@ import (
 
 	"github.com/lsm/dolmen"
 	"github.com/lsm/dolmen/internal/store"
+	lhfacade "github.com/lsm/dolmen/lakehouse"
 )
 
 func canonical(v any) any {
@@ -103,7 +104,8 @@ func embeddedEngineOption(t *testing.T, dir string) dolmen.Option {
 	case store.EnginePostgres:
 		return postgresFacadeOption(t, dir)
 	case store.EngineLakehouse:
-		t.Skip("the Go library does not open the lakehouse engine; it is served by dolmen -engine lakehouse only")
+		engine := lakehouseConformanceEngine(t)
+		return lhfacade.With(lhfacade.Config{Sidecar: engine.Binary, Extensions: engine.ExtensionDir})
 	}
 	return dolmen.WithEngine(testEngine(t))
 }
