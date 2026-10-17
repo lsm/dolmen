@@ -354,9 +354,12 @@ over the namespace cap names the namespace's current file bytes, and `vacuum` re
 ## Change feed, backup, auth
 
 Change records carry ids, never values, so attaching or replacing a file is an ordinary `update`
-change. `dolmen backup` must copy the blob directory and list every blob's hash in its manifest, and
-`restore` must verify them; until it does, backup refuses a data directory that holds blobs rather
-than silently omitting them. No new verb: attaching a file is part of a write and downloading is a
+change. `dolmen backup` copies every blob a namespace snapshot references, read from the snapshot
+itself so the copy matches the rows, and lists each blob's path, size and hash in its manifest
+(format 2 when any are present, so an older binary refuses rather than restoring rows without
+their files). `restore` verifies every blob before writing anything and places blobs before the
+namespaces that reference them. A referenced blob missing from the data directory fails the
+backup, naming the namespace and hash. No new verb: attaching a file is part of a write and downloading is a
 read. CORS needs no change: multipart writes are `POST` and downloads are `GET`.
 
 ## Conformance

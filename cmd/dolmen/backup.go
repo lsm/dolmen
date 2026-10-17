@@ -37,6 +37,7 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 	for _, f := range m.Files {
 		fmt.Fprintf(stdout, "backed up %s (%d bytes)\n", backupLabel(f), f.Bytes)
 	}
+	printBlobs(stdout, "backed up", m.Blobs)
 	fmt.Fprintf(stdout, "wrote %s\n", filepath.Join(*outDir, store.BackupManifestFile))
 	return nil
 }
@@ -66,6 +67,7 @@ func runRestore(args []string, getenv func(string) string, stdout, stderr io.Wri
 	for _, f := range m.Files {
 		fmt.Fprintf(stdout, "restored %s\n", backupLabel(f))
 	}
+	printBlobs(stdout, "restored", m.Blobs)
 	return nil
 }
 
@@ -104,4 +106,14 @@ func backupLabel(f store.BackupFile) string {
 		return "namespace " + f.Namespace
 	}
 	return f.Path
+}
+
+func printBlobs(w io.Writer, verb string, blobs []store.BackupBlob) {
+	for i := 0; i < len(blobs); {
+		ns, n, bytes := blobs[i].Namespace, 0, int64(0)
+		for ; i < len(blobs) && blobs[i].Namespace == ns; i++ {
+			n, bytes = n+1, bytes+blobs[i].Bytes
+		}
+		fmt.Fprintf(w, "%s %d files of namespace %s (%d bytes)\n", verb, n, ns, bytes)
+	}
 }
