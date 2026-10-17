@@ -193,3 +193,16 @@ func TestALakehouseBackupRetriesATornVacuumStamp(t *testing.T) {
 		t.Fatalf("backup over a half-written stamp: %v", err)
 	}
 }
+
+func TestALakehouseBackupRefusesABlobThatDoesNotHashToItsName(t *testing.T) {
+	dir, s := backupSource(t)
+	defer s.Close()
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte("x")))
+	blob := filepath.Join(dir, "team", "app.files", sum[:2], sum)
+	os.MkdirAll(filepath.Dir(blob), 0o700)
+	os.WriteFile(blob, []byte("rotted"), 0o600)
+	_, err := Backup(t.Context(), dir, filepath.Join(t.TempDir(), "backup"), nil)
+	if err == nil || !strings.Contains(err.Error(), "damaged") {
+		t.Fatalf("backup with a damaged blob: %v", err)
+	}
+}

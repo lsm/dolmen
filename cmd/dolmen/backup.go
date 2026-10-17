@@ -18,8 +18,9 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 	fs.SetOutput(stderr)
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory to back up; the server may keep running")
 	outDir := fs.String("out", "", "directory to write the backup into; it must be new or empty")
+	engine := fs.String("engine", envOr("DOLMEN_ENGINE", store.EngineSQLite, getenv), "storage engine of the data directory: sqlite or lakehouse, as given to the server")
 	fs.Usage = func() {
-		fmt.Fprint(stderr, "Usage: dolmen backup -out DIR [-data DIR]\n\nCopies every namespace, and the grant registry when there is one, as a consistent snapshot that writes do not disturb, and writes a manifest of sizes, checksums and catalog versions last.\n\nFlags:\n")
+		fmt.Fprint(stderr, "Usage: dolmen backup -out DIR [-data DIR] [-engine sqlite|lakehouse]\n\nCopies every namespace, and the grant registry when there is one, as a consistent snapshot that writes do not disturb, and writes a manifest of sizes, checksums and catalog versions last.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := parseSubcommand(fs, args, stderr); err != nil {
@@ -28,12 +29,19 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 	if *outDir == "" {
 		return usageError(fs, stderr, "-out is required: name a new or empty directory for the backup")
 	}
-	if err := backupEngine(getenv, "backup"); err != nil {
+	if err := backupEngine(func(string) string { return *engine }, "backup"); err != nil {
 		return usageError(fs, stderr, err.Error())
 	}
 	backup := store.Backup
-	if getenv("DOLMEN_ENGINE") == store.EngineLakehouse {
+	switch *engine {
+	case store.EngineLakehouse:
 		backup = lakehouse.Backup
+	case store.EngineSQLite:
+		if names, err := lakehouse.NamespacesIn(*dataDir); err == nil && len(names) > 0 {
+			return usageError(fs, stderr, fmt.Sprintf("%s holds lakehouse namespaces (%s first); back it up with -engine lakehouse", *dataDir, names[0]))
+		}
+	default:
+		return usageError(fs, stderr, fmt.Sprintf("-engine %q is not one backup handles; use sqlite or lakehouse", *engine))
 	}
 	m, err := backup(context.Background(), *dataDir, *outDir, []string{auth.RegistryFile})
 	if err != nil {

@@ -88,6 +88,23 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		{"backup on PostgreSQL", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, pg, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "use pg_dump"},
+		{"backup of a lakehouse directory without the engine", func() error {
+			data := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(data, "app.lakehouse"), 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(data, "app.lakehouse", "catalog.db"), nil, 0o600); err != nil {
+				return err
+			}
+			return runBackup([]string{"-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "-engine lakehouse"},
+		{"backup with -engine lakehouse", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", out, "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "restores only there"},
 		{"restore of a lakehouse backup elsewhere", func() error {
 			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
 			if err := runBackup([]string{"-data", data, "-out", out}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {

@@ -28,7 +28,7 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (s
 	if err != nil {
 		return store.BackupManifest{}, err
 	}
-	names, err := backupNamespaces(live)
+	names, err := NamespacesIn(live)
 	if err != nil {
 		return store.BackupManifest{}, fmt.Errorf("list namespaces in %s: %w", dataDir, err)
 	}
@@ -71,7 +71,7 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (s
 	return m, nil
 }
 
-func backupNamespaces(live string) ([]string, error) {
+func NamespacesIn(live string) ([]string, error) {
 	var names []string
 	err := filepath.WalkDir(live, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -138,6 +138,11 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 	blobs, err := copyTree(live, outDir, filepath.FromSlash(ns)+".files")
 	if err != nil {
 		return false, err
+	}
+	for _, b := range blobs {
+		if !strings.HasSuffix(b.Path, "/"+b.SHA256) {
+			return false, fmt.Errorf("file %s does not hash to its name (sha256 %s); the file store is damaged", b.Path, b.SHA256)
+		}
 	}
 	if missing, err := unreachable(live, outDir, locations); err != nil {
 		return false, err
