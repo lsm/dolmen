@@ -100,3 +100,19 @@ func TestAnEngineBackupRefusesADamagedDataFile(t *testing.T) {
 		t.Fatalf("a refused restore wrote %d entries", len(entries))
 	}
 }
+
+func TestAnEngineRestoreOverDifferentDataSaysWhereItMustGo(t *testing.T) {
+	target := t.TempDir()
+	out := engineBackup(t, target)
+	catalog := filepath.Join(target, "app.lakehouse", "catalog.db")
+	if err := os.MkdirAll(filepath.Dir(catalog), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalog, []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Restore(context.Background(), out, target)
+	if err == nil || strings.Contains(err.Error(), "another data directory") || !strings.Contains(err.Error(), "only into "+target) {
+		t.Fatalf("restore over a different catalog: %v", err)
+	}
+}

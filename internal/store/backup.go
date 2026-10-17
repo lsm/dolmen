@@ -259,7 +259,7 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 			return BackupManifest{}, err
 		}
 		target := filepath.Join(dataDir, rel)
-		restored, err := alreadyRestored(target, f)
+		restored, err := alreadyRestored(target, f, m.DataDir)
 		if err != nil {
 			return BackupManifest{}, err
 		}
@@ -309,7 +309,7 @@ func verifyBackupFile(ctx context.Context, path string, f BackupFile) error {
 	return nil
 }
 
-func alreadyRestored(target string, f BackupFile) (bool, error) {
+func alreadyRestored(target string, f BackupFile, onlyInto string) (bool, error) {
 	for _, side := range []string{target + "-wal", target + "-shm"} {
 		if _, err := os.Stat(side); err == nil {
 			return false, fmt.Errorf("%s is in use (its %s file exists); restore into a data directory no server is using", target, filepath.Ext(side))
@@ -324,6 +324,9 @@ func alreadyRestored(target string, f BackupFile) (bool, error) {
 	}
 	if n == f.Bytes && sum == f.SHA256 {
 		return true, nil
+	}
+	if onlyInto != "" {
+		return false, fmt.Errorf("%s already exists and differs from the backup; restore never overwrites data, and this backup restores only into %s, so drop that namespace there and restore again", target, onlyInto)
 	}
 	return false, fmt.Errorf("%s already exists and differs from the backup; restore never overwrites data, so drop it or restore into another data directory", target)
 }
