@@ -206,3 +206,49 @@ func TestALakehouseBackupRefusesABlobThatDoesNotHashToItsName(t *testing.T) {
 		t.Fatalf("backup with a damaged blob: %v", err)
 	}
 }
+
+func TestALakehouseBackupRestoresANamespaceWithoutTables(t *testing.T) {
+	dir, s := backupSource(t)
+	if err := s.CreateNamespace(t.Context(), "empty", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "backup")
+	if _, err := Backup(t.Context(), dir, out, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	os.RemoveAll(filepath.Join(dir, "team"))
+	os.RemoveAll(filepath.Join(dir, "empty.lakehouse"))
+	if _, err := store.Restore(t.Context(), out, dir); err != nil {
+		t.Fatal(err)
+	}
+	r := openStore(t, dir)
+	if _, err := r.CreateTable(t.Context(), "empty", "notes", []schema.Field{{Name: "title", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatalf("use the restored empty namespace: %v", err)
+	}
+}
+
+func TestALakehouseBackupLeavesOutANamespaceDroppedWhileCopied(t *testing.T) {
+	dir, s := backupSource(t)
+	defer s.Close()
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte("x")))
+	blob := filepath.Join(dir, "team", "app.files", sum[:2], sum)
+	os.MkdirAll(filepath.Dir(blob), 0o700)
+	os.WriteFile(blob, []byte("x"), 0o600)
+	beforeBlobCopy = func(ns string) {
+		if err := s.DropNamespace(t.Context(), ns, [16]byte{}); err != nil {
+			t.Error(err)
+		}
+		os.RemoveAll(filepath.Join(dir, "team", "app.files"))
+	}
+	defer func() { beforeBlobCopy = nil }()
+	m, err := Backup(t.Context(), dir, filepath.Join(t.TempDir(), "backup"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range m.Files {
+		if f.Namespace == "team/app" {
+			t.Fatalf("a namespace dropped during its copy was backed up: %+v", m)
+		}
+	}
+}

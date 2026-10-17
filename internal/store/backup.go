@@ -30,6 +30,7 @@ type BackupManifest struct {
 	Engine    string       `json:"engine,omitempty"`
 	DataDir   string       `json:"data_dir,omitempty"`
 	Files     []BackupFile `json:"files"`
+	Dirs      []string     `json:"dirs,omitempty"`
 	DataFiles []BackupBlob `json:"data_files,omitempty"`
 	Blobs     []BackupBlob `json:"blobs,omitempty"`
 }
@@ -265,6 +266,15 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 		}
 		if !restored {
 			pending = append(pending, f)
+		}
+	}
+	for _, d := range m.Dirs {
+		rel := filepath.FromSlash(d)
+		if !filepath.IsLocal(rel) {
+			return BackupManifest{}, fmt.Errorf("manifest names directory %q, which is not a path inside the data directory", d)
+		}
+		if err := os.MkdirAll(filepath.Join(dataDir, rel), 0o700); err != nil {
+			return BackupManifest{}, fmt.Errorf("restore directory %s: %w", d, err)
 		}
 	}
 	for _, b := range append(blobs, data...) {

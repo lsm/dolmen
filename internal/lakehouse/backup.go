@@ -18,6 +18,8 @@ import (
 
 var backupAttempts, backupPause = 5, 200 * time.Millisecond
 
+var beforeBlobCopy func(ns string)
+
 var errTornStamp = errors.New("its vacuum stamp was being written as it was read; rerun the backup")
 
 func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (store.BackupManifest, error) {
@@ -118,12 +120,20 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 			return false, err
 		}
 	}
-	catalog, err := store.SnapshotSQLite(ctx, filepath.Join(live, rel, "catalog.db"), outDir, filepath.Join(rel, "catalog.db"))
+	liveCatalog := filepath.Join(live, rel, "catalog.db")
+	if _, err := os.Stat(liveCatalog); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	catalog, err := store.SnapshotSQLite(ctx, liveCatalog, outDir, filepath.Join(rel, "catalog.db"))
 	if err != nil {
 		return false, err
 	}
 	catalog.Namespace = ns
 	snapshot := filepath.Join(outDir, rel, "catalog.db")
+	gen, err := catalogGeneration(ctx, snapshot)
+	if err != nil {
+		return false, err
+	}
 	locations, inBatch, err := snapshotTables(ctx, snapshot)
 	if err != nil {
 		return false, err
@@ -135,9 +145,26 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 	if err != nil {
 		return false, err
 	}
+	dirs, err := treeDirs(live, filepath.Join(rel, "data"))
+	if err != nil {
+		return false, err
+	}
+	if beforeBlobCopy != nil {
+		beforeBlobCopy(ns)
+	}
 	blobs, err := copyTree(live, outDir, filepath.FromSlash(ns)+".files")
 	if err != nil {
 		return false, err
+	}
+	if now, err := catalogGeneration(ctx, liveCatalog); errors.Is(err, fs.ErrNotExist) {
+		for _, dir := range []string{rel, filepath.FromSlash(ns) + ".files"} {
+			os.RemoveAll(filepath.Join(outDir, dir))
+		}
+		return false, nil
+	} else if err != nil {
+		return false, err
+	} else if now != gen {
+		return true, fmt.Errorf("it was dropped and recreated while it was copied; rerun the backup")
 	}
 	for _, b := range blobs {
 		if !strings.HasSuffix(b.Path, "/"+b.SHA256) {
@@ -163,6 +190,7 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 		blobs[i].Namespace = ns
 	}
 	m.Files = append(m.Files, catalog)
+	m.Dirs = append(m.Dirs, dirs...)
 	m.DataFiles = append(m.DataFiles, data...)
 	m.Blobs = append(m.Blobs, blobs...)
 	return false, nil
@@ -218,6 +246,50 @@ func copyTree(live, outDir, rel string) ([]store.BackupBlob, error) {
 			return err
 		}
 		out = append(out, b)
+		return nil
+	})
+	return out, err
+}
+
+func catalogGeneration(ctx context.Context, path string) (string, error) {
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+	var gen []byte
+	if err := db.QueryRowContext(ctx, `SELECT generation FROM _dolmen_lakehouse_meta WHERE singleton = 1`).Scan(&gen); err != nil {
+		if _, serr := os.Stat(path); errors.Is(serr, fs.ErrNotExist) {
+			return "", serr
+		}
+		return "", err
+	}
+	return string(gen), nil
+}
+
+func treeDirs(live, rel string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(filepath.Join(live, rel), func(path string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			return fs.SkipDir
+		}
+		r, err := filepath.Rel(live, path)
+		if err != nil {
+			return err
+		}
+		out = append(out, filepath.ToSlash(r))
 		return nil
 	})
 	return out, err
