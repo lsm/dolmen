@@ -185,3 +185,29 @@ func TestVacuumWaitsForARunningQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestVacuumRunsAgainAfterMoreWrites(t *testing.T) {
+	s := openStore(t, t.TempDir())
+	ctx := t.Context()
+	none := store.Incarnation{}
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "t", []schema.Field{{Name: "v", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 3; round++ {
+		for _, v := range []string{"a", "b"} {
+			if _, err := s.Insert(ctx, "ns", "t", []map[string]any{{"v": v}}, store.WriteOpts{}, store.Embedder{}, nil, none); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := s.Vacuum(ctx, "ns"); err != nil {
+			t.Fatalf("vacuum %d: %v", round+1, err)
+		}
+	}
+	res, err := s.GetRows(ctx, "ns", "t", []int64{1, 2, 3, 4, 5, 6}, nil, none)
+	if err != nil || len(res.Rows) != 6 {
+		t.Fatalf("rows after three vacuums = %v, %v", res.Rows, err)
+	}
+}
