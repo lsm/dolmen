@@ -88,12 +88,13 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		{"backup on PostgreSQL", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, pg, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "use pg_dump"},
-		{"backup on the lakehouse engine", func() error {
-			return runBackup([]string{"-out", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "stop the server and copy the whole data directory"},
-		{"restore on the lakehouse engine", func() error {
-			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "stop the server and copy the whole data directory"},
+		{"restore of a lakehouse backup elsewhere", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-data", data, "-out", out}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", out, "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "restores only there"},
 		{"restore of a directory that is not a backup", func() error {
 			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "not a finished backup"},

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `dolmen backup` and `dolmen restore` work on the lakehouse engine: a consistent snapshot of each
+  namespace's catalog, Parquet and metadata files and file-field blobs while the server runs,
+  restored into the same data directory path (manifest format 3).
+
 - `dolmen backup` copies the files that `file` fields reference, listing each with its SHA-256 in
   the manifest (format 2 when there are any), and `dolmen restore` verifies and restores them.
   Backup no longer refuses a data directory that stores files.

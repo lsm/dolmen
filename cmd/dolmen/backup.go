@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/lakehouse"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -27,15 +28,22 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 	if *outDir == "" {
 		return usageError(fs, stderr, "-out is required: name a new or empty directory for the backup")
 	}
-	if err := sqliteDataOnly(getenv, "backup"); err != nil {
+	if err := backupEngine(getenv, "backup"); err != nil {
 		return usageError(fs, stderr, err.Error())
 	}
-	m, err := store.Backup(context.Background(), *dataDir, *outDir, []string{auth.RegistryFile})
+	backup := store.Backup
+	if getenv("DOLMEN_ENGINE") == store.EngineLakehouse {
+		backup = lakehouse.Backup
+	}
+	m, err := backup(context.Background(), *dataDir, *outDir, []string{auth.RegistryFile})
 	if err != nil {
 		return err
 	}
 	for _, f := range m.Files {
 		fmt.Fprintf(stdout, "backed up %s (%d bytes)\n", backupLabel(f), f.Bytes)
+	}
+	if len(m.DataFiles) > 0 {
+		fmt.Fprintf(stdout, "backed up %d table data and metadata files\n", len(m.DataFiles))
 	}
 	printBlobs(stdout, "backed up", m.Blobs)
 	fmt.Fprintf(stdout, "wrote %s\n", filepath.Join(*outDir, store.BackupManifestFile))
@@ -57,7 +65,7 @@ func runRestore(args []string, getenv func(string) string, stdout, stderr io.Wri
 	if *fromDir == "" {
 		return usageError(fs, stderr, "-from is required: name the directory dolmen backup wrote")
 	}
-	if err := sqliteDataOnly(getenv, "restore"); err != nil {
+	if err := backupEngine(getenv, "restore"); err != nil {
 		return usageError(fs, stderr, err.Error())
 	}
 	m, err := store.Restore(context.Background(), *fromDir, *dataDir)
@@ -91,12 +99,9 @@ func usageError(fs *flag.FlagSet, stderr io.Writer, msg string) error {
 	return &printedError{e}
 }
 
-func sqliteDataOnly(getenv func(string) string, what string) error {
-	switch getenv("DOLMEN_ENGINE") {
-	case store.EnginePostgres:
-		return fmt.Errorf("%s works on a SQLite data directory; for a PostgreSQL deployment use pg_dump and pg_restore (see docs/postgresql-operations.md)", what)
-	case store.EngineLakehouse:
-		return fmt.Errorf("%s works on a SQLite data directory; for a %q deployment stop the server and copy the whole data directory, which holds every namespace's catalog and Parquet files (see docs/lakehouse-operations.md)", what, store.EngineLakehouse)
+func backupEngine(getenv func(string) string, what string) error {
+	if getenv("DOLMEN_ENGINE") == store.EnginePostgres {
+		return fmt.Errorf("%s works on a SQLite or lakehouse data directory; for a PostgreSQL deployment use pg_dump and pg_restore (see docs/postgresql-operations.md)", what)
 	}
 	return nil
 }
