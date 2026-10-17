@@ -20,13 +20,17 @@ const (
 	BackupManifestFile   = "manifest.json"
 	backupManifestFormat = 1
 	blobManifestFormat   = 2
+	engineManifestFormat = 3
 	restoringSuffix      = ".restoring"
 )
 
 type BackupManifest struct {
 	Format    int          `json:"format"`
 	CreatedAt string       `json:"created_at"`
+	Engine    string       `json:"engine,omitempty"`
+	DataDir   string       `json:"data_dir,omitempty"`
 	Files     []BackupFile `json:"files"`
+	DataFiles []BackupBlob `json:"data_files,omitempty"`
 	Blobs     []BackupBlob `json:"blobs,omitempty"`
 }
 
@@ -53,21 +57,15 @@ func nsFile(dir, name string) string {
 }
 
 func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (BackupManifest, error) {
-	if err := emptyOrAbsent(outDir); err != nil {
-		return BackupManifest{}, err
-	}
 	var names []string
 	if err := walkNamespaces(dataDir, "", &names); err != nil {
 		return BackupManifest{}, fmt.Errorf("list namespaces in %s: %w", dataDir, err)
 	}
 	sortNS(names)
-	if err := os.MkdirAll(outDir, 0o700); err != nil {
+	if err := PrepareBackupDir(outDir); err != nil {
 		return BackupManifest{}, err
 	}
-	if err := secureDir(outDir); err != nil {
-		return BackupManifest{}, err
-	}
-	m := BackupManifest{Format: backupManifestFormat, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	var m BackupManifest
 	for _, name := range names {
 		rel, err := filepath.Rel(dataDir, nsFile(dataDir, name))
 		if err != nil {
@@ -85,9 +83,6 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (B
 		}
 		m.Blobs = append(m.Blobs, blobs...)
 	}
-	if len(m.Blobs) > 0 {
-		m.Format = blobManifestFormat
-	}
 	for _, rel := range extraFiles {
 		src := filepath.Join(dataDir, rel)
 		if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
@@ -99,11 +94,7 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (B
 		}
 		m.Files = append(m.Files, f)
 	}
-	raw, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return BackupManifest{}, err
-	}
-	if err := writeFileSynced(filepath.Join(outDir, BackupManifestFile), append(raw, '\n')); err != nil {
+	if err := WriteBackupManifest(outDir, &m); err != nil {
 		return BackupManifest{}, err
 	}
 	return m, nil
@@ -210,8 +201,8 @@ func ReadBackupManifest(dir string) (BackupManifest, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return BackupManifest{}, fmt.Errorf("%s in %s is not a backup manifest: %w", BackupManifestFile, dir, err)
 	}
-	if m.Format != backupManifestFormat && m.Format != blobManifestFormat {
-		return BackupManifest{}, fmt.Errorf("backup manifest format %d is not one this binary reads (it reads %d and %d)", m.Format, backupManifestFormat, blobManifestFormat)
+	if m.Format < backupManifestFormat || m.Format > engineManifestFormat {
+		return BackupManifest{}, fmt.Errorf("backup manifest format %d is not one this binary reads (it reads %d to %d)", m.Format, backupManifestFormat, engineManifestFormat)
 	}
 	return m, nil
 }
@@ -220,6 +211,26 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 	m, err := ReadBackupManifest(fromDir)
 	if err != nil {
 		return BackupManifest{}, err
+	}
+	if m.DataDir != "" && !sameDir(dataDir, m.DataDir) {
+		return BackupManifest{}, fmt.Errorf("this %s backup was taken from data directory %s and its catalogs record absolute paths, so it restores only there; restore with -data %s", m.Engine, m.DataDir, m.DataDir)
+	}
+	var data []BackupBlob
+	for _, b := range m.DataFiles {
+		rel := filepath.FromSlash(b.Path)
+		if !filepath.IsLocal(rel) {
+			return BackupManifest{}, fmt.Errorf("manifest names data file %q, which is not a path inside the backup", b.Path)
+		}
+		if err := verifyBlob(filepath.Join(fromDir, rel), b); err != nil {
+			return BackupManifest{}, err
+		}
+		restored, err := blobRestored(filepath.Join(dataDir, rel), b)
+		if err != nil {
+			return BackupManifest{}, err
+		}
+		if !restored {
+			data = append(data, b)
+		}
 	}
 	var blobs []BackupBlob
 	for _, b := range m.Blobs {
@@ -256,7 +267,7 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 			pending = append(pending, f)
 		}
 	}
-	for _, b := range blobs {
+	for _, b := range append(blobs, data...) {
 		rel := filepath.FromSlash(b.Path)
 		if err := activate(filepath.Join(fromDir, rel), filepath.Join(dataDir, rel)); err != nil {
 			return BackupManifest{}, fmt.Errorf("restore %s: %w", b.Path, err)
@@ -447,5 +458,59 @@ func blobRestored(target string, b BackupBlob) (bool, error) {
 	if n == b.Bytes && sum == b.SHA256 {
 		return true, nil
 	}
-	return false, fmt.Errorf("%s already exists and does not hash to its name; the data directory's file store is damaged, so remove that file and restore again", target)
+	return false, fmt.Errorf("%s already exists and differs from the backup; restore never overwrites data, so remove it or restore into an empty data directory", target)
+}
+
+func sameDir(a, b string) bool {
+	resolve := func(p string) string {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return p
+		}
+		if r, err := filepath.EvalSymlinks(abs); err == nil {
+			return r
+		}
+		return abs
+	}
+	return filepath.Clean(a) == filepath.Clean(b) || resolve(a) == resolve(b)
+}
+
+func PrepareBackupDir(outDir string) error {
+	if err := emptyOrAbsent(outDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(outDir, 0o700); err != nil {
+		return err
+	}
+	return secureDir(outDir)
+}
+
+func SnapshotSQLite(ctx context.Context, src, outDir, rel string) (BackupFile, error) {
+	return snapshotFile(ctx, src, outDir, rel)
+}
+
+func CopyIntoBackup(src, outDir, rel string) (BackupBlob, error) {
+	n, sum, err := copyFileSynced(src, filepath.Join(outDir, rel))
+	if err != nil {
+		return BackupBlob{}, err
+	}
+	return BackupBlob{Path: filepath.ToSlash(rel), Bytes: n, SHA256: sum}, nil
+}
+
+func WriteBackupManifest(outDir string, m *BackupManifest) error {
+	m.Format = backupManifestFormat
+	switch {
+	case m.Engine != "":
+		m.Format = engineManifestFormat
+	case len(m.Blobs) > 0:
+		m.Format = blobManifestFormat
+	}
+	if m.CreatedAt == "" {
+		m.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	raw, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileSynced(filepath.Join(outDir, BackupManifestFile), append(raw, '\n'))
 }
