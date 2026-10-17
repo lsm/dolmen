@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 )
 
 var backupAttempts, backupPause = 5, 200 * time.Millisecond
+
+var errTornStamp = errors.New("its vacuum stamp was being written as it was read; rerun the backup")
 
 func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (store.BackupManifest, error) {
 	live, err := filepath.Abs(dataDir)
@@ -101,6 +104,9 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 	rel := namespacePath(ns)
 	stampPath := filepath.Join(live, rel, vacuumStamp)
 	before, err := readStamp(stampPath)
+	if errors.Is(err, strconv.ErrSyntax) {
+		return true, errTornStamp
+	}
 	if err != nil {
 		return false, err
 	}
@@ -138,7 +144,9 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 	} else if missing != "" {
 		return true, fmt.Errorf("file %s, which its catalog references, changed while it was copied; rerun the backup", missing)
 	}
-	if after, err := readStamp(stampPath); err != nil {
+	if after, err := readStamp(stampPath); errors.Is(err, strconv.ErrSyntax) {
+		return true, errTornStamp
+	} else if err != nil {
 		return false, err
 	} else if after != before {
 		return true, fmt.Errorf("a vacuum ran on it while it was copied; rerun the backup")

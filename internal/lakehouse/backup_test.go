@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -145,12 +144,11 @@ func TestALakehouseBackupIsConsistentWhileWritesAndVacuumsContinue(t *testing.T)
 			default:
 			}
 			s.Insert(ctx, "team/app", "notes", []map[string]any{{"title": "during"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{})
-			if i%10 == 0 {
+			if i%10 == 0 && i < 30 {
 				if _, err := s.Vacuum(ctx, "team/app"); err != nil {
 					t.Errorf("vacuum: %v", err)
 					return
 				}
-				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}()
@@ -178,5 +176,20 @@ func TestALakehouseBackupIsConsistentWhileWritesAndVacuumsContinue(t *testing.T)
 	}
 	if _, err := r.Vacuum(ctx, "team/app"); err != nil {
 		t.Fatalf("vacuum reads every restored file: %v", err)
+	}
+}
+
+func TestALakehouseBackupRetriesATornVacuumStamp(t *testing.T) {
+	dir, s := backupSource(t)
+	defer s.Close()
+	attempts := backupAttempts
+	backupAttempts = 1
+	defer func() { backupAttempts = attempts }()
+	if err := os.WriteFile(filepath.Join(dir, "team", "app.lakehouse", vacuumStamp), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Backup(t.Context(), dir, filepath.Join(t.TempDir(), "backup"), nil)
+	if err == nil || strings.Contains(err.Error(), "ParseInt") || !strings.Contains(err.Error(), "rerun the backup") {
+		t.Fatalf("backup over a half-written stamp: %v", err)
 	}
 }

@@ -26,7 +26,11 @@ func (s *Store) stampVacuum(ns string, done bool) error {
 	case n%2 == 1:
 		n++
 	}
-	return os.WriteFile(path, []byte(strconv.FormatInt(n, 10)), 0o600)
+	tmp := filepath.Join(filepath.Dir(path), "."+vacuumStamp+".tmp")
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(n, 10)), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func readStamp(path string) (int64, error) {
