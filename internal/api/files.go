@@ -173,15 +173,7 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	qv := r.URL.Query()
 	signed := qv.Has("sig")
-	var exp int64
-	if signed {
-		ctx, e, err := signedDownloadContext(r.Context(), qv, time.Now())
-		if err != nil {
-			writeError(w, r, err)
-			return
-		}
-		r, exp = r.WithContext(ctx), e
-	} else {
+	if !signed {
 		authed, err := s.Authenticated(r)
 		r = authed
 		if err != nil {
@@ -203,18 +195,17 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, badRequest("id must be a positive row id"))
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"namespace": ns, "table": table, "ids": []int64{id}})
-	ref, err := s.fileRefFor(r.Context(), normNS(ns), normTable(table), id, field)
-	if signed && err == nil {
-		ok, serr := s.files.Signer().Valid(normNS(ns), normTable(table), id, field, ref.sha, exp, qv.Get("sig"))
-		if serr != nil {
-			writeError(w, r, internal(serr))
+	if signed {
+		ctx, err := s.verifySignedDownload(r.Context(), qv, normNS(ns), normTable(table), id, field, time.Now())
+		if err != nil {
+			writeError(w, r, err)
 			return
 		}
-		if !ok {
-			err = invalidLink()
-		}
-	} else if signed {
+		r = r.WithContext(ctx)
+	}
+	body, _ := json.Marshal(map[string]any{"namespace": ns, "table": table, "ids": []int64{id}})
+	ref, err := s.fileRefFor(r.Context(), normNS(ns), normTable(table), id, field)
+	if signed && (err != nil || ref.sha != qv.Get("sha256")) {
 		err = invalidLink()
 	}
 	if err != nil {
@@ -387,6 +378,10 @@ var fileURLOp = OpDef{
 		if err := decode(body, &req); err != nil {
 			return nil, err
 		}
+		base := publicBaseFrom(ctx)
+		if base == "" {
+			return nil, badRequest("file_url links to this server's HTTP download endpoint, which this transport does not serve; call file_url over HTTP (/v1/file_url or /mcp)")
+		}
 		if s.files == nil {
 			return nil, badRequest("this server does not store files")
 		}
@@ -399,10 +394,6 @@ var fileURLOp = OpDef{
 		}
 		if req.ID < 1 {
 			return nil, badRequest("id must be a positive row id")
-		}
-		base := publicBaseFrom(ctx)
-		if base == "" {
-			return nil, badRequest("file_url links to this server's HTTP download endpoint, which this transport does not serve; call file_url over HTTP (/v1/file_url or /mcp)")
 		}
 		ns, table := normNS(req.Namespace), normTable(req.Table)
 		ref, err := s.fileRefFor(ctx, ns, table, req.ID, req.Field)
@@ -419,6 +410,7 @@ var fileURLOp = OpDef{
 		q.Set("table", table)
 		q.Set("id", strconv.FormatInt(req.ID, 10))
 		q.Set("field", req.Field)
+		q.Set("sha256", ref.sha)
 		q.Set("exp", strconv.FormatInt(exp.Unix(), 10))
 		q.Set("sig", sig)
 		return map[string]any{"url": base + "/v1/files?" + q.Encode(), "expires_at": exp.UTC().Format(time.RFC3339)}, nil
@@ -449,15 +441,26 @@ func invalidLink() error {
 	return forbidden("this download link is invalid, or the row's file has changed since it was issued; call file_url again for a new link")
 }
 
-func signedDownloadContext(ctx context.Context, qv url.Values, now time.Time) (context.Context, int64, error) {
+func (s *Server) verifySignedDownload(ctx context.Context, qv url.Values, ns, table string, id int64, field string, now time.Time) (context.Context, error) {
 	exp, err := strconv.ParseInt(qv.Get("exp"), 10, 64)
 	if err != nil {
-		return nil, 0, invalidLink()
+		return nil, invalidLink()
 	}
 	if now.Unix() > exp {
-		return nil, 0, forbidden("this download link expired at %s; call file_url again for a new link", time.Unix(exp, 0).UTC().Format(time.RFC3339))
+		return nil, forbidden("this download link expired at %s; call file_url again for a new link", time.Unix(exp, 0).UTC().Format(time.RFC3339))
 	}
-	return auth.WithIdentity(ctx, auth.Identity{Principal: auth.AdminPrincipal, Source: "file-url"}), exp, nil
+	sum := qv.Get("sha256")
+	if !files.ValidHash(sum) {
+		return nil, invalidLink()
+	}
+	ok, err := s.files.Signer().Valid(ns, table, id, field, sum, exp, qv.Get("sig"))
+	if err != nil {
+		return nil, internal(err)
+	}
+	if !ok {
+		return nil, invalidLink()
+	}
+	return auth.WithIdentity(ctx, auth.Identity{Principal: auth.AdminPrincipal, Source: "file-url"}), nil
 }
 
 func init() {

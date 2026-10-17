@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -520,15 +522,44 @@ func TestADownloadRacingAVacuumAnswersNotFound(t *testing.T) {
 	}
 }
 
-func TestASignedDownloadPastItsExpiryIsRefused(t *testing.T) {
-	q := url.Values{"exp": {"1000"}, "sig": {"00"}}
-	if _, _, err := signedDownloadContext(context.Background(), q, time.Unix(1001, 0)); err == nil || !strings.Contains(err.Error(), "expired") {
+func TestASignedDownloadIsCheckedBeforeAnyRowIsRead(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{files: files.New(files.Config{Root: dir})}
+	sum := strings.Repeat("a", 64)
+	q := url.Values{"exp": {"1000"}, "sha256": {sum}, "sig": {"00"}}
+	if _, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 1, "doc", time.Unix(1001, 0)); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("a link past exp must be refused as expired, got %v", err)
 	}
-	if _, exp, err := signedDownloadContext(context.Background(), q, time.Unix(1000, 0)); err != nil || exp != 1000 {
-		t.Fatalf("a link at its exp second still works, got %d %v", exp, err)
+	if _, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 1, "doc", time.Unix(1000, 0)); err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("a forged link must be refused, got %v", err)
 	}
-	if _, _, err := signedDownloadContext(context.Background(), url.Values{"sig": {"00"}}, time.Unix(0, 0)); err == nil {
-		t.Fatal("a link without exp must be refused")
+	if _, err := os.Stat(filepath.Join(dir, "files.key")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("checking a forged link must not create the signing key: %v", err)
+	}
+	sig, err := s.files.Signer().Sign("app", "docs", 1, "doc", sum, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.Set("sig", sig)
+	ctx, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 1, "doc", time.Unix(1000, 0))
+	if err != nil || auth.IdentityFrom(ctx).Principal != auth.AdminPrincipal {
+		t.Fatalf("a valid link at its exp second must pass, got %v", err)
+	}
+	if _, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 2, "doc", time.Unix(1000, 0)); err == nil {
+		t.Fatal("a valid signature must not cover another row")
+	}
+}
+
+func TestFileURLWithoutAnHTTPEndpointSaysToCallItOverHTTP(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for name, srv := range map[string]*Server{"without files": New(st, fakeEmb{}), "with files": New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: t.TempDir()})))} {
+		_, err := srv.Dispatch(context.Background(), "file_url", []byte(`{"namespace":"app","table":"docs","id":1,"field":"doc"}`))
+		if err == nil || !strings.Contains(err.Error(), "call file_url over HTTP") {
+			t.Errorf("%s: file_url with no public base URL = %v, want the over-HTTP advice", name, err)
+		}
 	}
 }

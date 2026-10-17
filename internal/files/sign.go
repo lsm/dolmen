@@ -24,7 +24,7 @@ type Signer struct {
 
 func (s *Store) Signer() *Signer { return s.signer }
 
-func (g *Signer) loadKey() ([]byte, error) {
+func (g *Signer) loadKey(create bool) ([]byte, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.key != nil {
@@ -32,6 +32,9 @@ func (g *Signer) loadKey() ([]byte, error) {
 	}
 	b, err := os.ReadFile(g.path)
 	if errors.Is(err, fs.ErrNotExist) {
+		if !create {
+			return nil, nil
+		}
 		b, err = g.createKey()
 	}
 	if err != nil {
@@ -83,20 +86,24 @@ func signedMessage(ns, table string, id int64, field, sum string, exp int64) []b
 	return b
 }
 
+func mac(key []byte, ns, table string, id int64, field, sum string, exp int64) string {
+	m := hmac.New(sha256.New, key)
+	m.Write(signedMessage(ns, table, id, field, sum, exp))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
 func (g *Signer) Sign(ns, table string, id int64, field, sum string, exp int64) (string, error) {
-	key, err := g.loadKey()
+	key, err := g.loadKey(true)
 	if err != nil {
 		return "", err
 	}
-	mac := hmac.New(sha256.New, key)
-	mac.Write(signedMessage(ns, table, id, field, sum, exp))
-	return hex.EncodeToString(mac.Sum(nil)), nil
+	return mac(key, ns, table, id, field, sum, exp), nil
 }
 
 func (g *Signer) Valid(ns, table string, id int64, field, sum string, exp int64, sig string) (bool, error) {
-	want, err := g.Sign(ns, table, id, field, sum, exp)
-	if err != nil {
+	key, err := g.loadKey(false)
+	if err != nil || key == nil {
 		return false, err
 	}
-	return hmac.Equal([]byte(want), []byte(sig)), nil
+	return hmac.Equal([]byte(mac(key, ns, table, id, field, sum, exp)), []byte(sig)), nil
 }

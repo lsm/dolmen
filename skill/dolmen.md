@@ -136,7 +136,7 @@ the whole server. What each operation needs:
 
 | Operation | Needs |
 |---|---|
-| `read_rows`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`, `/v1/subscribe` | `read`, or on a table with `row_access` any of `create`, `update`, `delete` for your own rows |
+| `read_rows`, `file_url`, `/v1/files`, `search_fulltext`, `search_vector`, `changes_since`, `wait_for`, `/v1/subscribe` | `read`, or on a table with `row_access` any of `create`, `update`, `delete` for your own rows |
 | `insert` | `create` |
 | `update` | `update` |
 | `delete` | `delete` |

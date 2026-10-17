@@ -67,7 +67,7 @@ var toolAnnotations = map[string]map[string]any{
 	"batch":           {"title": "Batch writes", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"upsert_by_key":   {"title": "Upsert by natural key", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-	"file_url":        {"title": "Get a file download URL", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+	"file_url":        {"title": "Get a file download URL", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"read_rows":       {"title": "Read rows by id", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"tokenize":        {"title": "Tokenize text", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
