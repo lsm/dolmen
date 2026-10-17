@@ -284,9 +284,9 @@ SQLite and the lakehouse put it beside the namespace's `.db` or `.lakehouse/` di
 is pure Go. A blob is the object `<prefix><ns>.files/<first two hex>/<sha256>`, mirroring the
 local layout, so dropping `a` never touches `a/b`'s blobs. Parts and fetches still stream to
 `<data>/.files-tmp/` under the same limits, then upload once their hash is known; an object that
-already exists is not uploaded again. S3 caps a single `PUT` and a single server-side copy at
-5 GiB, so a blob larger than that uploads as a multipart upload and is copied part by part
-(`UploadPartCopy`), which keeps `-max-file-size` unbounded on S3 as on the local store. The store is configured by flags, each with a
+already exists is not uploaded again. S3 caps a single `PUT` at 5 GiB, so a larger blob uploads
+as a multipart upload; an S3 object is capped at 5 TiB, so with `-files-store s3` a
+`-max-file-size` above 5 TiB refuses to start, naming the ceiling. The store is configured by flags, each with a
 `DOLMEN_FILES_S3_*` environment variable:
 
 | Flag | Default | Meaning |
@@ -337,12 +337,25 @@ directory has one live server.
 
 **On S3 the pins are not enough.** Several servers can share one PostgreSQL catalog and one bucket,
 and each holds only its own pins, so one server's sweep could delete a blob another server has just
-attached but not yet committed. On S3 the sweep therefore also skips every blob whose object was
-modified within `-files-sweep-grace` (default `24h`). A write that attaches a blob already stored
-and last modified more than half the grace ago refreshes the object's timestamp with an in-place
-copy (multipart past 5 GiB, as above) before it commits, so a blob being re-attached is always inside the window. A write that
-takes longer than half the grace to commit is the one case left uncovered, which is why the grace
-is long. The local store keeps the exact pin rule.
+attached but not yet committed. PostgreSQL already serializes a namespace's writes across servers:
+every write takes the namespace's catalog row `FOR NO KEY UPDATE` in its transaction. The S3
+design orders blobs by that lock instead of by pins:
+
+- A part or fetched file uploads to its final key before the write takes the lock, so the lock is
+  never held for an upload.
+- Inside the write's transaction, after taking the lock, attaching a blob (a `part`, a `url` or a
+  `copy_from`) checks that its object exists. If a sweep removed it in between, a `part` or `url`
+  re-uploads it from the request's temporary file, which lives until the request ends; a
+  `copy_from` source that is gone is the existing `invalid_request` saying to read the source row
+  again.
+- The sweep marks and deletes in one transaction holding the same row lock, so no write can attach
+  between its scan of the file columns and its last delete.
+- A failed write on S3 never deletes a blob it uploaded, since another server may have attached it
+  after the lock was released; the next sweep collects it.
+
+So a committed reference always names an object that existed while its write held the lock, and
+no sweep can run between that check and the commit. The local store keeps the pin rule, whose
+check and unlink are atomic under one process's lock.
 
 Reference counts were rejected: every write path (insert, update, upsert, `upsert_by_key`, `batch`
 with its rollback, `drop_field`, `drop_table`, the lakehouse's replayed commit log) would have to keep
@@ -360,7 +373,6 @@ stored file bytes after the sweep. No other operation's output changes shape.
 | `-max-file-size` | `1GiB` | Largest single file, whatever a field's `max_bytes` says |
 | `-max-namespace-files-size` | `0` | Largest total of one namespace's stored blobs, as bytes or with `KiB`/`MiB`/`GiB`/`TiB`; `0` is unbounded |
 | `-files-store` | `local` | Blob store: `local`, or `s3` (configured as in "Blob store") |
-| `-files-sweep-grace` | `24h` | On S3, how recently modified a blob may be and still be kept by the sweep |
 | `-files-fetch-hosts` | empty | Hosts a `url` value may fetch from; empty disables fetching |
 | `-files-fetch-timeout` | `5m` | Longest one server-side fetch may take |
 | `-max-request-files-size` | `2GiB` | Most file bytes one request may stream, across all its parts and `url` fetches |
@@ -433,8 +445,8 @@ Each one a PR from main.
    declarations; PostgreSQL still refuses them until the S3 store exists.
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store, in PRs of their own: the `BlobStore` interface with the local store behind it;
-   `file_url` with signed local URLs; the S3 store and its flags; the sweep's grace window and the
-   refresh on re-attach; then PostgreSQL accepting `file` fields with the S3 store, with transport
+   `file_url` with signed local URLs; the S3 store and its flags; the S3 sweep under PostgreSQL's
+   namespace lock; then PostgreSQL accepting `file` fields with the S3 store, with transport
    conformance and documentation.
 4. `dolmen backup` and `restore` with blobs.
 
@@ -458,11 +470,15 @@ Settled on 2026-10-14.
 
 Settled on 2026-10-17.
 
-6. **The S3 sweep keeps recent blobs for a grace window**, and re-attaching an old blob refreshes it,
-   because servers sharing a bucket cannot see each other's pins. Pins in PostgreSQL were rejected:
-   every file write would pay extra round trips, and a crashed server's pins would need expiry
-   anyway. Leaving S3 to bucket lifecycle rules was rejected because blobs would leak by default.
-   The per-namespace files cap is refused with S3 rather than enforced inexactly.
+6. **The S3 sweep is ordered by PostgreSQL's namespace lock**, because servers sharing a bucket cannot
+   see each other's pins: an attach checks its object under the lock writes already take, and the
+   sweep marks and deletes under the same lock. A grace window on object timestamps was considered
+   first and rejected: a sweep could list a blob, another server refresh it, and the sweep still
+   delete it, since S3 has no portable conditional delete, and refreshing needed a self-copy. Pins
+   in PostgreSQL were rejected because every file write would pay extra round trips and a crashed
+   server's pins would need expiry. Leaving S3 to bucket lifecycle rules was rejected because blobs
+   would leak by default. The per-namespace files cap is refused with S3 rather than enforced
+   inexactly.
 7. **`minio-go` is the S3 client**: one pure-Go module that works with any S3-compatible service,
    with presigned `GET` and a standard credential chain built in. `aws-sdk-go-v2` was heavier, and
    hand-rolled SigV4 would make us own the signing code.
