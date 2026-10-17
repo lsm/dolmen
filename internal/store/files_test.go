@@ -191,7 +191,7 @@ type recordingSweeper struct {
 	called int
 }
 
-func (r *recordingSweeper) Sweep(ns string, refs map[string]bool) (FileSweep, error) {
+func (r *recordingSweeper) Sweep(_ context.Context, ns string, refs map[string]bool) (FileSweep, error) {
 	r.called++
 	r.refs = refs
 	if r.during != nil {

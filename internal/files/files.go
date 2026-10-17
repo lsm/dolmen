@@ -39,6 +39,7 @@ type Config struct {
 	FetchHosts        []string
 	FetchTimeout      time.Duration
 	FetchWording      *FetchWording
+	Blobs             BlobStore
 }
 
 type Error struct {
@@ -64,6 +65,7 @@ type Store struct {
 	attaches map[string]map[string]int
 	live     map[string]bool
 	fetcher  *Fetcher
+	blobs    BlobStore
 }
 
 func New(cfg Config) *Store {
@@ -80,7 +82,10 @@ func New(cfg Config) *Store {
 	if cfg.FetchWording != nil {
 		fetcher.Worded(*cfg.FetchWording)
 	}
-	return &Store{cfg: cfg, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
+	if cfg.Blobs == nil {
+		cfg.Blobs = NewLocal(cfg.Root)
+	}
+	return &Store{cfg: cfg, blobs: cfg.Blobs, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
 }
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
@@ -269,14 +274,6 @@ func (r *Request) Close() {
 	r.s.mu.Unlock()
 }
 
-func (s *Store) nsDir(ns string) string {
-	return filepath.Join(s.cfg.Root, filepath.FromSlash(ns)+nsDirSuffix)
-}
-
-func (s *Store) blobPath(ns, sum string) string {
-	return filepath.Join(s.nsDir(ns), sum[:2], sum)
-}
-
 func ValidHash(sum string) bool {
 	if len(sum) != sha256.Size*2 {
 		return false
@@ -285,11 +282,11 @@ func ValidHash(sum string) bool {
 	return err == nil && strings.ToLower(sum) == sum
 }
 
-func (s *Store) Open(ns, sum string) (*os.File, error) {
+func (s *Store) Open(ctx context.Context, ns, sum string) (Blob, error) {
 	if !ValidHash(sum) {
 		return nil, fs.ErrNotExist
 	}
-	return os.Open(s.blobPath(ns, sum))
+	return s.blobs.Open(ctx, ns, sum)
 }
 
 func (s *Store) namespaceTotal(ns string) (int64, error) {
@@ -297,20 +294,8 @@ func (s *Store) namespaceTotal(ns string) (int64, error) {
 		return t, nil
 	}
 	var total int64
-	err := filepath.WalkDir(s.nsDir(ns), func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		if d.Type().IsRegular() && ValidHash(d.Name()) {
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			total += info.Size()
-		}
+	err := s.blobs.List(context.Background(), ns, func(_ string, info BlobInfo) error {
+		total += info.Size
 		return nil
 	})
 	if err != nil {
@@ -345,7 +330,7 @@ func (s *Store) unpin(ns, sum string) {
 	m[sum]--
 }
 
-func (r *Request) Attach(_ context.Context, ns, name string) (store.FileBlob, error) {
+func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.parts[name]
@@ -361,10 +346,9 @@ func (r *Request) Attach(_ context.Context, ns, name string) (store.FileBlob, er
 	s := r.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	final := s.blobPath(ns, p.sum)
-	info, err := os.Stat(final)
+	info, err := s.blobs.Stat(ctx, ns, p.sum)
 	switch {
-	case err == nil && info.Size() == p.size:
+	case err == nil && info.Size == p.size:
 		if err := os.Remove(p.tmp); err != nil {
 			return store.FileBlob{}, err
 		}
@@ -377,19 +361,13 @@ func (r *Request) Attach(_ context.Context, ns, name string) (store.FileBlob, er
 			return store.FileBlob{}, terr
 		}
 		if err == nil {
-			total -= info.Size()
+			total -= info.Size
 		}
 		if s.cfg.MaxNamespaceFiles > 0 && total+p.size > s.cfg.MaxNamespaceFiles {
 			return store.FileBlob{}, &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
 		}
-		if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
-			return store.FileBlob{}, err
-		}
-		if err := os.Rename(p.tmp, final); err != nil {
-			return store.FileBlob{}, err
-		}
-		if err := syncDir(filepath.Dir(final)); err != nil {
-			return store.FileBlob{}, err
+		if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
+			return store.FileBlob{}, storageErr(err)
 		}
 		s.totals[ns] = total + p.size
 		if s.attaches[ns] == nil {
@@ -437,10 +415,8 @@ func (r *Request) Discard() {
 	defer s.mu.Unlock()
 	for _, c := range r.created {
 		if s.attaches[c.ns][c.sum] == 1 {
-			path := s.blobPath(c.ns, c.sum)
-			if os.Remove(path) == nil {
+			if s.blobs.Delete(context.Background(), c.ns, c.sum) == nil {
 				s.totals[c.ns] -= c.size
-				os.Remove(filepath.Dir(path))
 			}
 		}
 		s.forget(c)
@@ -455,38 +431,23 @@ func (s *Store) forget(c created) {
 	}
 }
 
-func (s *Store) Sweep(ns string, referenced map[string]bool) (store.FileSweep, error) {
+func (s *Store) Sweep(ctx context.Context, ns string, referenced map[string]bool) (store.FileSweep, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out store.FileSweep
-	dir := s.nsDir(ns)
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		if !d.Type().IsRegular() || !ValidHash(d.Name()) {
+	err := s.blobs.List(ctx, ns, func(sum string, info BlobInfo) error {
+		if referenced[sum] || s.pins[ns][sum] > 0 {
+			out.Bytes += info.Size
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil {
+		if err := s.blobs.Delete(ctx, ns, sum); err != nil {
 			return err
 		}
-		if referenced[d.Name()] || s.pins[ns][d.Name()] > 0 {
-			out.Bytes += info.Size()
-			return nil
-		}
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-		os.Remove(filepath.Dir(path))
 		if t, ok := s.totals[ns]; ok {
-			s.totals[ns] = t - info.Size()
+			s.totals[ns] = t - info.Size
 		}
 		out.Removed++
-		out.RemovedBytes += info.Size()
+		out.RemovedBytes += info.Size
 		return nil
 	})
 	if err != nil {
@@ -523,7 +484,7 @@ func (r *Request) Pin(ns, sum string) error {
 	if !ValidHash(sum) {
 		return invalid(http.StatusBadRequest, "the file to copy has no valid hash")
 	}
-	if _, err := os.Stat(s.blobPath(ns, sum)); err != nil {
+	if _, err := s.blobs.Stat(context.Background(), ns, sum); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return invalid(http.StatusNotFound, "the file to copy was removed while this write ran; read the source row again and retry")
 		}

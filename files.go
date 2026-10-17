@@ -201,7 +201,7 @@ func (s *Store) OpenFile(ctx context.Context, namespace, table string, id int64,
 	if n, ok := ref["size"].(json.Number); ok {
 		info.Size, _ = n.Int64()
 	}
-	f, err := s.files.Open(ns, info.SHA256)
+	f, err := s.files.Open(ctx, ns, info.SHA256)
 	if err != nil {
 		return nil, FileInfo{}, &derr.Error{Code: derr.Internal, Message: fmt.Sprintf("the file of %s row %d field %q cannot be read from the file store", table, id, field), Cause: err}
 	}

@@ -213,7 +213,7 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	if s.beforeFileOpen != nil {
 		s.beforeFileOpen()
 	}
-	f, err := s.files.Open(normNS(ns), ref.sha)
+	f, err := s.files.Open(r.Context(), normNS(ns), ref.sha)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			again, rerr := s.Dispatch(r.Context(), "read_rows", body)

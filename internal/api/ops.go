@@ -548,7 +548,7 @@ var Ops = map[string]OpDef{
 				return nil, wrapStoreErr(err)
 			}
 			if s.files != nil {
-				if err := s.files.DropNamespace(ns); err != nil {
+				if err := s.files.DropNamespace(ctx, ns); err != nil {
 					return nil, internal(err)
 				}
 			}
