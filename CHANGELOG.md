@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `dolmen backup` copies the files that `file` fields reference, listing each with its SHA-256 in
+  the manifest (format 2 when there are any), and `dolmen restore` verifies and restores them.
+  Backup no longer refuses a data directory that stores files.
+
 - **Lakehouse file fields**: multipart, URL and `copy_from` writes, idempotent replay,
   downloads with row authorization, namespace cleanup, vacuum sweeping and schema-only
   `set_file_constraints` now share SQLite's behavior. References are stored as Parquet strings;

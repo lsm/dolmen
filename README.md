@@ -1506,9 +1506,9 @@ rather than inserting again.
 
 A namespace is a SQLite file in WAL mode, so copying `<ns>.db` while the server runs can miss
 commits still in the `-wal` file. Back up with the binary instead, which takes a consistent
-snapshot of every namespace, and of the grant registry when auth is on, while writes continue. It cannot copy the files of `file` fields yet, so it refuses a data
-directory that stores any, naming the namespace; stop the server and copy the whole directory
-instead:
+snapshot of every namespace, and of the grant registry when auth is on, while writes continue.
+It also copies every file the snapshot's `file` fields reference (unreferenced files a `vacuum`
+would remove are left out), checking each against its SHA-256:
 
 ```bash
 dolmen backup -data ./data -out ./backups/2026-09-23
@@ -1516,7 +1516,7 @@ dolmen backup -data ./data -out ./backups/2026-09-23
 
 The backup directory must be new or empty. It gets one file per namespace, laid out as in the
 data directory, and a `manifest.json`, written last, that records each file's size, SHA-256 and
-catalog version. A backup interrupted before its manifest is written is never mistaken for a
+catalog version, plus each file's path, size and SHA-256. A backup interrupted before its manifest is written is never mistaken for a
 finished one.
 
 ```bash
@@ -1525,7 +1525,7 @@ dolmen restore -from ./backups/2026-09-23 -data ./data
 
 Restore checks every file against its manifest, runs SQLite's integrity check, and confirms this
 binary can read each catalog before it writes anything. It then moves each file into place
-atomically. It never overwrites: a namespace that already exists, or is open in a running
+atomically, the files of `file` fields before the namespaces that reference them. It never overwrites: a namespace that already exists, or is open in a running
 server, is refused. Restore into an empty data directory, or drop the namespace first. A file
 already in place with the backed-up content is skipped, so a restore interrupted partway can
 simply be run again.

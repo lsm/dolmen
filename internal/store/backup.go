@@ -19,6 +19,7 @@ import (
 const (
 	BackupManifestFile   = "manifest.json"
 	backupManifestFormat = 1
+	blobManifestFormat   = 2
 	restoringSuffix      = ".restoring"
 )
 
@@ -26,6 +27,14 @@ type BackupManifest struct {
 	Format    int          `json:"format"`
 	CreatedAt string       `json:"created_at"`
 	Files     []BackupFile `json:"files"`
+	Blobs     []BackupBlob `json:"blobs,omitempty"`
+}
+
+type BackupBlob struct {
+	Namespace string `json:"namespace"`
+	Path      string `json:"path"`
+	Bytes     int64  `json:"bytes"`
+	SHA256    string `json:"sha256"`
 }
 
 type BackupFile struct {
@@ -46,11 +55,6 @@ func nsFile(dir, name string) string {
 func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (BackupManifest, error) {
 	if err := emptyOrAbsent(outDir); err != nil {
 		return BackupManifest{}, err
-	}
-	if ns, err := storedFiles(dataDir, "", 0); err != nil {
-		return BackupManifest{}, err
-	} else if ns != "" {
-		return BackupManifest{}, fmt.Errorf("namespace %s stores files from file fields, which dolmen backup cannot copy yet; stop the server and copy the whole data directory instead", ns)
 	}
 	var names []string
 	if err := walkNamespaces(dataDir, "", &names); err != nil {
@@ -75,6 +79,14 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (B
 		}
 		f.Namespace = name
 		m.Files = append(m.Files, f)
+		blobs, err := backupBlobs(ctx, dataDir, outDir, name, filepath.Join(outDir, rel))
+		if err != nil {
+			return BackupManifest{}, err
+		}
+		m.Blobs = append(m.Blobs, blobs...)
+	}
+	if len(m.Blobs) > 0 {
+		m.Format = blobManifestFormat
 	}
 	for _, rel := range extraFiles {
 		src := filepath.Join(dataDir, rel)
@@ -198,8 +210,8 @@ func ReadBackupManifest(dir string) (BackupManifest, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return BackupManifest{}, fmt.Errorf("%s in %s is not a backup manifest: %w", BackupManifestFile, dir, err)
 	}
-	if m.Format != backupManifestFormat {
-		return BackupManifest{}, fmt.Errorf("backup manifest format %d is not one this binary reads (it reads %d)", m.Format, backupManifestFormat)
+	if m.Format != backupManifestFormat && m.Format != blobManifestFormat {
+		return BackupManifest{}, fmt.Errorf("backup manifest format %d is not one this binary reads (it reads %d and %d)", m.Format, backupManifestFormat, blobManifestFormat)
 	}
 	return m, nil
 }
@@ -208,6 +220,23 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 	m, err := ReadBackupManifest(fromDir)
 	if err != nil {
 		return BackupManifest{}, err
+	}
+	var blobs []BackupBlob
+	for _, b := range m.Blobs {
+		rel := filepath.FromSlash(b.Path)
+		if !filepath.IsLocal(rel) || !strings.HasSuffix(b.Path, "/"+b.SHA256) {
+			return BackupManifest{}, fmt.Errorf("manifest names file %q, which is not a file store path inside the backup", b.Path)
+		}
+		if err := verifyBlob(filepath.Join(fromDir, rel), b); err != nil {
+			return BackupManifest{}, err
+		}
+		restored, err := blobRestored(filepath.Join(dataDir, rel), b)
+		if err != nil {
+			return BackupManifest{}, err
+		}
+		if !restored {
+			blobs = append(blobs, b)
+		}
 	}
 	var pending []BackupFile
 	for _, f := range m.Files {
@@ -225,6 +254,12 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 		}
 		if !restored {
 			pending = append(pending, f)
+		}
+	}
+	for _, b := range blobs {
+		rel := filepath.FromSlash(b.Path)
+		if err := activate(filepath.Join(fromDir, rel), filepath.Join(dataDir, rel)); err != nil {
+			return BackupManifest{}, fmt.Errorf("restore %s: %w", b.Path, err)
 		}
 	}
 	sort.Slice(pending, func(i, j int) bool { return pending[i].Path < pending[j].Path })
@@ -323,40 +358,94 @@ func activate(src, target string) error {
 	return os.Remove(tmp)
 }
 
-func storedFiles(dir, prefix string, depth int) (string, error) {
-	if depth >= maxNSDepth {
-		return "", nil
-	}
-	entries, err := os.ReadDir(dir)
+func backupBlobs(ctx context.Context, dataDir, outDir, ns, snapshot string) ([]BackupBlob, error) {
+	db, err := sql.Open("sqlite", dsn(snapshot, true))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		child := name
-		if prefix != "" {
-			child = prefix + "/" + name
-		}
-		if stem, ok := strings.CutSuffix(name, ".files"); ok && nsSegmentRe.MatchString(stem) {
-			full := filepath.Join(dir, name)
-			sub, err := os.ReadDir(full)
-			if err != nil {
-				return "", err
-			}
-			if len(sub) > 0 {
-				return strings.TrimSuffix(child, ".files"), nil
-			}
-			continue
-		}
-		if !nsSegmentRe.MatchString(name) {
-			continue
-		}
-		if ns, err := storedFiles(filepath.Join(dir, name), child, depth+1); err != nil || ns != "" {
-			return ns, err
-		}
+	defer db.Close()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return "", nil
+	defer conn.Close()
+	refs, err := fileReferences(ctx, conn)
+	if err != nil {
+		return nil, fmt.Errorf("back up the files of namespace %s: %w", ns, err)
+	}
+	sums := make([]string, 0, len(refs))
+	for sum := range refs {
+		sums = append(sums, sum)
+	}
+	sort.Strings(sums)
+	var out []BackupBlob
+	for _, sum := range sums {
+		rel := filepath.Join(filepath.FromSlash(ns)+".files", sum[:2], sum)
+		b := BackupBlob{Namespace: ns, Path: filepath.ToSlash(rel), SHA256: sum}
+		n, got, err := copyFileSynced(filepath.Join(dataDir, rel), filepath.Join(outDir, rel))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("namespace %s references file %s, which is missing from the data directory; if a vacuum removed it after its row changed, run the backup again", ns, sum)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("back up file %s of namespace %s: %w", sum, ns, err)
+		}
+		if got != sum {
+			return nil, fmt.Errorf("file %s of namespace %s does not hash to its name (sha256 %s); the file store is damaged", sum, ns, got)
+		}
+		b.Bytes = n
+		out = append(out, b)
+	}
+	return out, nil
+}
+
+func copyFileSynced(src, dst string) (int64, string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return 0, "", err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return 0, "", err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return 0, "", err
+	}
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(out, h), in)
+	if err == nil {
+		err = out.Sync()
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return n, hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func verifyBlob(path string, b BackupBlob) error {
+	n, sum, err := fileDigest(path)
+	if err != nil {
+		return fmt.Errorf("backup file %s: %w", b.Path, err)
+	}
+	if n != b.Bytes || sum != b.SHA256 {
+		return fmt.Errorf("backup file %s does not match its manifest (%d bytes, sha256 %s; the manifest says %d bytes, %s); the backup is damaged, so nothing was restored", b.Path, n, sum, b.Bytes, b.SHA256)
+	}
+	return nil
+}
+
+func blobRestored(target string, b BackupBlob) (bool, error) {
+	n, sum, err := fileDigest(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if n == b.Bytes && sum == b.SHA256 {
+		return true, nil
+	}
+	return false, fmt.Errorf("%s already exists and does not hash to its name; the data directory's file store is damaged, so remove that file and restore again", target)
 }
