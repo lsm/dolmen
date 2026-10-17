@@ -165,3 +165,79 @@ func (f *flakyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	return http.DefaultTransport.RoundTrip(r)
 }
+
+type gatedPuts struct {
+	BlobStore
+	entered chan struct{}
+	release chan struct{}
+	gate    bool
+}
+
+func (g *gatedPuts) Put(ctx context.Context, ns, sum, path string) error {
+	if g.gate {
+		g.gate = false
+		close(g.entered)
+		<-g.release
+	}
+	return g.BlobStore.Put(ctx, ns, sum, path)
+}
+
+func TestAFailedWriteKeepsABlobAnotherRequestIsStillUploading(t *testing.T) {
+	ctx := context.Background()
+	blobs := &gatedPuts{BlobStore: NewLocal(t.TempDir()), entered: make(chan struct{}), release: make(chan struct{}), gate: true}
+	s := New(Config{Root: t.TempDir(), Blobs: blobs})
+	slow, failed := s.NewRequest(), s.NewRequest()
+	defer slow.Close()
+	defer failed.Close()
+	for _, r := range []*Request{slow, failed} {
+		if err := r.Receive("f", "a.txt", "", strings.NewReader("shared bytes")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := slow.Attach(ctx, "app", "f")
+		done <- err
+	}()
+	<-blobs.entered
+	b, err := failed.Attach(ctx, "app", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed.Discard()
+	close(blobs.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Open(ctx, "app", b.SHA256); err != nil {
+		t.Fatalf("a failed write deleted a blob another request was uploading: %v", err)
+	}
+}
+
+func TestAnUploadDoesNotHoldTheStoreLock(t *testing.T) {
+	ctx := context.Background()
+	blobs := &gatedPuts{BlobStore: NewLocal(t.TempDir()), entered: make(chan struct{}), release: make(chan struct{}), gate: true}
+	s := New(Config{Root: t.TempDir(), Blobs: blobs})
+	slow, quick := s.NewRequest(), s.NewRequest()
+	defer slow.Close()
+	defer quick.Close()
+	if err := slow.Receive("f", "a.txt", "", strings.NewReader("slow upload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := quick.Receive("f", "b.txt", "", strings.NewReader("other bytes")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := slow.Attach(ctx, "app", "f")
+		done <- err
+	}()
+	<-blobs.entered
+	if _, err := quick.Attach(ctx, "app", "f"); err != nil {
+		t.Fatalf("a second attach while an upload runs: %v", err)
+	}
+	close(blobs.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

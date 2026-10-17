@@ -99,8 +99,7 @@ func unavailable(err error) error {
 	if err == nil {
 		return nil
 	}
-	resp := minio.ToErrorResponse(err)
-	if resp.Code == "NoSuchKey" || resp.StatusCode == http.StatusNotFound {
+	if minio.ToErrorResponse(err).Code == "NoSuchKey" {
 		return fs.ErrNotExist
 	}
 	return &Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: "the file store did not answer (" + s3ErrorClass(err) + "), so nothing was written or read; retry shortly"}

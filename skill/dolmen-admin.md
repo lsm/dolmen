@@ -835,7 +835,8 @@ match, before ranking.
   lakehouse; `create_table` and `migrate add_field` refuse them on PostgreSQL until the S3 file
   store lands.
 - `storage_unavailable` (503) means the server holds as much in-flight file data as
-  `-max-pending-files-size` allows; the write may be retried. A namespace over
+  `-max-pending-files-size` allows, or, with `-files-store s3`, that the bucket did not answer;
+  either way the call may be retried. A namespace over
   `-max-namespace-files-size` refuses new files with `507`.
 
 ### Id, `created_at`, and stability

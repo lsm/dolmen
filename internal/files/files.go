@@ -344,46 +344,23 @@ func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, 
 		return store.FileBlob{}, fmt.Errorf("file part %q was already stored in another namespace", name)
 	}
 	s := r.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	info, err := s.blobs.Stat(ctx, ns, p.sum)
-	switch {
-	case err == nil && info.Size == p.size:
-		if err := os.Remove(p.tmp); err != nil {
+	if s.cfg.MaxNamespaceFiles > 0 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err := r.placeCapped(ctx, ns, p); err != nil {
 			return store.FileBlob{}, err
 		}
-		if n, ok := s.attaches[ns][p.sum]; ok {
-			s.attaches[ns][p.sum] = n + 1
+	} else {
+		s.mu.Lock()
+		s.pin(ns, p.sum)
+		s.mu.Unlock()
+		err := r.place(ctx, ns, p)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.unpin(ns, p.sum)
+		if err != nil {
+			return store.FileBlob{}, err
 		}
-	case err == nil || errors.Is(err, fs.ErrNotExist):
-		var total int64
-		capped := s.cfg.MaxNamespaceFiles > 0
-		if capped {
-			t, terr := s.namespaceTotal(ns)
-			if terr != nil {
-				return store.FileBlob{}, terr
-			}
-			total = t
-		}
-		if err == nil {
-			total -= info.Size
-		}
-		if capped && total+p.size > s.cfg.MaxNamespaceFiles {
-			return store.FileBlob{}, &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
-		}
-		if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
-			return store.FileBlob{}, storageErr(err)
-		}
-		if capped {
-			s.totals[ns] = total + p.size
-		}
-		if s.attaches[ns] == nil {
-			s.attaches[ns] = map[string]int{}
-		}
-		s.attaches[ns][p.sum] = 1
-		r.created = append(r.created, created{ns: ns, sum: p.sum, size: p.size})
-	default:
-		return store.FileBlob{}, err
 	}
 	p.tmp = ""
 	s.pending -= p.pending
@@ -392,6 +369,71 @@ func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, 
 	r.pinned = append(r.pinned, [2]string{ns, p.sum})
 	p.placed[ns] = true
 	return p.blob(), nil
+}
+
+func (r *Request) place(ctx context.Context, ns string, p *part) error {
+	s := r.s
+	info, err := s.blobs.Stat(ctx, ns, p.sum)
+	exists := err == nil && info.Size == p.size
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if exists {
+		if err := os.Remove(p.tmp); err != nil {
+			return err
+		}
+	} else if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
+		return storageErr(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n, ok := s.attaches[ns][p.sum]; ok {
+		s.attaches[ns][p.sum] = n + 1
+	} else if !exists {
+		if s.attaches[ns] == nil {
+			s.attaches[ns] = map[string]int{}
+		}
+		s.attaches[ns][p.sum] = 1
+		r.created = append(r.created, created{ns: ns, sum: p.sum, size: p.size})
+	}
+	return nil
+}
+
+func (r *Request) placeCapped(ctx context.Context, ns string, p *part) error {
+	s := r.s
+	info, err := s.blobs.Stat(ctx, ns, p.sum)
+	switch {
+	case err == nil && info.Size == p.size:
+		if err := os.Remove(p.tmp); err != nil {
+			return err
+		}
+		if n, ok := s.attaches[ns][p.sum]; ok {
+			s.attaches[ns][p.sum] = n + 1
+		}
+	case err == nil || errors.Is(err, fs.ErrNotExist):
+		total, terr := s.namespaceTotal(ns)
+		if terr != nil {
+			return terr
+		}
+		if err == nil {
+			total -= info.Size
+		}
+		if total+p.size > s.cfg.MaxNamespaceFiles {
+			return &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
+		}
+		if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
+			return storageErr(err)
+		}
+		s.totals[ns] = total + p.size
+		if s.attaches[ns] == nil {
+			s.attaches[ns] = map[string]int{}
+		}
+		s.attaches[ns][p.sum] = 1
+		r.created = append(r.created, created{ns: ns, sum: p.sum, size: p.size})
+	default:
+		return err
+	}
+	return nil
 }
 
 func syncDir(dir string) error {
@@ -421,7 +463,7 @@ func (r *Request) Discard() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, c := range r.created {
-		if s.attaches[c.ns][c.sum] == 1 {
+		if s.attaches[c.ns][c.sum] == 1 && s.pins[c.ns][c.sum] <= 1 {
 			if t, ok := s.totals[c.ns]; s.blobs.Delete(context.Background(), c.ns, c.sum) == nil && ok {
 				s.totals[c.ns] = t - c.size
 			}
