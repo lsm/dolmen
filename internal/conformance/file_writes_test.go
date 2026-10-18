@@ -2,13 +2,12 @@ package conformance
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -93,10 +92,23 @@ func TestFileWritesAcrossOperationsAndReplay(t *testing.T) {
 			t.Fatalf("%s %s: %d %q %v", tc.method, tc.header, res.StatusCode, got, res.Header)
 		}
 	}
-	h.mustHTTP("drop_namespace", map[string]any{"namespace": "fil", "confirm": "fil"})
-	if _, err := os.Stat(filepath.Join(h.dir, "fil.files")); !os.IsNotExist(err) {
-		t.Fatalf("namespace files remain: %v", err)
+	if !h.blobStored("fil", hash) {
+		t.Fatal("the attached file is not in the file store")
 	}
+	h.mustHTTP("drop_namespace", map[string]any{"namespace": "fil", "confirm": "fil"})
+	if h.blobStored("fil", hash) {
+		t.Fatal("drop_namespace left the namespace's files in the file store")
+	}
+}
+
+func (h *harness) blobStored(ns, sum string) bool {
+	h.t.Helper()
+	f, err := h.fileStore.Open(context.Background(), ns, sum)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }
 
 func TestFileBatchRollbackLeavesNoBlob(t *testing.T) {
@@ -113,7 +125,16 @@ func TestFileBatchRollbackLeavesNoBlob(t *testing.T) {
 	}
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
-	if _, err := os.Stat(filepath.Join(h.dir, "fil.files", hash[:2], hash)); !os.IsNotExist(err) {
-		t.Fatalf("failed batch left its blob: %v", err)
+	if !h.fileStore.Remote() {
+		if h.blobStored("fil", hash) {
+			t.Fatal("a failed batch on the local store left its blob")
+		}
+		return
+	}
+	if !h.blobStored("fil", hash) {
+		t.Fatal("on a shared store a failed batch leaves its blob for the sweep, since another server may have attached it")
+	}
+	if res := h.mustHTTP("vacuum", map[string]any{"namespace": "fil"}); res["files_removed"] != float64(1) || h.blobStored("fil", hash) {
+		t.Fatalf("vacuum must remove the failed batch's unreferenced blob: %v", res)
 	}
 }
