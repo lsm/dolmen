@@ -332,19 +332,24 @@ const (
 
 type publicBaseKey struct{}
 
-func WithPublicBase(ctx context.Context, base func() string) context.Context {
+func WithPublicBase(ctx context.Context, base func() (string, error)) context.Context {
 	return context.WithValue(ctx, publicBaseKey{}, base)
 }
 
-func (s *Server) PublicBase(r *http.Request) func() string {
-	return func() string { return s.publicContext(r).BaseURL }
+func (s *Server) PublicBase(r *http.Request) func() (string, error) {
+	return func() (string, error) {
+		if !s.UsableHost(r) {
+			return "", errUnusableHost
+		}
+		return s.publicContext(r).BaseURL, nil
+	}
 }
 
-func publicBaseFrom(ctx context.Context) string {
-	if f, ok := ctx.Value(publicBaseKey{}).(func() string); ok {
+func publicBaseFrom(ctx context.Context) (string, error) {
+	if f, ok := ctx.Value(publicBaseKey{}).(func() (string, error)); ok {
 		return f()
 	}
-	return ""
+	return "", badRequest("file_url links to this server's HTTP download endpoint, which this transport does not serve; call file_url over HTTP (/v1/file_url or /mcp)")
 }
 
 type fileURLReq struct {
@@ -378,9 +383,9 @@ var fileURLOp = OpDef{
 		if err := decode(body, &req); err != nil {
 			return nil, err
 		}
-		base := publicBaseFrom(ctx)
-		if base == "" {
-			return nil, badRequest("file_url links to this server's HTTP download endpoint, which this transport does not serve; call file_url over HTTP (/v1/file_url or /mcp)")
+		base, err := publicBaseFrom(ctx)
+		if err != nil {
+			return nil, err
 		}
 		if s.files == nil {
 			return nil, badRequest("this server does not store files")

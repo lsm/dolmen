@@ -584,3 +584,19 @@ func TestASignedDownloadKeepsOutagesDistinctFromStaleLinks(t *testing.T) {
 		t.Fatal("a link matches only the row's current hash")
 	}
 }
+
+func TestFileURLRefusesToQuoteAnUnusableHost(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: t.TempDir()})))
+	r := httptest.NewRequest(http.MethodPost, "/v1/file_url", nil)
+	r.Host = "a;b.example.com"
+	ctx := WithPublicBase(context.Background(), srv.PublicBase(r))
+	_, err = srv.Dispatch(ctx, "file_url", []byte(`{"namespace":"app","table":"docs","id":1,"field":"doc"}`))
+	if err == nil || !strings.Contains(err.Error(), "not a usable host name") {
+		t.Fatalf("file_url behind an unusable Host must refuse rather than mint a dead link, got %v", err)
+	}
+}
