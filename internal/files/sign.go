@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 )
@@ -52,14 +53,18 @@ func (g *Signer) createKey() ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(g.path), 0o700); err != nil {
+	dir := filepath.Dir(g.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(g.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		return os.ReadFile(g.path)
-	}
+	f, err := os.CreateTemp(dir, ".files-key-*")
 	if err != nil {
+		return nil, err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
+		f.Close()
 		return nil, err
 	}
 	if _, err := f.Write(key); err != nil {
@@ -73,7 +78,13 @@ func (g *Signer) createKey() ([]byte, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	return key, nil
+	if err := os.Link(tmp, g.path); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return os.ReadFile(g.path)
+		}
+		return nil, err
+	}
+	return key, syncDir(dir)
 }
 
 func signedMessage(ns, table string, id int64, field, sum string, exp int64) []byte {
