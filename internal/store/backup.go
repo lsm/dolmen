@@ -268,25 +268,35 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 			pending = append(pending, f)
 		}
 	}
-	for _, d := range m.Dirs {
-		rel := filepath.FromSlash(d)
-		if !filepath.IsLocal(rel) {
-			return BackupManifest{}, fmt.Errorf("manifest names directory %q, which is not a path inside the data directory", d)
+	if len(m.Dirs) > 0 {
+		if err := os.MkdirAll(dataDir, 0o700); err != nil {
+			return BackupManifest{}, err
 		}
-		if err := os.MkdirAll(filepath.Join(dataDir, rel), 0o700); err != nil {
-			return BackupManifest{}, fmt.Errorf("restore directory %s: %w", d, err)
+		root, err := os.OpenRoot(dataDir)
+		if err != nil {
+			return BackupManifest{}, err
+		}
+		defer root.Close()
+		for _, d := range m.Dirs {
+			rel := filepath.FromSlash(d)
+			if !filepath.IsLocal(rel) {
+				return BackupManifest{}, fmt.Errorf("manifest names directory %q, which is not a path inside the data directory", d)
+			}
+			if err := root.MkdirAll(rel, 0o700); err != nil {
+				return BackupManifest{}, fmt.Errorf("restore directory %s: %w", d, err)
+			}
 		}
 	}
 	for _, b := range append(blobs, data...) {
 		rel := filepath.FromSlash(b.Path)
-		if err := activate(filepath.Join(fromDir, rel), filepath.Join(dataDir, rel)); err != nil {
+		if err := activateIn(dataDir, filepath.Join(fromDir, rel), rel); err != nil {
 			return BackupManifest{}, fmt.Errorf("restore %s: %w", b.Path, err)
 		}
 	}
 	sort.Slice(pending, func(i, j int) bool { return pending[i].Path < pending[j].Path })
 	for _, f := range pending {
 		rel := filepath.FromSlash(f.Path)
-		if err := activate(filepath.Join(fromDir, rel), filepath.Join(dataDir, rel)); err != nil {
+		if err := activateIn(dataDir, filepath.Join(fromDir, rel), rel); err != nil {
 			return BackupManifest{}, fmt.Errorf("restore %s: %w", f.Path, err)
 		}
 	}
@@ -339,6 +349,36 @@ func alreadyRestored(target string, f BackupFile, onlyInto string) (bool, error)
 		return false, fmt.Errorf("%s already exists and differs from the backup; restore never overwrites data, and this backup restores only into %s, so drop that namespace there and restore again", target, onlyInto)
 	}
 	return false, fmt.Errorf("%s already exists and differs from the backup; restore never overwrites data, so drop it or restore into another data directory", target)
+}
+
+func activateIn(dataDir, src, rel string) error {
+	base, err := filepath.EvalSymlinks(dataDir)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(dataDir, 0o700); err != nil {
+			return err
+		}
+		base, err = filepath.EvalSymlinks(dataDir)
+	}
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return err
+	}
+	err = root.MkdirAll(filepath.Dir(rel), 0o700)
+	root.Close()
+	if err != nil {
+		return err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Join(base, filepath.Dir(rel)))
+	if err != nil {
+		return err
+	}
+	if r, err := filepath.Rel(base, parent); err != nil || !filepath.IsLocal(r) && r != "." {
+		return fmt.Errorf("%s leads outside the data directory through a symlink; nothing was placed there", rel)
+	}
+	return activate(src, filepath.Join(parent, filepath.Base(rel)))
 }
 
 func activate(src, target string) error {
