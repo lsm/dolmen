@@ -9,6 +9,8 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
+func (s *Store) FileFieldsRefused() bool { return !s.sharedFiles }
+
 func (s *Store) refuseFileFields(fields []schema.Field) error {
 	if s.sharedFiles {
 		return nil
