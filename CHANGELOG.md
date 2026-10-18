@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- With `-files-store s3`, `file_url` returns the bucket's presigned `GET` (with the download's
+  type and attachment headers) instead of a server link.
+
 - `-files-store s3` keeps file bytes in an S3-compatible bucket (AWS, MinIO, R2 and others),
   configured by `-files-s3-bucket`, `-files-s3-endpoint`, `-files-s3-region`, `-files-s3-prefix`
   and `-files-s3-path-style`, with credentials from the standard AWS chain. An unreachable store

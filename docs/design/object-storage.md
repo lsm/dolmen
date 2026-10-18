@@ -223,6 +223,9 @@ most 3600), an operation on both transports that returns `{"url", "expires_at"}`
 download URL the agent can hand to a tool that holds no credentials. It needs the same reach as the
 download. On the S3 store the URL is the store's own presigned `GET`, with `response-content-type`
 and `response-content-disposition` set so the bytes arrive with the same type and as an attachment.
+It names the blob, not the row, so replacing the row's file does not revoke it; it works until it
+expires, at most an hour, unless a sweep removes the blob first. It needs no public base URL;
+`dolmen mcp` over stdio still refuses `file_url`, because that transport has no file store at all.
 On the local store it is the download endpoint with `exp` and `sig` query parameters: an HMAC-SHA256
 over the namespace, table, row id, field, hash and expiry, under a key generated on first use and kept
 at `<data>/files.key` (mode `0600`). The signature binds the hash, so replacing the row's file
@@ -360,13 +363,15 @@ every write takes the namespace's catalog row `FOR NO KEY UPDATE` in its transac
 design orders blobs by that lock instead of by pins:
 
 - A part or fetched file uploads to its final key before the write takes the lock, so the lock is
-  not held for the ordinary upload; only the re-upload below, after a sweep raced the write, runs
-  under it.
-- Inside the write's transaction, after taking the lock, attaching a blob (a `part`, a `url` or a
-  `copy_from`) checks that its object exists. If a sweep removed it in between, a `part` or `url`
-  re-uploads it from the request's temporary file, which lives until the request ends; a
-  `copy_from` source that is gone is the existing `invalid_request` saying to read the source row
-  again.
+  not held for an upload, except inside a `batch`: its writes share one transaction and a later
+  write's `copy_from` may name a row an earlier one created, so a batch resolves its file values
+  inside that transaction and holds the namespace lock while its parts upload. Send large files
+  in single writes rather than in a batch.
+- Inside the write's transaction, after its rows are written and before it commits, every blob the
+  write attached (a `part`, a `url` or a `copy_from`) is checked to still exist. If a sweep removed
+  one in between, the write rolls back with `503` `storage_unavailable` saying to retry it; the
+  retry uploads the file again. The race needs a `vacuum` to land in the gap, so a retry is
+  cheaper than keeping every temporary file for a re-upload.
 - The sweep marks and deletes in one transaction holding the same row lock, so no write can attach
   between its scan of the file columns and its last delete.
 - A failed write on S3 never deletes a blob it uploaded, since another server may have attached it

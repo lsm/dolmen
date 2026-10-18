@@ -80,11 +80,11 @@ func (s *Store) readIdempotency(ctx context.Context, tx pgx.Tx, n namespace, sta
 	return result, true, nil
 }
 
-func (s *Store) prepareRows(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder) ([]preparedRow, error) {
-	return s.prepareValues(ctx, state, records, emb, true)
+func (s *Store) prepareRows(ctx context.Context, ns string, state tableState, records []map[string]any, emb store.Embedder) ([]preparedRow, error) {
+	return s.prepareValues(ctx, ns, state, records, emb, true)
 }
 
-func (s *Store) prepareValues(ctx context.Context, state tableState, records []map[string]any, emb store.Embedder, insert bool) ([]preparedRow, error) {
+func (s *Store) prepareValues(ctx context.Context, ns string, state tableState, records []map[string]any, emb store.Embedder, insert bool) ([]preparedRow, error) {
 	out := make([]preparedRow, len(records))
 	texts := []string{}
 	indices := []int{}
@@ -112,6 +112,11 @@ func (s *Store) prepareValues(ctx context.Context, state tableState, records []m
 			var coerced any
 			if _, ok := v.(currentTimestamp); ok {
 				coerced = v
+			} else if f.Type == schema.File {
+				var err error
+				if coerced, err = store.CoerceFile(ctx, s, ns, f, v); err != nil {
+					return nil, err
+				}
 			} else {
 				var err error
 				coerced, err = value.Coerce(f, v)
@@ -276,7 +281,7 @@ func (s *Store) insertRows(ctx context.Context, ns, table string, records []map[
 			return result, err
 		}
 		before, _ := json.Marshal(state.schema)
-		rows, err := s.prepareRows(ctx, state, records, emb)
+		rows, err := s.prepareRows(ctx, ns, state, records, emb)
 		if err != nil {
 			return store.InsertResult{}, err
 		}

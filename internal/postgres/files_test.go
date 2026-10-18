@@ -128,3 +128,49 @@ func TestPostgresSetFileConstraintsRefusesAChangeWithNothingToSet(t *testing.T) 
 		}
 	}
 }
+
+type confirmProbe struct {
+	s      *Store
+	ns     string
+	calls  int
+	locked error
+}
+
+func (p *confirmProbe) Attach(context.Context, string, string) (store.FileBlob, error) {
+	return store.FileBlob{}, errors.New("unused")
+}
+func (p *confirmProbe) Describe(string) (store.FileBlob, error) {
+	return store.FileBlob{}, errors.New("unused")
+}
+func (p *confirmProbe) Pin(string, string) error { return errors.New("unused") }
+func (p *confirmProbe) Fetch(context.Context, string) (string, error) {
+	return "", errors.New("unused")
+}
+
+func (p *confirmProbe) Confirm(ctx context.Context, ns string) error {
+	p.calls++
+	_, p.locked = p.s.pool.Exec(ctx, "SELECT 1 FROM "+p.s.relation("namespaces")+" WHERE name = $1 FOR NO KEY UPDATE NOWAIT", p.ns)
+	return nil
+}
+
+func TestPostgresWritesConfirmTheirFilesHoldingTheNamespaceLock(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "fil", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "fil", "docs", []schema.Field{{Name: "title", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	probe := &confirmProbe{s: s, ns: "fil"}
+	if _, err := s.Insert(store.WithFileSource(ctx, probe), "fil", "docs", []map[string]any{{"title": "a"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if probe.calls != 1 {
+		t.Fatalf("a write must confirm its files once before committing, got %d calls", probe.calls)
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(probe.locked, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("the confirm must run while the write holds the namespace lock; got %v", probe.locked)
+	}
+}

@@ -260,8 +260,9 @@ curl -s -o standup.ogg "${base%/}/v1/files?namespace=research&table=meetings&id=
 
 To hand a file to a tool that has no dolmen credentials, call `file_url` with the same
 `namespace`, `table`, `id` and `field`. It returns `{"url", "expires_at"}`: a link that anyone
-holding it can GET, for `ttl_seconds` (default 900, at most 3600), and only until the row's file
-is replaced. Treat the URL like a password for that one file.
+holding it can GET, for `ttl_seconds` (default 900, at most 3600). On a server that keeps files
+locally it also stops once the row's file is replaced; on one that keeps them in S3 it is the
+bucket's own link and works until it expires. Treat the URL like a password for that one file.
 
 MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every

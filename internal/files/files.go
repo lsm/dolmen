@@ -93,6 +93,23 @@ func New(cfg Config) *Store {
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
 
+type presigner interface {
+	PresignGet(ctx context.Context, ns, sum string, ttl time.Duration, mediaType, disposition string) (string, error)
+}
+
+func (s *Store) Presigns() bool {
+	_, ok := s.blobs.(presigner)
+	return ok
+}
+
+func (s *Store) PresignGet(ctx context.Context, ns, sum string, ttl time.Duration, mediaType, disposition string) (string, error) {
+	p, ok := s.blobs.(presigner)
+	if !ok {
+		return "", errors.New("this file store cannot presign downloads")
+	}
+	return p.PresignGet(ctx, ns, sum, ttl, mediaType, disposition)
+}
+
 func (s *Store) Remote() bool {
 	sh, ok := s.blobs.(interface{ Shared() bool })
 	return ok && sh.Shared()
@@ -608,3 +625,27 @@ func (r *Request) Pin(ns, sum string) error {
 }
 
 const storeCallTimeout = 30 * time.Second
+
+func (r *Request) Confirm(ctx context.Context, ns string) error {
+	if !r.s.Remote() {
+		return nil
+	}
+	r.mu.Lock()
+	var sums []string
+	for _, pin := range r.pinned {
+		if pin[0] == ns {
+			sums = append(sums, pin[1])
+		}
+	}
+	r.mu.Unlock()
+	for _, sum := range sums {
+		_, err := r.s.blobs.Stat(ctx, ns, sum)
+		if errors.Is(err, fs.ErrNotExist) {
+			return &Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: fmt.Sprintf("a file this write attaches (sha256 %s) was removed from the file store by a vacuum that ran while the write was in flight, so nothing was written; retry the write", sum)}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
