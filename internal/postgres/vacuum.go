@@ -65,6 +65,13 @@ func (s *Store) vacuumNamespace(ctx context.Context, ns string) (store.VacuumRes
 			return store.VacuumResult{}, &derr.Error{Code: derr.Conflict, Cause: err, Message: "vacuum of namespace " + ns + " did not finish: PostgreSQL refused it (" + pgErr.Code + "), most often because another session holds a lock on one of its tables; retry vacuum once that session finishes"}
 		}
 	}
+	if sw := store.FileSweeperFrom(ctx); sw != nil {
+		swept, err := s.sweepFiles(ctx, ns, sw)
+		if err != nil {
+			return store.VacuumResult{}, err
+		}
+		res.Files = swept
+	}
 	if err := s.pool.QueryRow(ctx, namespaceSizeSQL, physical).Scan(&res.BytesAfter); err != nil {
 		return store.VacuumResult{}, connCapacity(err)
 	}
