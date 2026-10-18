@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- On SQLite, an `update` whose filter matches no row no longer stores the files it carries, which
-  stayed behind until the next `vacuum` and counted toward `-max-namespace-files-size`. The values
-  are still checked, so a bad part or an oversized file is refused as before.
+- The `dolmen-admin` skill gains "Running the server": what each engine needs (the lakehouse
+  sidecar bundle, PostgreSQL's DSN and query role), the local and S3 file stores, fetch hosts,
+  file limits, embeddings and backups per engine. It no longer calls the lakehouse engine
+  development-only.
 
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
@@ -12,6 +13,10 @@
 
 - With `-files-store s3`, `file_url` returns the bucket's presigned `GET` (with the download's
   type and attachment headers) instead of a server link.
+
+- On SQLite, an `update` whose filter matches no row no longer stores the files it carries, which
+  stayed behind until the next `vacuum` and counted toward `-max-namespace-files-size`. The values
+  are still checked, so a bad part or an oversized file is refused as before.
 
 - `-files-store s3` keeps file bytes in an S3-compatible bucket (AWS, MinIO, R2 and others),
   configured by `-files-s3-bucket`, `-files-s3-endpoint`, `-files-s3-region`, `-files-s3-prefix`
