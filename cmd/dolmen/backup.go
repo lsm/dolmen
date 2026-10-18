@@ -47,8 +47,8 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 		return fmt.Errorf("inspect data directory %s: %w", *dataDir, err)
 	}
 	switch {
-	case *engine == store.EngineLakehouse && len(lake) == 0 && len(lite) > 0:
-		return usageError(fs, stderr, fmt.Sprintf("%s holds SQLite namespaces (%s first) and no lakehouse ones; back it up with -engine sqlite", *dataDir, lite[0]))
+	case *engine == store.EngineLakehouse && len(lite) > 0:
+		return usageError(fs, stderr, fmt.Sprintf("%s holds SQLite namespaces (%s first), which a lakehouse backup would leave out; back up a directory that holds one engine's namespaces, with that engine's -engine", *dataDir, lite[0]))
 	case *engine == store.EngineSQLite && len(lake) > 0:
 		return usageError(fs, stderr, fmt.Sprintf("%s holds lakehouse namespaces (%s first); back it up with -engine lakehouse", *dataDir, lake[0]))
 	case *engine == store.EngineLakehouse:

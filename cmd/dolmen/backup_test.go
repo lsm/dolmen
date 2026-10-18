@@ -109,7 +109,7 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 			}
 			st.Close()
 			return runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, env, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "-engine sqlite"},
+		}, "would leave out"},
 		{"backup of a directory it cannot read", func() error {
 			data := t.TempDir()
 			locked := filepath.Join(data, "locked")
