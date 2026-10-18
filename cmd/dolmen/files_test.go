@@ -43,14 +43,14 @@ func TestFileFetchFlags(t *testing.T) {
 }
 
 func TestFileStoreFlags(t *testing.T) {
-	env := map[string]string{"DOLMEN_FILES_S3_BUCKET": "blobs", "DOLMEN_FILES_S3_PATH_STYLE": "true"}
+	env := map[string]string{"DOLMEN_FILES_S3_BUCKET": "blobs", "DOLMEN_FILES_S3_PATH_STYLE": "true", "DOLMEN_FILES_S3_PUBLIC_ENDPOINT": "https://files.example.com"}
 	getenv := func(k string) string { return env[k] }
 	lookup := func(k string) (string, bool) { v, ok := env[k]; return v, ok }
 	cfg, err := loadConfig([]string{"-files-store", "s3", "-files-s3-endpoint", "http://127.0.0.1:9000", "-files-s3-prefix", "prod/"}, getenv, lookup, io.Discard, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.FilesStore != "s3" || cfg.FilesS3.Bucket != "blobs" || !cfg.FilesS3.PathStyle || cfg.FilesS3.Endpoint != "http://127.0.0.1:9000" || cfg.FilesS3.Prefix != "prod/" {
+	if cfg.FilesStore != "s3" || cfg.FilesS3.Bucket != "blobs" || !cfg.FilesS3.PathStyle || cfg.FilesS3.Endpoint != "http://127.0.0.1:9000" || cfg.FilesS3.Prefix != "prod/" || cfg.FilesS3.PublicEndpoint != "https://files.example.com" {
 		t.Fatalf("s3 config = %s %+v", cfg.FilesStore, cfg.FilesS3)
 	}
 	none := func(string) string { return "" }
