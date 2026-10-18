@@ -293,3 +293,30 @@ func TestACanceledFetchIsNotATimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchesNameDolmenAsTheirUserAgent(t *testing.T) {
+	var agents []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agents = append(agents, r.UserAgent())
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, "/new.txt", http.StatusFound)
+			return
+		}
+		w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+	s := New(Config{Root: t.TempDir()})
+	r := s.NewRequest()
+	defer r.Close()
+	if err := r.ReceiveURL(context.Background(), "u", srv.URL+"/old", testFetcher(srv)); err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("requests = %d, want the redirect and its target", len(agents))
+	}
+	for _, ua := range agents {
+		if ua != FetchUserAgent {
+			t.Fatalf("User-Agent = %q, want %q: hosts such as Wikimedia refuse Go's default", ua, FetchUserAgent)
+		}
+	}
+}

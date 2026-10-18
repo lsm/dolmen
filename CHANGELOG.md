@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `{"url": …}` file fetches send the User-Agent `dolmen (+https://github.com/lsm/dolmen)` instead of
+  Go's default, which hosts such as Wikimedia refuse with `403`.
+
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
   can share the catalog and the bucket; with the local store PostgreSQL still refuses them.
