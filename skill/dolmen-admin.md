@@ -165,6 +165,88 @@ With authentication on, add `-H "Authorization: Bearer $DOLMEN_TOKEN"` to every 
 missing or rejected credential is the exception to that rule: it answers HTTP `401` with the plain
 error envelope (`{"ok":false,"error":{...}}`), not a JSON-RPC result.
 
+## Running the server
+
+The operator sets all of this when starting the server; no operation changes it, so when the user
+asks you to set up a server, switch its engine or move its files, hand them the settings below.
+Secrets go in the environment, never a flag, because flags show up in process listings.
+`dolmen -help` lists every flag with its environment variable, and `capabilities` reports
+`query_dialect`, which names the engine a running server uses (`sqlite`, `postgresql` or `duckdb`).
+
+### Storage engine
+
+| `-engine` (`DOLMEN_ENGINE`) | What it needs | Pick it when |
+|---|---|---|
+| `sqlite` (default) | A data directory (`-data`, default `data`) on a local filesystem, not NFS or SMB | One server; the simplest to run and back up |
+| `postgres` | `DOLMEN_PG_DSN`, plus `-pg-query-role`, a pre-provisioned restricted role, for `query`; file fields need `-files-store s3` | Several servers share one database, or PostgreSQL is already operated |
+| `lakehouse` | The `dolmen-duckdb-<version>-<platform>.tar.gz` bundle from the same release, unpacked beside `dolmen` (or `-duckdb-sidecar` and `-duckdb-extensions` pointing at it), and a local data directory owned by one server | Other tools should read the tables as Apache Iceberg and Parquet |
+
+A lakehouse server without its sidecar still starts, but refuses `query` and every operation that
+takes a `filter`, with an error naming the sidecar.
+
+```bash
+tar -xzf dolmen-duckdb-<version>-linux-amd64.tar.gz --strip-components=1 -C /usr/local/bin
+DOLMEN_ENGINE=lakehouse dolmen -data /var/lib/dolmen
+```
+
+### File storage
+
+`file` fields keep their bytes outside the tables, in one of two stores:
+
+- `-files-store local` (the default) keeps them beside each namespace in the data directory, and
+  `dolmen backup` copies them with it. It works with `sqlite` and `lakehouse`; `postgres` refuses
+  file fields with it, because one server's disk would hide them from the others.
+- `-files-store s3` keeps them in an S3-compatible bucket:
+
+  ```bash
+  AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
+  dolmen -files-store s3 -files-s3-bucket dolmen-files -files-s3-region us-east-1
+  ```
+
+  - The bucket must already exist; startup refuses one that is missing or unreachable.
+  - Credentials come only from the standard chain: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+    and `AWS_SESSION_TOKEN`, then `~/.aws/credentials`, then an IAM or IRSA role.
+  - For MinIO or another S3-compatible service add `-files-s3-endpoint http://minio:9000
+    -files-s3-path-style`. `file_url` returns the bucket's presigned link, so that endpoint must be
+    reachable by whoever downloads, not only by the server.
+  - `-files-s3-prefix` lets several deployments share one bucket.
+  - `-max-namespace-files-size` must stay `0`, and `dolmen backup` and `dolmen restore` refuse the
+    data directory: back up the bucket with S3 tooling.
+
+Either way:
+
+- `-max-file-size` (1 GiB) caps one file, `-max-request-files-size` (2 GiB) one multipart write,
+  `-max-pending-files-size` (8 GiB) the bytes all in-flight writes hold, and
+  `-max-namespace-files-size` (local store only, `0` for no limit) one namespace's stored files.
+- `{"url": …}` file values are fetched only from hosts listed in `-files-fetch-hosts`: exact
+  names, `*.example.com`, or `*` for any public host. It is empty by default, which refuses them.
+  Loopback and private addresses are always refused, and `-files-fetch-timeout` (5m) bounds one
+  fetch.
+- Files travel over HTTP only. `dolmen mcp` over stdio serves no files and no `file_url`, so run
+  the HTTP server for a project that stores them.
+
+### Embeddings and secrets
+
+- `DOLMEN_EMBED_PROVIDER` is `local` (the default, an in-process model cached under
+  `<data>/models`), `openai` (any OpenAI-compatible endpoint, with `DOLMEN_EMBED_BASE_URL`,
+  `DOLMEN_EMBED_MODEL` and `DOLMEN_EMBED_API_KEY`) or `none`. Only `vectorize` fields and text
+  vector search need one.
+- `secret` fields need `DOLMEN_SECRET_KEY`; see "Secret fields" below.
+
+### Backups
+
+Back up with the binary, which takes a consistent snapshot while writes continue, together with
+the files of `file` fields on the local store:
+
+```bash
+dolmen backup -engine sqlite -data ./data -out ./backups/2026-10-18
+dolmen restore -engine sqlite -from ./backups/2026-10-18 -data ./data
+```
+
+Use `-engine lakehouse` for a lakehouse data directory; its backup restores only into the
+directory it was taken from. `postgres` refuses both commands: use `pg_dump`. With
+`-files-store s3`, back up the bucket separately with S3 tooling.
+
 ## Authentication and access control
 
 Everything in this section applies only to a server running with authentication on. With it off
@@ -486,15 +568,6 @@ locked-out server.
   `ids` it pages through the table in id order: `after_id` (default 0) and `limit` (default 100,
   at most 1,000), then `next_after_id` while `truncated`. That is how a caller holding `read` on
   only the table, or own-row access on a `row_access` table, reads all of what they may see.
-- **Lakehouse is still a development-only engine name.** Its internal namespace foundation now
-  stores each namespace in its own SQLite Iceberg catalog and separate Parquet data directory;
-  reopen preserves the namespace lifetime and drop/recreate changes it. An unpinned leaf-only
-  drop can remove an unreadable catalog or incomplete directory; listing skips incomplete
-  namespaces and valid children still block a parent drop. Generation-pinned drops require its current
-  readable lifetime. Public selection is
-  still refused while write/query/public-selector slices are incomplete. Do not configure `-engine lakehouse`
-  for this server yet; `docs/design/lakehouse-plan.md` records the remaining slices and the
-  one-process-per-local-data-directory topology.
 - `capabilities` reports the engine's static surface: `vector_execution` (`exact` or `ann`),
   `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`,
   `subscribe`, `query_dialect` and `filter_dialect`. Field names and types are pinned across
