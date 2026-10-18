@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -561,5 +562,25 @@ func TestFileURLWithoutAnHTTPEndpointSaysToCallItOverHTTP(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "call file_url over HTTP") {
 			t.Errorf("%s: file_url with no public base URL = %v, want the over-HTTP advice", name, err)
 		}
+	}
+}
+
+func TestASignedDownloadKeepsOutagesDistinctFromStaleLinks(t *testing.T) {
+	ref := fileRef{sha: strings.Repeat("a", 64)}
+	for name, c := range map[string]struct {
+		err   error
+		stale bool
+	}{
+		"row gone":       {notFound("table docs has no row 1"), true},
+		"not a file":     {badRequest("field %q of %s is not a file field", "doc", "docs"), true},
+		"engine timeout": {&Error{Status: http.StatusGatewayTimeout, Code: ErrCodeTimeout, Message: "timed out"}, false},
+		"store outage":   {&files.Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: "down"}, false},
+	} {
+		if got := linkNoLongerMatches(c.err, ref, ref.sha); got != c.stale {
+			t.Errorf("%s: treated as a stale link = %v, want %v", name, got, c.stale)
+		}
+	}
+	if !linkNoLongerMatches(nil, ref, strings.Repeat("b", 64)) || linkNoLongerMatches(nil, ref, ref.sha) {
+		t.Fatal("a link matches only the row's current hash")
 	}
 }

@@ -205,7 +205,7 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := json.Marshal(map[string]any{"namespace": ns, "table": table, "ids": []int64{id}})
 	ref, err := s.fileRefFor(r.Context(), normNS(ns), normTable(table), id, field)
-	if signed && (err != nil || ref.sha != qv.Get("sha256")) {
+	if signed && linkNoLongerMatches(err, ref, qv.Get("sha256")) {
 		err = invalidLink()
 	}
 	if err != nil {
@@ -435,6 +435,14 @@ func (s *Server) fileRefFor(ctx context.Context, ns, table string, id int64, fie
 		return fileRef{}, badRequest("field %q of %s is not a file field", field, table)
 	}
 	return ref, nil
+}
+
+func linkNoLongerMatches(err error, ref fileRef, sum string) bool {
+	if err == nil {
+		return ref.sha != sum
+	}
+	code := WrapError(err).Code
+	return code == ErrCodeNotFound || code == ErrCodeInvalid
 }
 
 func invalidLink() error {
