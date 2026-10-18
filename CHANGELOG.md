@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `{"url": …}` file fetches send the User-Agent `dolmen (+https://github.com/lsm/dolmen)` instead of
+  Go's default, which hosts such as Wikimedia refuse with `403`.
+
 - The `dolmen-admin` skill gains "Running the server": what each engine needs (the lakehouse
   sidecar bundle, PostgreSQL's DSN and query role), the local and S3 file stores, fetch hosts,
   file limits, embeddings and backups per engine. It no longer calls the lakehouse engine

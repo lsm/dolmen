@@ -32,6 +32,8 @@ var ServerFetchWording = FetchWording{
 	Fallback: "download the file with curl -o and send it as a multipart part with {\"part\": \"<form name>\"}",
 }
 
+const FetchUserAgent = "dolmen (+https://github.com/lsm/dolmen)"
+
 type Fetcher struct {
 	say     FetchWording
 	hosts   []string
@@ -169,6 +171,7 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 	if err != nil {
 		return fetchErr("%q is not a URL the server can fetch", raw)
 	}
+	req.Header.Set("User-Agent", FetchUserAgent)
 	res, err := f.http.Do(req)
 	if err != nil {
 		var fe *Error
