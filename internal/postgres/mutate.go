@@ -43,6 +43,12 @@ func validateMutationSet(state tableState, set map[string]any) error {
 		if value == nil && field.Required {
 			return fmt.Errorf("%w: field %q is required and cannot be set to null", store.ErrInvalid, field.Name)
 		}
+		if field.Type == schema.File {
+			if err := store.ValidateFileValue(field, value); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := databaseValue(field, value); err != nil {
 			return err
 		}

@@ -199,6 +199,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if f.Type == schema.Secret && ch.Default != nil {
 				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "default"))
 			}
+			if f.Type == schema.File && ch.Default != nil {
+				return nil, invalidf("%s", schema.FileRefusal(f.Name, "default"))
+			}
 			if err := schema.ValidateIdent(f.Name, "field name"); err != nil {
 				return nil, invalidf("%s", err)
 			}
@@ -371,6 +374,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if *ch.Value && f.Type == schema.Secret {
 				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "fulltext"))
 			}
+			if *ch.Value && f.Type == schema.File {
+				return nil, invalidf("%s", schema.FileRefusal(f.Name, "fulltext"))
+			}
 			if *ch.Value && f.Type != schema.String && f.Type != schema.Text {
 				return nil, invalidf("field %q: fulltext is only allowed on string or text fields", f.Name)
 			}
@@ -389,6 +395,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if *ch.Value {
 				if f.Type == schema.Secret {
 					return nil, invalidf("%s", schema.SecretRefusal(f.Name, "vectorize"))
+				}
+				if f.Type == schema.File {
+					return nil, invalidf("%s", schema.FileRefusal(f.Name, "vectorize"))
 				}
 				if f.Type != schema.String && f.Type != schema.Text {
 					return nil, invalidf("field %q: vectorize is only allowed on string or text fields", f.Name)
@@ -411,6 +420,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			}
 			if f.Type == schema.Secret && len(*ch.Enum) > 0 {
 				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "enum"))
+			}
+			if f.Type == schema.File && len(*ch.Enum) > 0 {
+				return nil, invalidf("%s", schema.FileRefusal(f.Name, "enum"))
 			}
 			if f.Type != schema.String {
 				return nil, invalidf("field %q: enum is only allowed on string fields (this field has type %s)", f.Name, f.Type)

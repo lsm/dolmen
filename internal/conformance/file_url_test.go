@@ -22,6 +22,9 @@ func getURL(t *testing.T, link string) (int, string) {
 
 func TestAFileURLDownloadsWithoutCredentialsUntilTheFileChanges(t *testing.T) {
 	h := newHarnessMode(t, authGateway)
+	if h.fileStore.Presigns() {
+		t.Skip("a server-signed link needs the local file store, which PostgreSQL refuses; TestFileURLOverAnS3StoreIsThePresignedObjectURL pins the S3 link")
+	}
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "docs", "row_access": "own",
 		"fields": []map[string]any{{"name": "title", "type": "string"}, {"name": "doc", "type": "file"}}})
@@ -83,7 +86,9 @@ func TestFileURLAgreesAcrossTransportsAndBoundsItsTTL(t *testing.T) {
 		}
 		link, _ := out["url"].(string)
 		u, err := url.Parse(link)
-		if err != nil || u.Path != "/v1/files" || u.Query().Get("sig") == "" {
+		local := err == nil && u.Path == "/v1/files" && u.Query().Get("sig") != ""
+		presigned := err == nil && u.Query().Get("X-Amz-Signature") != ""
+		if local == h.fileStore.Presigns() || presigned != h.fileStore.Presigns() {
 			t.Fatalf("%s file_url link %q: %v", transport, link, err)
 		}
 		if code, body := getURL(t, link); code != http.StatusOK || body != "quarterly notes" {
