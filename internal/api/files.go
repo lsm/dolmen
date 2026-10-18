@@ -366,7 +366,7 @@ type fileURLReq struct {
 }
 
 var fileURLOp = OpDef{
-	Description: "Get a short-lived URL that downloads one row's file with a plain GET and no credentials, to hand to a tool that holds none. It needs the same access as reading the row with read_rows. The URL stops working at expires_at, and as soon as the row's file is replaced.",
+	Description: "Get a short-lived URL that downloads one row's file with a plain GET and no credentials, to hand to a tool that holds none. It needs the same access as reading the row with read_rows. The URL stops working at expires_at; on a server that keeps files locally it also stops as soon as the row's file is replaced, while on S3 it is the bucket's own link and works until it expires.",
 	InputSchema: map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -388,9 +388,13 @@ var fileURLOp = OpDef{
 		if err := decode(body, &req); err != nil {
 			return nil, err
 		}
-		base, err := publicBaseFrom(ctx)
-		if err != nil {
-			return nil, err
+		var base string
+		if s.files == nil || !s.files.Presigns() {
+			b, err := publicBaseFrom(ctx)
+			if err != nil {
+				return nil, err
+			}
+			base = b
 		}
 		if s.files == nil {
 			return nil, badRequest("this server does not store files")
@@ -411,6 +415,13 @@ var fileURLOp = OpDef{
 			return nil, err
 		}
 		exp := time.Now().Add(time.Duration(ttl) * time.Second).Truncate(time.Second)
+		if s.files.Presigns() {
+			link, err := s.files.PresignGet(ctx, ns, ref.sha, time.Duration(ttl)*time.Second, ref.mediaType, contentDisposition(ref.name, ref.sha))
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"url": link, "expires_at": exp.UTC().Format(time.RFC3339)}, nil
+		}
 		sig, err := s.files.Signer().Sign(ns, table, req.ID, req.Field, ref.sha, exp.Unix())
 		if err != nil {
 			return nil, internal(err)
