@@ -659,7 +659,7 @@ var Ops = map[string]OpDef{
 			"download repairs that, an operator has to fix or replace it). " +
 			"Under auth: on it also reports auth (the mode and the identity sources this server accepts: admin-key, " +
 			"api-keys, trusted-proxy for a gateway, oidc for sign-in) and inlines the engine's capabilities; under " +
-			"auth: off both are absent and the response is unchanged. " +
+			"auth: off both are absent. " +
 			"It always reports files: whether file fields work here (with the reason when they do not), the store, " +
 			"the size limits, and the hosts a {\"url\": ...} value may be fetched from. " +
 			"Call it to answer those questions without attempting a write or a text search. Status only — " +

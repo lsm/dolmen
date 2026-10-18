@@ -1,14 +1,19 @@
 package conformance
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
-
-	"github.com/lsm/dolmen/internal/embed"
 )
 
-const wantDescribeServerOff = `{"data":{"embedding":{"identity":"conformance|fake|v1","model":"fake-model","model_state":"download_on_first_use","provider":"conformance","usable":true}},"ok":true}
+func wantDescribeServerOff(h *harness) string {
+	store := "local"
+	if h.fileStore.Remote() {
+		store = "s3"
+	}
+	return `{"data":{"embedding":{"identity":"conformance|fake|v1","model":"fake-model","model_state":"download_on_first_use","provider":"conformance","usable":true},"files":{"enabled":true,"fetch_hosts":[],"max_file_bytes":1073741824,"max_namespace_bytes":0,"max_request_bytes":2147483648,"store":"` + store + `"}},"ok":true}
 `
+}
 
 func assertDescribeServerShape(t *testing.T, h *harness) {
 	t.Helper()
@@ -16,8 +21,8 @@ func assertDescribeServerShape(t *testing.T, h *harness) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("describe_server status %d, want 200: %s", res.StatusCode, body)
 	}
-	if body != wantDescribeServerOff {
-		t.Fatalf("describe_server response bytes changed under %q mode:\ngot:  %q\nwant: %q", h.mode.name, body, wantDescribeServerOff)
+	if want := wantDescribeServerOff(h); body != want {
+		t.Fatalf("describe_server response bytes changed under %q mode:\ngot:  %q\nwant: %q", h.mode.name, body, want)
 	}
 }
 
@@ -65,15 +70,13 @@ func TestHarnessModeOffIgnoresIdentity(t *testing.T) {
 	if res.status != http.StatusOK || res.proto != nil || res.isError() {
 		t.Fatalf("describe_server as %q over MCP failed: %+v", id.principal, res)
 	}
-	assertJSONEqual(t, "describe_server as "+id.principal+" over MCP", res.structured(), map[string]any{
-		"embedding": map[string]any{
-			"provider":    "conformance",
-			"usable":      true,
-			"model":       "fake-model",
-			"identity":    "conformance|fake|v1",
-			"model_state": embed.ModelStateDownloadOnFirstUse,
-		},
-	})
+	var want struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(wantDescribeServerOff(h)), &want); err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, "describe_server as "+id.principal+" over MCP", res.structured(), want.Data)
 
 	ns := "modeid"
 	if status, out := h.httpCallAs(id, "create_namespace", map[string]any{"namespace": ns}); status != http.StatusOK {
