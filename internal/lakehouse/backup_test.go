@@ -372,3 +372,16 @@ func TestALakehouseBackupLeavesOutANamespaceDroppedBeforeItsSnapshot(t *testing.
 		t.Fatalf("backup after a drop = %+v, %v", m, err)
 	}
 }
+
+func TestALakehouseBackupRefusesAnOutputInsideTheDataDirectory(t *testing.T) {
+	dir, s := backupSource(t)
+	defer s.Close()
+	for _, out := range []string{filepath.Join(dir, "team", "app.lakehouse", "data", "bk"), filepath.Join(dir, "bk")} {
+		if _, err := Backup(t.Context(), dir, out, nil); err == nil || !strings.Contains(err.Error(), "outside the data directory") {
+			t.Fatalf("backup into %s: %v", out, err)
+		}
+		if _, err := os.Stat(out); !os.IsNotExist(err) {
+			t.Fatalf("a refused backup created %s", out)
+		}
+	}
+}

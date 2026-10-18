@@ -33,6 +33,11 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (s
 	if err != nil {
 		return store.BackupManifest{}, err
 	}
+	if inside, err := within(live, outDir); err != nil {
+		return store.BackupManifest{}, err
+	} else if inside {
+		return store.BackupManifest{}, fmt.Errorf("backup directory %s lies inside the data directory %s, so the backup would copy itself; write it outside the data directory", outDir, dataDir)
+	}
 	names, err := NamespacesIn(live)
 	if err != nil {
 		return store.BackupManifest{}, fmt.Errorf("list namespaces in %s: %w", dataDir, err)
@@ -329,4 +334,30 @@ func readOnlyDSN(path string) string {
 	}
 	u := &url.URL{Scheme: "file", Path: uriPath, RawQuery: url.Values{"mode": {"ro"}}.Encode()}
 	return u.String()
+}
+
+func within(base, path string) (bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	var rest []string
+	for {
+		resolved, err := filepath.EvalSymlinks(abs)
+		if err == nil {
+			abs = filepath.Join(append([]string{resolved}, rest...)...)
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			break
+		}
+		rest = append([]string{filepath.Base(abs)}, rest...)
+		abs = parent
+	}
+	rel, err := filepath.Rel(base, abs)
+	return err == nil && (rel == "." || filepath.IsLocal(rel)), nil
 }
