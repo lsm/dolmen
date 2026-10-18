@@ -66,6 +66,7 @@ type Store struct {
 	live     map[string]bool
 	fetcher  *Fetcher
 	blobs    BlobStore
+	drops    map[string]int
 }
 
 func New(cfg Config) *Store {
@@ -85,10 +86,22 @@ func New(cfg Config) *Store {
 	if cfg.Blobs == nil {
 		cfg.Blobs = NewLocal(cfg.Root)
 	}
-	return &Store{cfg: cfg, blobs: cfg.Blobs, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
+	return &Store{cfg: cfg, blobs: cfg.Blobs, drops: map[string]int{}, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
 }
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
+
+func (s *Store) Remote() bool {
+	_, ok := s.blobs.(*s3Blobs)
+	return ok
+}
+
+func (s *Store) dropping(ns string) error {
+	if s.drops[ns] > 0 {
+		return &Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: fmt.Sprintf("namespace %s is being dropped and its files deleted; retry the write once the drop finishes", ns)}
+	}
+	return nil
+}
 
 func (s *Store) tmpDir() string { return filepath.Join(s.cfg.Root, tmpDirName) }
 
@@ -347,11 +360,18 @@ func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, 
 	if s.cfg.MaxNamespaceFiles > 0 {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if err := s.dropping(ns); err != nil {
+			return store.FileBlob{}, err
+		}
 		if err := r.placeCapped(ctx, ns, p); err != nil {
 			return store.FileBlob{}, err
 		}
 	} else {
 		s.mu.Lock()
+		if err := s.dropping(ns); err != nil {
+			s.mu.Unlock()
+			return store.FileBlob{}, err
+		}
 		s.pin(ns, p.sum)
 		s.mu.Unlock()
 		err := r.place(ctx, ns, p)
@@ -462,7 +482,7 @@ func (r *Request) Discard() {
 	s := r.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, shared := s.blobs.(*s3Blobs)
+	shared := s.Remote()
 	for _, c := range r.created {
 		if !shared && s.attaches[c.ns][c.sum] == 1 && s.pins[c.ns][c.sum] <= 1 {
 			if t, ok := s.totals[c.ns]; s.blobs.Delete(context.Background(), c.ns, c.sum) == nil && ok {
@@ -533,6 +553,10 @@ func (r *Request) Pin(ns, sum string) error {
 		return invalid(http.StatusBadRequest, "the file to copy has no valid hash")
 	}
 	s.mu.Lock()
+	if err := s.dropping(ns); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	s.pin(ns, sum)
 	s.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), storeCallTimeout)

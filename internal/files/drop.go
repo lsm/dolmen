@@ -6,6 +6,14 @@ func (s *Store) DropNamespace(ctx context.Context, ns string) error {
 	s.mu.Lock()
 	delete(s.totals, ns)
 	delete(s.attaches, ns)
+	s.drops[ns]++
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.drops[ns]--; s.drops[ns] == 0 {
+			delete(s.drops, ns)
+		}
+		s.mu.Unlock()
+	}()
 	return s.blobs.DropNamespace(ctx, ns)
 }

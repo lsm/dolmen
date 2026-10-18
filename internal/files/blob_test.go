@@ -241,3 +241,44 @@ func TestAnUploadDoesNotHoldTheStoreLock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type gatedDrop struct {
+	BlobStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedDrop) DropNamespace(ctx context.Context, ns string) error {
+	close(g.entered)
+	<-g.release
+	return g.BlobStore.DropNamespace(ctx, ns)
+}
+
+func TestNoFileAttachesToANamespaceWhileItsFilesAreDeleted(t *testing.T) {
+	ctx := context.Background()
+	blobs := &gatedDrop{BlobStore: NewLocal(t.TempDir()), entered: make(chan struct{}), release: make(chan struct{})}
+	s := New(Config{Root: t.TempDir(), Blobs: blobs})
+	done := make(chan error, 1)
+	go func() { done <- s.DropNamespace(ctx, "app") }()
+	<-blobs.entered
+	r := s.NewRequest()
+	defer r.Close()
+	if err := r.Receive("f", "a.txt", "", strings.NewReader("recreated")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Attach(ctx, "app", "f")
+	var fe *Error
+	if !errors.As(err, &fe) || fe.Code != derr.StorageUnavailable || !strings.Contains(fe.Message, "being dropped") {
+		t.Fatalf("an attach while the namespace's files are deleted must be refused as retryable, got %v", err)
+	}
+	if err := r.Pin("app", sumA); !errors.As(err, &fe) || fe.Code != derr.StorageUnavailable {
+		t.Fatalf("a copy_from pin while the namespace's files are deleted must be refused as retryable, got %v", err)
+	}
+	close(blobs.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Attach(ctx, "app", "f"); err != nil {
+		t.Fatalf("once the drop finishes, attaching works again: %v", err)
+	}
+}

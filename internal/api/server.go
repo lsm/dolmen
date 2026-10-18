@@ -581,7 +581,7 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (res any,
 		return nil, err
 	}
 	var fetchTime time.Duration
-	if fileWriteOps[op] && s.files != nil && bytes.Contains(body, []byte(`"url"`)) {
+	if fileWriteOps[op] && s.files != nil && (bytes.Contains(body, []byte(`"url"`)) || store.HasFileSource(ctx) && s.files.Remote()) {
 		fetchTime = s.files.FetchTimeout()
 	}
 	ctx, cancel, overran := s.withOpDeadline(ctx, op, fetchTime)
