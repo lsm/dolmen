@@ -10,6 +10,11 @@
   file limits, embeddings and backups per engine. It no longer calls the lakehouse engine
   development-only.
 
+- The skills send a multipart write's request part with `curl --form-string`, which `;type=` or
+  `;filename=` in the JSON cannot cut short, and say that `copy_from` stays within one namespace,
+  that an issued `file_url` link outlives a revoked key, and that every engine's `vacuum` reports
+  file stats.
+
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
   can share the catalog and the bucket; with the local store PostgreSQL still refuses them.

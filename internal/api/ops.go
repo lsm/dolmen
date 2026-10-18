@@ -578,9 +578,9 @@ var Ops = map[string]OpDef{
 			"namespace":          prop("string", "The vacuumed namespace name"),
 			"bytes_before":       map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes before the vacuum"},
 			"bytes_after":        map[string]any{"type": "integer", "minimum": 0, "description": "On-disk size of the namespace in bytes after the vacuum"},
-			"files_removed":      map[string]any{"type": "integer", "minimum": 0, "description": "Stored files of file fields that no row referenced, removed by this vacuum (SQLite)"},
-			"file_bytes_removed": map[string]any{"type": "integer", "minimum": 0, "description": "Bytes those removed files held (SQLite)"},
-			"file_bytes":         map[string]any{"type": "integer", "minimum": 0, "description": "Bytes of files the namespace still stores, counted once each, as -max-namespace-files-size counts them (SQLite)"},
+			"files_removed":      map[string]any{"type": "integer", "minimum": 0, "description": "Stored files of file fields that no row referenced, removed by this vacuum"},
+			"file_bytes_removed": map[string]any{"type": "integer", "minimum": 0, "description": "Bytes those removed files held"},
+			"file_bytes":         map[string]any{"type": "integer", "minimum": 0, "description": "Bytes of files the namespace still stores, counted once each, as -max-namespace-files-size counts them"},
 		}, "namespace", "bytes_before", "bytes_after"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req nsReq

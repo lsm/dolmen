@@ -1075,7 +1075,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `create_namespace` | Reserve a namespace up front (the write ops create implicitly on first use otherwise; every read — including `wait_for` and the `subscribe` stream — never creates, and a missing namespace is `not_found`) |
 | `drop_namespace` | Delete a namespace and all its tables; `confirm` must repeat the name; a namespace with child namespaces is refused — drop the children first |
 | `rotate_secret_key` | Re-encrypt stored `secret` values under the active key in bounded batches; reports `rotated`, `remaining`, `done` and values per key id (`admin` on `*`) |
-| `vacuum` | Reclaim free space in one namespace (SQLite: rebuild the file and truncate its WAL; PostgreSQL: `VACUUM` its tables) and report `bytes_before` / `bytes_after`; on SQLite and lakehouse also remove stored files no row references and report `files_removed`, `file_bytes_removed` and `file_bytes` |
+| `vacuum` | Reclaim free space in one namespace (SQLite: rebuild the file and truncate its WAL; PostgreSQL: `VACUUM` its tables) and report `bytes_before` / `bytes_after`; on every engine also remove stored files no row references and report `files_removed`, `file_bytes_removed` and `file_bytes` |
 | `list_tables` | Tables in a namespace |
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, whether server-side embedding is usable, and (local only) whether the model is cached; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
@@ -1125,7 +1125,7 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
 
   ```bash
   curl -s http://127.0.0.1:8790/v1/insert \
-    -F 'request={"namespace":"app","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
+    --form-string 'request={"namespace":"app","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
     -F 'rec=@standup.ogg'
   ```
 

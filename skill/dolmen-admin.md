@@ -623,7 +623,7 @@ locked-out server.
   disk about the size of the namespace. Run it when a namespace refuses writes at
   `-max-namespace-size` after you deleted rows to make room. Like every read, it never creates a
   namespace. A `conflict` means another process held the file or a reader held the log; the
-  message says which, and retrying once it lets go is safe. SQLite and lakehouse also report
+  message says which, and retrying once it lets go is safe. Every engine also reports
   `files_removed`, `file_bytes_removed` and `file_bytes` after a successful file sweep; failed
   maintenance does not sweep files.
 - `list_migrations` reads that history: a table's recorded migrations, newest first, with the exact
@@ -897,11 +897,15 @@ match, before ranking.
   field.
 - Attach a file in the write itself: send the operation as `multipart/form-data` to
   `/v1/{operation}`, with the JSON request in a first part named `request`, and write
-  `{"part": "<part name>"}` as the value (`curl -F 'request=<json>' -F 'rec=@path'`), have the server fetch
+  `{"part": "<part name>"}` as the value (`curl --form-string 'request=<json>' -F 'rec=@path'`), have the server fetch
   it with `{"url": …}` (allowed hosts are set by `-files-fetch-hosts`), or reuse a
-  file another readable row holds with `{"copy_from": {"table", "id", "field"}}`. Fetch it with
+  file another readable row of the same namespace holds with
+  `{"copy_from": {"table", "id", "field"}}`. Fetch it with
   `GET /v1/files?namespace=&table=&id=&field=`, which needs `read_rows` access to the row. MCP
-  cannot carry files.
+  cannot carry files. Send the request part with `--form-string`: `-F` reads `;type=` or
+  `;filename=` inside the JSON as its own options.
+- A `file_url` link is a bearer link until `expires_at`: revoking the caller's key or grant does
+  not end it. With `-files-store s3` its host is `-files-s3-endpoint`.
 - Files are stored once per namespace however many rows reference them, and `drop_namespace`
   deletes them with the namespace. A file stays on disk after the rows referencing it are deleted
   or cleared until `vacuum` removes it; `vacuum` reports `files_removed`, `file_bytes_removed` and

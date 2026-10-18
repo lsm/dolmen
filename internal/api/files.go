@@ -79,7 +79,7 @@ func (s *Server) multipartOp(w http.ResponseWriter, r *http.Request, op string) 
 	}
 	if first.FormName() != "request" {
 		s.ArmResponseWrite(w)
-		writeError(w, r, badRequest("the first multipart part must be named \"request\" and hold the operation's JSON request, as curl -F 'request=<json>' -F 'name=@path'; it was named %q", first.FormName()))
+		writeError(w, r, badRequest("the first multipart part must be named \"request\" and hold the operation's JSON request, as curl --form-string 'request=<json>' -F 'name=@path'; it was named %q", first.FormName()))
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(first, maxRequestPartBytes+1))

@@ -482,7 +482,7 @@ func multipartBody() map[string]any {
 	return map[string]any{
 		"schema": map[string]any{
 			"type":        "object",
-			"description": "The operation's JSON request in the first part, named request, and each file in its own part. A file field's value {\"part\": \"<part name>\"} attaches that part, as curl -F 'request=<json>' -F 'rec=@path'.",
+			"description": "The operation's JSON request in the first part, named request, and each file in its own part. A file field's value {\"part\": \"<part name>\"} attaches that part, as curl --form-string 'request=<json>' -F 'rec=@path' (--form-string, because -F would read ;type= or ;filename= inside the JSON as options).",
 			"properties": map[string]any{
 				"request": map[string]any{"type": "string", "description": "The operation's JSON request; must be the first part"},
 			},

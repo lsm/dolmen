@@ -725,6 +725,23 @@ func TestTheAdminSkillWarnsThatReadDefeatsPerRowPrivacy(t *testing.T) {
 	}
 }
 
+func TestTheSkillsSendTheRequestPartWithFormString(t *testing.T) {
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		out, err := Render(name, Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: "sqlite"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "-F 'request=") {
+			t.Fatalf("%s must not send the request part with -F, which reads ;type= inside the JSON as an option", name)
+		}
+		for _, want := range []string{"--form-string 'request=", "of the same namespace", "revoking"} {
+			if !strings.Contains(strings.ToLower(string(out)), strings.ToLower(want)) {
+				t.Fatalf("%s must say %q", name, want)
+			}
+		}
+	}
+}
+
 func TestTheAdminSkillTeachesHowToRunTheServer(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "postgresql", "duckdb"} {
 		out, err := Render("dolmen-admin", Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: dialect})
