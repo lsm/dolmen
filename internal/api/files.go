@@ -366,7 +366,7 @@ type fileURLReq struct {
 }
 
 var fileURLOp = OpDef{
-	Description: "Get a short-lived URL that downloads one row's file with a plain GET and no credentials, to hand to a tool that holds none. It needs the same access as reading the row with read_rows. The URL stops working at expires_at, and as soon as the row's file is replaced.",
+	Description: "Get a short-lived URL that downloads one row's file with a plain GET and no credentials, to hand to a tool that holds none. It needs the same access as reading the row with read_rows. The URL stops working at expires_at; on a server that keeps files locally it also stops as soon as the row's file is replaced, while on S3 it is the bucket's own link and works until it expires.",
 	InputSchema: map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
