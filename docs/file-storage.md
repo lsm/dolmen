@@ -64,7 +64,7 @@ They need these permissions on the bucket and its keys:
 {
   "Version": "2012-10-17",
   "Statement": [
-    {"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::dolmen-files"},
+    {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation"], "Resource": "arn:aws:s3:::dolmen-files"},
     {"Effect": "Allow",
      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
      "Resource": "arn:aws:s3:::dolmen-files/*"}
@@ -72,7 +72,7 @@ They need these permissions on the bucket and its keys:
 }
 ```
 
-With a prefix, narrow the object resource to `arn:aws:s3:::dolmen-files/<prefix>*`.
+`s3:GetBucketLocation` is what lets the client discover the region when `-files-s3-region` is empty. With a prefix, narrow the object resource to `arn:aws:s3:::dolmen-files/<prefix>*`.
 
 A MinIO or another S3-compatible service:
 
