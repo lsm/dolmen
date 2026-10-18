@@ -610,7 +610,7 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			f.MaxBytes, f.MediaTypes = next.MaxBytes, next.MediaTypes
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_file_constraints %s max_bytes=%d media_types=%v", ch.Name, next.MaxBytes, next.MediaTypes))
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_row_access)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, set_row_access)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
