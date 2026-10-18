@@ -90,9 +90,10 @@ they use, such as `https://files.example.com`; otherwise the links open for nobo
 The first start with `s3` writes `<data>/files.store`, which makes `dolmen backup` and
 `dolmen restore` refuse that data directory, since the files are not in it.
 
-Several servers may share one bucket, as they do with PostgreSQL. A `vacuum` on one server never
-removes a file another server's write is attaching: that write checks its files once it holds the
-namespace's write lock and fails with `503` `storage_unavailable`, to be retried, if one was swept.
+Several servers may share one bucket, as they do with PostgreSQL. A `vacuum` on one server can
+remove a file another server's write has just uploaded but not yet committed; that write checks its
+files once it holds the namespace's write lock, finds one gone, and fails with `503`
+`storage_unavailable` without writing anything, so retrying it uploads the file again.
 
 ## Limits
 
@@ -152,11 +153,13 @@ the request's `Host`; set `-base-url` behind a proxy.
 - **Local store**: `dolmen backup` copies every file the snapshot references and checks each against
   its SHA-256; `dolmen restore` puts files back before the namespaces that reference them. See the
   README's "Backup and restore".
-- **S3 store**: back up the bucket with S3 tooling, such as versioning or replication. Because a file
-  is only ever deleted by `vacuum` (or a drop), a consistent pair is: back up the namespaces
-  (`dolmen backup`, or `pg_dump` on PostgreSQL), then copy the bucket, with no `vacuum` running in
-  between. A bucket copy taken later than the database holds every file it references, plus
-  possibly some no row needs, which the next `vacuum` removes.
+- **S3 store**: back up the bucket with S3 tooling, such as versioning or replication, and the
+  namespaces separately: `pg_dump` on PostgreSQL; on SQLite or lakehouse, which `dolmen backup`
+  refuses once the data directory is marked `files.store`, stop the server and copy the data
+  directory, or take a filesystem snapshot. Files are deleted only by `vacuum` and
+  `drop_namespace`, so a consistent pair is: back up the namespaces, then copy the bucket, with no
+  `vacuum` and no `drop_namespace` in between. A bucket copy taken after the namespaces then holds
+  every file they reference, plus possibly some no row needs, which the next `vacuum` removes.
 
 ## Errors to expect
 
