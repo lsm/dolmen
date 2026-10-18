@@ -1537,7 +1537,9 @@ simply be run again.
 A backup holds the data as of when it ran, so anything written afterwards is lost on restore. Run
 backups as often as you can afford to lose writes, and keep them off the machine that holds
 `-data`. The embedding model cache under `<data>/models` is not backed up, since it downloads
-again. On `-engine postgres` both commands refuse: back up with `pg_dump`, as
+again. With `-engine lakehouse` (or `DOLMEN_ENGINE=lakehouse`) the backup also copies each table's Parquet and metadata files, and
+restores only into the data directory it was taken from, because the catalogs record absolute
+paths; see [Lakehouse operations](docs/lakehouse-operations.md). On `-engine postgres` both commands refuse: back up with `pg_dump`, as
 [Running dolmen on PostgreSQL](docs/postgresql-operations.md) describes.
 
 ## Platform and filesystem support

@@ -1,6 +1,10 @@
 package lakehouse
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,6 +15,8 @@ import (
 
 	icebergio "github.com/apache/iceberg-go/io"
 	"github.com/apache/iceberg-go/table"
+	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 const vacuumStamp = "vacuum.stamp"
@@ -26,7 +32,11 @@ func (s *Store) stampVacuum(ns string, done bool) error {
 	case n%2 == 1:
 		n++
 	}
-	return os.WriteFile(path, []byte(strconv.FormatInt(n, 10)), 0o600)
+	tmp := filepath.Join(filepath.Dir(path), "."+vacuumStamp+".tmp")
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(n, 10)), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func readStamp(path string) (int64, error) {
@@ -103,4 +113,102 @@ func unreachable(live, outDir string, locations []string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func backupReferences(ctx context.Context, live, outDir, snapshot string, locations []string) (map[string]bool, error) {
+	fsys := backupFS{live: live, out: outDir}
+	refs := map[string]bool{}
+	add := func(v any) error {
+		if v == nil {
+			return nil
+		}
+		ref, err := store.ParseFileReference(v)
+		if err != nil {
+			return err
+		}
+		refs[ref.SHA256] = true
+		return nil
+	}
+	fields := map[string][]string{}
+	for _, loc := range locations {
+		file, err := fsys.Open(loc)
+		if err != nil {
+			return nil, err
+		}
+		meta, err := table.ParseMetadata(file)
+		file.Close()
+		if err != nil {
+			return nil, err
+		}
+		var sc *schema.TableSchema
+		if err := decodeProperty(meta.Properties()[schemaProperty], &sc); err != nil || sc == nil {
+			return nil, fmt.Errorf("%w: invalid lakehouse table registry at %s", store.ErrCatalogCorrupt, loc)
+		}
+		var names []string
+		for _, f := range sc.FileFields() {
+			names = append(names, f.Name)
+		}
+		if len(names) == 0 {
+			continue
+		}
+		fields[sc.Name] = names
+		if meta.CurrentSnapshot() == nil {
+			continue
+		}
+		tbl := table.New(tableIdentifier(sc.Namespace, sc.Name), meta, loc, func(context.Context) (icebergio.IO, error) { return fsys, nil }, nil)
+		_, records, err := tbl.Scan(table.WithSelectedFields(names...)).ToArrowRecords(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for rec, err := range records {
+			if err != nil {
+				return nil, err
+			}
+			for row := 0; row < int(rec.NumRows()) && err == nil; row++ {
+				for col := 0; col < int(rec.NumCols()) && err == nil; col++ {
+					err = add(cellValue(rec.Column(col), row))
+				}
+			}
+			rec.Release()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return refs, nil
+	}
+	db, err := sql.Open("sqlite", readOnlyDSN(snapshot))
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, `SELECT table_name, rows FROM _dolmen_lakehouse_commits WHERE materialized = 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var payload []byte
+		if err := rows.Scan(&name, &payload); err != nil {
+			return nil, err
+		}
+		names := fields[name]
+		if len(names) == 0 {
+			continue
+		}
+		var decoded commitRows
+		if err := gob.NewDecoder(bytes.NewReader(payload)).Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("%w: unreadable lakehouse commit payload: %v", store.ErrCatalogCorrupt, err)
+		}
+		for _, r := range decoded.Rows {
+			for _, f := range names {
+				if err := add(r[f]); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return refs, rows.Err()
 }

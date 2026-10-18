@@ -6,6 +6,10 @@
   one row's file with no credentials, for tools that hold none. It needs the same access as
   `read_rows` on the row, and the link stops working once the row's file is replaced.
 
+- `dolmen backup` and `dolmen restore` work on the lakehouse engine: a consistent snapshot of each
+  namespace's catalog, Parquet and metadata files and file-field blobs while the server runs,
+  restored into the same data directory path (manifest format 3).
+
 - Go library: `github.com/lsm/dolmen/lakehouse` opens the lakehouse engine with
   `dolmen.Open(dir, lakehouse.With(lakehouse.Config{...}))`; `file` fields work there too.
 

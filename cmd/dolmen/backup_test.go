@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -88,12 +89,56 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		{"backup on PostgreSQL", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, pg, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "use pg_dump"},
-		{"backup on the lakehouse engine", func() error {
-			return runBackup([]string{"-out", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "stop the server and copy the whole data directory"},
-		{"restore on the lakehouse engine", func() error {
-			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "stop the server and copy the whole data directory"},
+		{"backup of a lakehouse directory without the engine", func() error {
+			data := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(data, "app.lakehouse"), 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(data, "app.lakehouse", "catalog.db"), nil, 0o600); err != nil {
+				return err
+			}
+			return runBackup([]string{"-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "-engine lakehouse"},
+		{"backup of a SQLite directory with -engine lakehouse", func() error {
+			data := t.TempDir()
+			st, err := store.Open(data)
+			if err != nil {
+				return err
+			}
+			if err := st.CreateNamespace(context.Background(), "app", [16]byte{}); err != nil {
+				return err
+			}
+			st.Close()
+			return runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "would leave out"},
+		{"backup with -engine lakehouse", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-engine", "lakehouse", "-from", out, "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "restores only there"},
+		{"restore of a lakehouse backup on SQLite", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", out, "-data", data}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "is a lakehouse backup"},
+		{"restore of a SQLite backup on the lakehouse engine", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", out, "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "is a sqlite backup"},
+		{"restore of a lakehouse backup elsewhere", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-data", data, "-out", out}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", out, "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "restores only there"},
 		{"restore of a directory that is not a backup", func() error {
 			return runRestore([]string{"-from", t.TempDir(), "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "not a finished backup"},
@@ -102,5 +147,24 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		if err := c.run(); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want an error naming %q", c.name, err, c.want)
 		}
+	}
+}
+
+func TestBackupNamesADirectoryItCannotRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod does not deny directory reads on Windows")
+	}
+	data := t.TempDir()
+	locked := filepath.Join(data, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0o700)
+	err := runBackup([]string{"-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, func(string) string { return "" }, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("backup of an unreadable directory: %v", err)
 	}
 }
