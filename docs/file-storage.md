@@ -35,8 +35,8 @@ Each namespace's files live beside it in the data directory:
 ```
 
 They inherit the data directory's permissions. Keep them on the same local filesystem as the data
-directory. Deleting `files.key` invalidates every `file_url` link already issued; the server makes a
-new key on the next call.
+directory. To invalidate every `file_url` link already issued, stop the server, delete `files.key` and
+start it again; it makes a new key on the next call. A running server keeps the key it loaded.
 
 ## The S3 store
 
@@ -102,8 +102,7 @@ namespace's write lock and fails with `503` `storage_unavailable`, to be retried
 | `-max-pending-files-size` | `8GiB` | Bytes all in-flight writes hold in temporary space, server-wide | `503` `storage_unavailable`, retry |
 
 A field's `media_types` refuses other types with `415`. The `request` part of a multipart write
-counts toward the ordinary 32 MiB body limit. `describe_server` reports the limits a caller meets,
-together with whether file fields work on the server and the fetch hosts.
+counts toward the ordinary 32 MiB body limit.
 
 ## Fetching from URLs
 
