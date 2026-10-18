@@ -131,7 +131,7 @@ func openPostgresEngineTraced(t *testing.T, dir string, retention *time.Duration
 	t.Helper()
 	dsn := postgresDSN(t)
 	catalog := postgresCatalog(dir)
-	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention, SharedFilter: sharedFilter, Secrets: keyring, TracerProvider: tp}
+	cfg := postgres.Config{DSN: dsn, Catalog: catalog, QueryRole: os.Getenv("DOLMEN_TEST_PG_QUERY_ROLE"), ChangeRetention: retention, SharedFilter: sharedFilter, SharedFiles: true, Secrets: keyring, TracerProvider: tp}
 	s, err := postgres.Open(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

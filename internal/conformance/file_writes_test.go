@@ -10,14 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/lsm/dolmen/internal/store"
 )
 
 func TestFileWritesAcrossOperationsAndReplay(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("files need S3 on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	data := []byte("one blob shared by every write")
@@ -105,9 +100,6 @@ func TestFileWritesAcrossOperationsAndReplay(t *testing.T) {
 }
 
 func TestFileBatchRollbackLeavesNoBlob(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("files need S3 on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	data := []byte("a failed batch's file")

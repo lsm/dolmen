@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -96,5 +97,28 @@ func TestPostgresWritesConfirmTheirFilesHoldingTheNamespaceLock(t *testing.T) {
 	var pgErr *pgconn.PgError
 	if !errors.As(probe.locked, &pgErr) || pgErr.Code != "55P03" {
 		t.Fatalf("the confirm must run while the write holds the namespace lock; got %v", probe.locked)
+	}
+}
+
+func TestPostgresRefusesFileFieldsWithoutASharedFileStore(t *testing.T) {
+	cfg := testConfig(t)
+	for _, shared := range []bool{false, true} {
+		cfg.SharedFiles = shared
+		s := openTest(t, cfg)
+		ctx := t.Context()
+		ns := "local"
+		if shared {
+			ns = "shared"
+		}
+		if err := s.CreateNamespace(ctx, ns, [16]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := s.CreateTable(ctx, ns, "docs", []schema.Field{{Name: "doc", Type: schema.File}}, store.TableOpts{}, [16]byte{})
+		if shared && err != nil {
+			t.Fatalf("with a shared file store, PostgreSQL must accept a file field: %v", err)
+		}
+		if !shared && (err == nil || !strings.Contains(err.Error(), "-files-store s3")) {
+			t.Fatalf("without a shared file store, PostgreSQL must refuse a file field naming -files-store s3, got %v", err)
+		}
 	}
 }

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/lsm/dolmen/internal/store"
 )
 
 func getURL(t *testing.T, link string) (int, string) {
@@ -23,9 +21,6 @@ func getURL(t *testing.T, link string) (int, string) {
 }
 
 func TestAFileURLDownloadsWithoutCredentialsUntilTheFileChanges(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarnessMode(t, authGateway)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "docs", "row_access": "own",
@@ -74,9 +69,6 @@ func TestAFileURLDownloadsWithoutCredentialsUntilTheFileChanges(t *testing.T) {
 }
 
 func TestFileURLAgreesAcrossTransportsAndBoundsItsTTL(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"q3","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": []byte("quarterly notes")}); code != http.StatusOK {

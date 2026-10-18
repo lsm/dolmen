@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/lsm/dolmen/internal/store"
 )
 
 func fileTableFields() []map[string]any {
@@ -35,19 +33,6 @@ func errMessage(body map[string]any) string {
 
 func TestFileFieldDeclaration(t *testing.T) {
 	h := newHarness(t)
-	if testEngine(t) == store.EnginePostgres {
-		h.ensureNS("fil")
-		code, body := h.httpCall("create_table", map[string]any{"namespace": "fil", "table": "docs", "fields": fileTableFields()})
-		if code == http.StatusOK || !strings.Contains(errMessage(body), "file fields are not supported on the") {
-			t.Fatalf("engine %s must refuse a file field with an explanation: %d %v", testEngine(t), code, body)
-		}
-		h.seedTable("fil", "plain", []map[string]any{{"name": "title", "type": "string"}})
-		code, body = h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "plain", "changes": []any{map[string]any{"op": "add_field", "field": map[string]any{"name": "doc", "type": "file"}}}})
-		if code == http.StatusOK || !strings.Contains(errMessage(body), "file fields are not supported on the") {
-			t.Fatalf("engine %s must refuse adding a file field: %d %v", testEngine(t), code, body)
-		}
-		return
-	}
 	h.seedTable("fil", "docs", fileTableFields())
 	for _, desc := range []map[string]any{
 		h.mustHTTP("describe_table", map[string]any{"namespace": "fil", "table": "docs"}),
@@ -81,9 +66,6 @@ func TestFileFieldDeclaration(t *testing.T) {
 }
 
 func TestAFileValueWithoutItsBytesTeachesMultipart(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	rec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"part": "notes"}}}}
@@ -120,9 +102,6 @@ func (h *harness) multipartCall(op, request string, parts map[string][]byte) (in
 }
 
 func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	fields := fileTableFields()
 	fields[0]["fulltext"] = true
@@ -160,9 +139,6 @@ func TestAMultipartWriteStoresAReferenceEveryReadAgreesOn(t *testing.T) {
 }
 
 func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	data := []byte("quarterly notes")
@@ -196,14 +172,6 @@ func TestAFileDownloadsByRowWithReadRowsAccess(t *testing.T) {
 
 func TestSetFileConstraints(t *testing.T) {
 	h := newHarness(t)
-	if testEngine(t) == store.EnginePostgres {
-		h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
-		code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 1}}})
-		if code == http.StatusOK || !strings.Contains(errMessage(body), "not supported on this engine") {
-			t.Fatalf("engine %s: %d %v", testEngine(t), code, body)
-		}
-		return
-	}
 	h.seedTable("fil", "docs", fileTableFields())
 	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"a","doc":{"part":"f"}}]}`, map[string][]byte{"f": bytes.Repeat([]byte("x"), 600)}); code != http.StatusOK {
 		t.Fatalf("insert: %d %v", code, body)
@@ -240,9 +208,6 @@ func TestSetFileConstraints(t *testing.T) {
 }
 
 func TestVacuumReportsTheFilesItRemoved(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"q3","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": []byte("quarterly notes")}); code != http.StatusOK {
@@ -283,9 +248,6 @@ func (h *harness) multipartAs(t *testing.T, principal, op, request string, parts
 }
 
 func TestCopyFromReusesAFileWithoutReuploading(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"src","doc":{"part":"f"}}]}`, map[string][]byte{"f": []byte("shared notes")}); code != http.StatusOK {
@@ -308,9 +270,6 @@ func TestCopyFromReusesAFileWithoutReuploading(t *testing.T) {
 }
 
 func TestCopyFromNeverReachesAnotherPrincipalsRow(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarnessMode(t, authGateway)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "docs", "row_access": "own",
@@ -331,9 +290,6 @@ func TestCopyFromNeverReachesAnotherPrincipalsRow(t *testing.T) {
 }
 
 func TestAURLValueTeachesTheAlternativeWhenFetchingIsOff(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	rec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"url": "https://files.example/a.txt"}}}}

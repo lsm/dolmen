@@ -670,7 +670,7 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
-	if err := store.RefuseFileFields("postgres", addedFields(changes)); err != nil {
+	if err := s.refuseFileFields(addedFields(changes)); err != nil {
 		return nil, err
 	}
 	if err := store.RequireSecretKey(s.secrets, addedFields(changes)); err != nil {
@@ -729,7 +729,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
-	if err := store.RefuseFileFields("postgres", addedFields(changes)); err != nil {
+	if err := s.refuseFileFields(addedFields(changes)); err != nil {
 		return nil, err
 	}
 	if err := store.RequireSecretKey(s.secrets, addedFields(changes)); err != nil {
