@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- On SQLite, an `update` whose filter matches no row no longer stores the files it carries, which
+  stayed behind until the next `vacuum` and counted toward `-max-namespace-files-size`. The values
+  are still checked, so a bad part or an oversized file is refused as before.
+
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
   can share the catalog and the bucket; with the local store PostgreSQL still refuses them.

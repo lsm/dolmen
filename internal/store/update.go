@@ -135,6 +135,7 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	cols := make([]string, 0, len(set))
 	vals := make([]any, 0, len(set))
 	coerced := make(map[string]any, len(set))
+	filesUnplaced := false
 	for _, f := range sc.Fields {
 		v, present := set[f.Name]
 		if !present {
@@ -142,6 +143,13 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 		}
 		if f.Required && v == nil {
 			return UpsertResult{}, true, invalidf("field %q is required and cannot be set to null", f.Name)
+		}
+		if f.Type == schema.File && v != nil && preMatched == 0 && !allowInsert {
+			if err := checkFile(ctx, s, nsName, f, v); err != nil {
+				return UpsertResult{}, true, err
+			}
+			filesUnplaced = true
+			continue
 		}
 		cv, err := s.coerceWrite(ctx, nsName, f, v)
 		if err != nil {
@@ -226,6 +234,9 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	var matched int64
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM _dolmen_update_ids`).Scan(&matched); err != nil {
 		return UpsertResult{}, true, err
+	}
+	if filesUnplaced && matched > 0 {
+		return UpsertResult{}, false, nil
 	}
 
 	if vf != nil {
