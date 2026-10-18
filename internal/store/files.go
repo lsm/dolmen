@@ -241,6 +241,15 @@ func ParseFileReference(v any) (FileBlob, error) {
 }
 
 func CoerceFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, v any) (any, error) {
+	return coerceFile(ctx, reader, nsName, f, v, true)
+}
+
+func checkFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, v any) error {
+	_, err := coerceFile(ctx, reader, nsName, f, v, false)
+	return err
+}
+
+func coerceFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, v any, place bool) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -272,6 +281,9 @@ func CoerceFile(ctx context.Context, reader FileReader, nsName string, f schema.
 	b = fv.apply(b)
 	if err := fileLimits(f, "part "+fmt.Sprintf("%q", fv.part), b); err != nil {
 		return nil, err
+	}
+	if !place {
+		return nil, nil
 	}
 	placed, err := src.Attach(ctx, nsName, fv.part)
 	if err != nil {

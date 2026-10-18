@@ -138,3 +138,25 @@ func TestFileBatchRollbackLeavesNoBlob(t *testing.T) {
 		t.Fatalf("vacuum must remove the failed batch's unreferenced blob: %v", res)
 	}
 }
+
+func TestFileWriteMatchingNoRowStoresNoBlob(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	h.mustHTTP("insert", map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"title": "kept"}}})
+	for _, tc := range []struct{ op, body string }{
+		{"update", `{"namespace":"fil","table":"docs","filter":"id = 999","set":{"doc":{"part":"f"}}}`},
+		{"batch", `{"namespace":"fil","writes":[{"kind":"update","table":"docs","filter":"id = 999","set":{"doc":{"part":"f"}}}]}`},
+	} {
+		data := []byte("a file no row takes, via " + tc.op)
+		if code, out := h.multipartCall(tc.op, tc.body, map[string][]byte{"f": data}); code != http.StatusOK {
+			t.Fatalf("%s matching no row: %d %v", tc.op, code, out)
+		}
+		sum := sha256.Sum256(data)
+		if h.blobStored("fil", hex.EncodeToString(sum[:])) {
+			t.Fatalf("a %s matching no row stored its file, which only a vacuum would remove", tc.op)
+		}
+	}
+	if res := h.mustHTTP("vacuum", map[string]any{"namespace": "fil"}); res["files_removed"] != float64(0) {
+		t.Fatalf("vacuum after writes that matched no row = %v, want nothing to remove", res)
+	}
+}

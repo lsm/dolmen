@@ -22,6 +22,10 @@
 - With `-files-store s3`, `file_url` returns the bucket's presigned `GET` (with the download's
   type and attachment headers) instead of a server link.
 
+- On SQLite, an `update` whose filter matches no row no longer stores the files it carries, which
+  stayed behind until the next `vacuum` and counted toward `-max-namespace-files-size`. The values
+  are still checked, so a bad part or an oversized file is refused as before.
+
 - `-files-store s3` keeps file bytes in an S3-compatible bucket (AWS, MinIO, R2 and others),
   configured by `-files-s3-bucket`, `-files-s3-endpoint`, `-files-s3-region`, `-files-s3-prefix`
   and `-files-s3-path-style`, with credentials from the standard AWS chain. An unreachable store

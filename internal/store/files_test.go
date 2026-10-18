@@ -423,3 +423,25 @@ func TestParseFileReferencesFromStoredAndPresentedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestAnUpdateThatMatchesNoRowStoresNoFile(t *testing.T) {
+	st, ctx := fileTable(t)
+	if _, err := st.Insert(ctx, "app", "docs", []map[string]any{{"title": "kept"}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeFiles{parts: map[string]FileBlob{"f": blob("a", 5), "big": blob("b", 200)}}
+	fctx := WithFileSource(ctx, src)
+	res, err := st.Update(fctx, "app", "docs", "id = 999", nil, map[string]any{"doc": map[string]any{"part": "f"}}, Embedder{}, nil, Incarnation{})
+	if err != nil || res.Updated != 0 {
+		t.Fatalf("update = %+v %v", res, err)
+	}
+	if len(src.attached) != 0 {
+		t.Fatalf("an update matching no row attached %v, which only a vacuum would remove", src.attached)
+	}
+	if _, err := st.Update(fctx, "app", "docs", "id = 999", nil, map[string]any{"doc": map[string]any{"part": "big"}}, Embedder{}, nil, Incarnation{}); err == nil || !strings.Contains(err.Error(), "max_bytes") {
+		t.Fatalf("a file over max_bytes must still be refused when no row matches: %v", err)
+	}
+	if res, err := st.Update(fctx, "app", "docs", "id = 1", nil, map[string]any{"doc": map[string]any{"part": "f"}}, Embedder{}, nil, Incarnation{}); err != nil || res.Updated != 1 || len(src.attached) != 1 {
+		t.Fatalf("update of a matching row = %+v %v, attached %v", res, err, src.attached)
+	}
+}
