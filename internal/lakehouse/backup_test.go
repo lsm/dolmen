@@ -275,3 +275,20 @@ func TestALakehouseBackupHandlesSymlinksAndURIPathCharacters(t *testing.T) {
 		t.Fatalf("backup of %s = %+v, %v", dir, m, err)
 	}
 }
+
+func TestALakehouseBackupIgnoresHiddenFilesBesideNamespaces(t *testing.T) {
+	dir, s := backupSource(t)
+	defer s.Close()
+	for _, hidden := range []string{".DS_Store", filepath.Join("team", ".DS_Store"), filepath.Join("team", "app.lakehouse", "data", ".swp")} {
+		if err := os.WriteFile(filepath.Join(dir, hidden), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if names, err := NamespacesIn(dir); err != nil || len(names) != 1 || names[0] != "team/app" {
+		t.Fatalf("NamespacesIn beside hidden files = %v, %v", names, err)
+	}
+	m, err := Backup(t.Context(), dir, filepath.Join(t.TempDir(), "backup"), nil)
+	if err != nil || len(m.Files) != 1 || len(m.Dirs) == 0 {
+		t.Fatalf("backup beside hidden files = %+v, %v", m, err)
+	}
+}
