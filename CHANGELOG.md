@@ -6,6 +6,9 @@
   reason when they do not), the store, `-max-file-size`, `-max-request-files-size`,
   `-max-namespace-files-size` and the fetch hosts.
 
+- `-files-s3-public-endpoint` (`DOLMEN_FILES_S3_PUBLIC_ENDPOINT`) presigns `file_url` links for the
+  address clients reach the bucket at, while uploads and reads keep using `-files-s3-endpoint`.
+
 - `{"url": …}` file fetches send the User-Agent `dolmen (+https://github.com/lsm/dolmen)` instead of
   Go's default, which hosts such as Wikimedia refuse with `403`.
 
