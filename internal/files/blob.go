@@ -53,11 +53,17 @@ func (l *localBlobs) Stat(_ context.Context, ns, sum string) (BlobInfo, error) {
 
 func (l *localBlobs) Put(_ context.Context, ns, sum, path string) error {
 	final := l.path(ns, sum)
-	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(path, final); err != nil {
-		return err
+	for attempt := 0; ; attempt++ {
+		if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+			return err
+		}
+		err := os.Rename(path, final)
+		if err == nil {
+			break
+		}
+		if _, serr := os.Stat(path); attempt == 4 || !errors.Is(err, fs.ErrNotExist) || serr != nil {
+			return err
+		}
 	}
 	return syncDir(filepath.Dir(final))
 }

@@ -167,3 +167,22 @@ func TestASecondUploadOfTheSameBytesWaitsAndNeverOwnsTheBlob(t *testing.T) {
 		t.Fatalf("a failed write that found the blob already placed deleted another request's committed blob: %v", err)
 	}
 }
+
+func TestALocalPlacementSurvivesItsDirectoryBeingRemoved(t *testing.T) {
+	root := t.TempDir()
+	b := NewLocal(root).(*localBlobs)
+	dir := filepath.Dir(b.path("app", sumA))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := tempBlob(t, "bytes")
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Put(context.Background(), "app", sumA, src); err != nil {
+		t.Fatalf("a placement whose shard directory was removed by a concurrent delete must recreate it: %v", err)
+	}
+	if _, err := b.Stat(context.Background(), "app", sumA); err != nil {
+		t.Fatal(err)
+	}
+}
