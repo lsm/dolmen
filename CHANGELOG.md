@@ -7,6 +7,10 @@
   and `-files-s3-path-style`, with credentials from the standard AWS chain. An unreachable store
   answers `503` `storage_unavailable`.
 
+- `dolmen backup` and `dolmen restore` work on the lakehouse engine: a consistent snapshot of each
+  namespace's catalog, Parquet and metadata files and file-field blobs while the server runs,
+  restored into the same data directory path (manifest format 3).
+
 - Go library: `github.com/lsm/dolmen/lakehouse` opens the lakehouse engine with
   `dolmen.Open(dir, lakehouse.With(lakehouse.Config{...}))`; `file` fields work there too.
 

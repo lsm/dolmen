@@ -100,3 +100,80 @@ func TestAnEngineBackupRefusesADamagedDataFile(t *testing.T) {
 		t.Fatalf("a refused restore wrote %d entries", len(entries))
 	}
 }
+
+func TestAnEngineRestoreOverDifferentDataSaysWhereItMustGo(t *testing.T) {
+	target := t.TempDir()
+	out := engineBackup(t, target)
+	catalog := filepath.Join(target, "app.lakehouse", "catalog.db")
+	if err := os.MkdirAll(filepath.Dir(catalog), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalog, []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Restore(context.Background(), out, target)
+	if err == nil || strings.Contains(err.Error(), "another data directory") || !strings.Contains(err.Error(), "only into "+target) {
+		t.Fatalf("restore over a different catalog: %v", err)
+	}
+}
+
+func TestAnEngineRestoreOverADifferentDataFileSaysWhereItMustGo(t *testing.T) {
+	target := t.TempDir()
+	out := engineBackup(t, target)
+	data := filepath.Join(target, "app.lakehouse", "data", "t", "part.parquet")
+	if err := os.MkdirAll(filepath.Dir(data), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(data, []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(context.Background(), out, target); err == nil || !strings.Contains(err.Error(), "only into "+target) {
+		t.Fatalf("restore over a different data file: %v", err)
+	}
+}
+
+func TestAnEngineRestoreCreatesNoDirectoryOutsideTheDataDirectory(t *testing.T) {
+	target, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(target, "escape")); err != nil {
+		t.Skip(err)
+	}
+	out := filepath.Join(t.TempDir(), "backup")
+	if err := PrepareBackupDir(out); err != nil {
+		t.Fatal(err)
+	}
+	m := BackupManifest{Engine: "lakehouse", DataDir: target, Dirs: []string{"escape/sub"}}
+	if err := WriteBackupManifest(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	Restore(context.Background(), out, target)
+	if _, err := os.Stat(filepath.Join(outside, "sub")); !os.IsNotExist(err) {
+		t.Fatalf("restore created a directory through a symlink: %v", err)
+	}
+}
+
+func TestAnEngineRestorePlacesNoFileOutsideTheDataDirectory(t *testing.T) {
+	target, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(target, "escape")); err != nil {
+		t.Skip(err)
+	}
+	src := filepath.Join(t.TempDir(), "x")
+	os.WriteFile(src, []byte("x"), 0o600)
+	out := filepath.Join(t.TempDir(), "backup")
+	if err := PrepareBackupDir(out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := CopyIntoBackup(src, out, filepath.Join("escape", "x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := BackupManifest{Engine: "lakehouse", DataDir: target, DataFiles: []BackupBlob{b}}
+	if err := WriteBackupManifest(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(context.Background(), out, target); err == nil {
+		t.Fatal("restore through a symlink succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "x")); !os.IsNotExist(err) {
+		t.Fatalf("restore placed a file through a symlink: %v", err)
+	}
+}

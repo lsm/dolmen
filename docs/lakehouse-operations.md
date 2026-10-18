@@ -98,6 +98,12 @@ quiet period: it holds the namespace's writer, and it waits for running queries 
 until it finishes. It does not remove every superseded file: each write's earlier
 `vN.metadata.json` stays in the table's `metadata/` directory, and a crash in the middle of a
 compaction can leave Parquet files nothing references. Neither is ever read again; both cost disk
-space only. `dolmen backup` and `dolmen restore` work only on a SQLite
-data directory. To back up a lakehouse deployment, stop the server and copy the whole data
-directory.
+space only. `dolmen backup` (with
+`-engine lakehouse` or `DOLMEN_ENGINE=lakehouse`; a plain backup of a lakehouse directory is refused) snapshots each namespace's `catalog.db`, then copies its table data and
+metadata files and its file-field blobs while the server keeps running. It checks the copy holds
+every file the snapshot's metadata references, and retries a namespace (up to five times) when a
+batch, a `vacuum`, or a `drop_table` overlapped it, since those are what delete files a snapshot can
+still name; a namespace dropped during its copy is left out of the backup. The
+catalogs record absolute paths, so `dolmen restore -engine lakehouse` puts a lakehouse backup back
+only into the data directory it came from, at the same path; it refuses any other, and restore
+refuses a backup taken from the other engine.
