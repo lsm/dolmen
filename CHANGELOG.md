@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- On PostgreSQL and lakehouse, `create_table`, `add_field` and `rename_field` refuse a table or field
+  name that engine reserves as a keyword (`user` on PostgreSQL, `map` on DuckDB, `any` on both),
+  which a query could only name in double quotes, and suggest a replacement. SQLite is unchanged,
+  and existing tables keep their names.
+
 - `{"url": …}` file fetches send the User-Agent `dolmen (+https://github.com/lsm/dolmen)` instead of
   Go's default, which hosts such as Wikimedia refuse with `403`.
 

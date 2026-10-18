@@ -208,6 +208,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if err := schema.ValidateIdent(f.Name, "field name"); err != nil {
 				return nil, invalidf("%s", err)
 			}
+			if err := schema.ValidateEngineIdent("postgresql", f.Name, "field name"); err != nil {
+				return nil, invalidf("%s", err)
+			}
 			for _, ef := range cur.Fields {
 				if ef.Name == f.Name {
 					return nil, invalidf("field %q already exists", f.Name)
@@ -304,6 +307,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			}
 		case schema.OpRenameField:
 			if err := schema.ValidateIdent(ch.To, "new field name"); err != nil {
+				return nil, invalidf("%s", err)
+			}
+			if err := schema.ValidateEngineIdent("postgresql", ch.To, "new field name"); err != nil {
 				return nil, invalidf("%s", err)
 			}
 			f, err := findField(ch.From)
