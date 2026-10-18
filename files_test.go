@@ -99,6 +99,16 @@ func TestTheLibraryRefusesFilesItCannotStore(t *testing.T) {
 	}
 }
 
+func TestTheLibraryNamesTheUploadWhenItsNameBreaksTheRule(t *testing.T) {
+	st, _, ctx := openWithDocs(t)
+	for _, name := range []string{strings.Repeat("a", 256), "..", "evil\u202efdp.exe"} {
+		_, err := st.Insert(ctx, "app", "docs", []map[string]any{{"doc": FileUpload{Reader: strings.NewReader("x"), Name: name}}}, InsertOptions{})
+		if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "dolmen.FileUpload") || strings.Contains(err.Error(), "curl") || strings.Contains(err.Error(), "upload-") {
+			t.Errorf("%q: %v, want a refusal naming dolmen.FileUpload", name, err)
+		}
+	}
+}
+
 func TestTheCallersRecordsAreNotRewritten(t *testing.T) {
 	st, _, ctx := openWithDocs(t)
 	up := FileUpload{Reader: bytes.NewReader([]byte("x")), Name: "a.txt"}
