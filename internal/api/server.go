@@ -724,7 +724,7 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, r, badRequest("cannot read body"))
 			return
 		}
-		res, err := s.Dispatch(r.Context(), op, body)
+		res, err := s.Dispatch(WithPublicBase(r.Context(), s.PublicBase(r)), op, body)
 		if err != nil {
 			slog.DebugContext(r.Context(), "op failed", WithPrincipal(r, "op", op, "err", err)...)
 			s.ArmResponseWrite(w)

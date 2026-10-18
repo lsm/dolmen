@@ -8,16 +8,21 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -515,5 +520,83 @@ func TestADownloadRacingAVacuumAnswersNotFound(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("a file removed between reading its row and opening it: got %d, want 404", res.StatusCode)
+	}
+}
+
+func TestASignedDownloadIsCheckedBeforeAnyRowIsRead(t *testing.T) {
+	dir := t.TempDir()
+	s := &Server{files: files.New(files.Config{Root: dir})}
+	sum := strings.Repeat("a", 64)
+	q := url.Values{"exp": {"1000"}, "sha256": {sum}, "sig": {"00"}}
+	if _, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 1, "doc", time.Unix(1001, 0)); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("a link past exp must be refused as expired, got %v", err)
+	}
+	if _, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 1, "doc", time.Unix(1000, 0)); err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("a forged link must be refused, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "files.key")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("checking a forged link must not create the signing key: %v", err)
+	}
+	sig, err := s.files.Signer().Sign("app", "docs", 1, "doc", sum, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.Set("sig", sig)
+	ctx, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 1, "doc", time.Unix(1000, 0))
+	if err != nil || auth.IdentityFrom(ctx).Principal != auth.AdminPrincipal {
+		t.Fatalf("a valid link at its exp second must pass, got %v", err)
+	}
+	if _, err := s.verifySignedDownload(context.Background(), q, "app", "docs", 2, "doc", time.Unix(1000, 0)); err == nil {
+		t.Fatal("a valid signature must not cover another row")
+	}
+}
+
+func TestFileURLWithoutAnHTTPEndpointSaysToCallItOverHTTP(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for name, srv := range map[string]*Server{"without files": New(st, fakeEmb{}), "with files": New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: t.TempDir()})))} {
+		_, err := srv.Dispatch(context.Background(), "file_url", []byte(`{"namespace":"app","table":"docs","id":1,"field":"doc"}`))
+		if err == nil || !strings.Contains(err.Error(), "call file_url over HTTP") {
+			t.Errorf("%s: file_url with no public base URL = %v, want the over-HTTP advice", name, err)
+		}
+	}
+}
+
+func TestASignedDownloadKeepsOutagesDistinctFromStaleLinks(t *testing.T) {
+	ref := fileRef{sha: strings.Repeat("a", 64)}
+	for name, c := range map[string]struct {
+		err   error
+		stale bool
+	}{
+		"row gone":       {notFound("table docs has no row 1"), true},
+		"not a file":     {badRequest("field %q of %s is not a file field", "doc", "docs"), true},
+		"engine timeout": {&Error{Status: http.StatusGatewayTimeout, Code: ErrCodeTimeout, Message: "timed out"}, false},
+		"store outage":   {&files.Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: "down"}, false},
+	} {
+		if got := linkNoLongerMatches(c.err, ref, ref.sha); got != c.stale {
+			t.Errorf("%s: treated as a stale link = %v, want %v", name, got, c.stale)
+		}
+	}
+	if !linkNoLongerMatches(nil, ref, strings.Repeat("b", 64)) || linkNoLongerMatches(nil, ref, ref.sha) {
+		t.Fatal("a link matches only the row's current hash")
+	}
+}
+
+func TestFileURLRefusesToQuoteAnUnusableHost(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: t.TempDir()})))
+	r := httptest.NewRequest(http.MethodPost, "/v1/file_url", nil)
+	r.Host = "a;b.example.com"
+	ctx := WithPublicBase(context.Background(), srv.PublicBase(r))
+	_, err = srv.Dispatch(ctx, "file_url", []byte(`{"namespace":"app","table":"docs","id":1,"field":"doc"}`))
+	if err == nil || !strings.Contains(err.Error(), "not a usable host name") {
+		t.Fatalf("file_url behind an unusable Host must refuse rather than mint a dead link, got %v", err)
 	}
 }

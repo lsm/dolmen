@@ -69,6 +69,7 @@ var authRules = map[string]authRule{
 	"upsert_by_key":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
 	"batch":           {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
 	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
+	"file_url":        {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true},
 	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
 	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
 

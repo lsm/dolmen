@@ -367,3 +367,29 @@ func TestTheStoreKeepsBlobsInItsConfiguredBlobStore(t *testing.T) {
 		t.Fatalf("sweep removed %d blobs from the configured store, want 1", res.Removed)
 	}
 }
+
+func TestTheSigningKeyIsNeverLeftHalfWritten(t *testing.T) {
+	root := t.TempDir()
+	s := New(Config{Root: root})
+	sig, err := s.Signer().Sign("app", "docs", 1, "doc", strings.Repeat("a", 64), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(filepath.Join(root, "files.key"))
+	if err != nil || len(key) != 32 {
+		t.Fatalf("files.key = %d bytes, %v; want a complete 32-byte key", len(key), err)
+	}
+	if info, _ := os.Stat(filepath.Join(root, "files.key")); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("files.key mode = %v, want 0600", info.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(root)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".files-key-") {
+			t.Fatalf("a temporary key file was left behind: %s", e.Name())
+		}
+	}
+	again := New(Config{Root: root})
+	if ok, err := again.Signer().Valid("app", "docs", 1, "doc", strings.Repeat("a", 64), 1000, sig); err != nil || !ok {
+		t.Fatalf("a restarted server must verify links signed before: %v %v", ok, err)
+	}
+}

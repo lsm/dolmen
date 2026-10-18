@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `file_url` returns a short-lived link (`ttl_seconds`, default 900, at most 3600) that downloads
+  one row's file with no credentials, for tools that hold none. It needs the same access as
+  `read_rows` on the row, and the link stops working once the row's file is replaced.
+
 - `dolmen backup` and `dolmen restore` work on the lakehouse engine: a consistent snapshot of each
   namespace's catalog, Parquet and metadata files and file-field blobs while the server runs,
   restored into the same data directory path (manifest format 3).

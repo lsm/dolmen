@@ -40,6 +40,7 @@ func decodeTargets() []decodeTarget {
 		{op: "insert", new: func() any { return new(insertReq) }},
 		{op: "upsert_by_key", new: func() any { return new(upsertReq) }},
 		{op: "read_rows", new: func() any { return new(readRowsReq) }},
+		{op: "file_url", new: func() any { return new(fileURLReq) }},
 		{op: "query", new: func() any { return new(queryReq) }},
 		{op: "search_fulltext", new: func() any { return new(ftsReq) }},
 		{op: "search_vector", new: func() any { return new(vecReq) }},
