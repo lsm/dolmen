@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A multipart part's `filename` over 255 bytes is refused instead of truncated, and file names
+  `.`, `..` and names with bidirectional controls (such as U+202E) are refused from a part or a
+  JSON `name`.
+
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
   can share the catalog and the bucket; with the local store PostgreSQL still refuses them.
