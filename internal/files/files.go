@@ -93,6 +93,23 @@ func New(cfg Config) *Store {
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
 
+type presigner interface {
+	PresignGet(ctx context.Context, ns, sum string, ttl time.Duration, mediaType, disposition string) (string, error)
+}
+
+func (s *Store) Presigns() bool {
+	_, ok := s.blobs.(presigner)
+	return ok
+}
+
+func (s *Store) PresignGet(ctx context.Context, ns, sum string, ttl time.Duration, mediaType, disposition string) (string, error) {
+	p, ok := s.blobs.(presigner)
+	if !ok {
+		return "", errors.New("this file store cannot presign downloads")
+	}
+	return p.PresignGet(ctx, ns, sum, ttl, mediaType, disposition)
+}
+
 func (s *Store) Remote() bool {
 	sh, ok := s.blobs.(interface{ Shared() bool })
 	return ok && sh.Shared()

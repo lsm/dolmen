@@ -1080,7 +1080,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `describe_server` | Server's embedding provider status — provider (`none` / `local` / `openai`), model, the identity that pins vectorized tables, whether server-side embedding is usable, and (local only) whether the model is cached; read-only, no secrets |
 | `describe_table` | Schema, version, row count |
 | `read_rows` | Fetch rows by id — each found row once, ascending id order; missing ids are simply absent (never an error); `truncated` is true only when the response budget dropped rows for existing ids (retry with fewer); at most 1,000 ids per request. Without `ids`, page through the table in id order: `after_id` (default 0) and `limit` (default 100, at most 1,000); while `truncated`, pass `next_after_id` as the next `after_id`. Needs only `read` on the table, or own-row access on a `row_access` table |
-| `file_url` | A short-lived URL that downloads one row's file with a plain GET and no credentials, for a tool that holds none. `ttl_seconds` defaults to 900, at most 3,600; the link stops working at `expires_at` or once the row's file is replaced. Needs the same access as `read_rows` on the row. Served over HTTP and `/mcp`, not stdio |
+| `file_url` | A short-lived URL that downloads one row's file with a plain GET and no credentials, for a tool that holds none. `ttl_seconds` defaults to 900, at most 3,600; the link stops working at `expires_at`, and on the local store also once the row's file is replaced. With `-files-store s3` it is the bucket's presigned `GET`, which works until it expires. Needs the same access as `read_rows` on the row. Served over HTTP and `/mcp`, not stdio |
 | `capabilities` | The engine's static capability surface — `vector_execution` (`exact` / `ann`), `ann_recall_bound` (explicit `null` when exact), `notifications`, `subscribe`, `query_dialect`, `filter_dialect`; reported verbatim |
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `shape` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `shape` restricts a json field to one JSON shape such as `array<string>`; `default` is stored by inserts that omit the field — a timestamp field may declare `"now()"`, stamped server-side at write time so idempotent retries can omit the field and replay) |
 | `infer_schema` | Propose fields from sample records (creates nothing). Names are always valid for `create_table`; `warnings` explains every rename or merge, `provenance` maps fields to source keys, and `evidence` counts presence, nulls and observed types per field |
@@ -1140,7 +1140,8 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   CSP, supporting `Range` and `ETag`. `file_url` returns `{"url", "expires_at"}`, a link to that
   download that needs no credentials, for `ttl_seconds` (default 900, at most 3600); it is signed
   with HMAC-SHA256 under a key kept at `<data>/files.key`, and stops working once the row's file is
-  replaced. A field
+  replaced. With `-files-store s3` it is the bucket's presigned `GET` instead, with the same type
+  and attachment headers, which works until it expires. A field
   may declare `max_bytes` and `media_types` (exact, or `audio/*`). MCP calls cannot carry files.
   File fields work on SQLite and lakehouse; PostgreSQL still refuses them, even with `-files-store s3`; PostgreSQL support over the S3 store is the next step.
   `docs/design/object-storage.md` has the design.

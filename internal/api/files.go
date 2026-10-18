@@ -388,9 +388,13 @@ var fileURLOp = OpDef{
 		if err := decode(body, &req); err != nil {
 			return nil, err
 		}
-		base, err := publicBaseFrom(ctx)
-		if err != nil {
-			return nil, err
+		var base string
+		if s.files == nil || !s.files.Presigns() {
+			b, err := publicBaseFrom(ctx)
+			if err != nil {
+				return nil, err
+			}
+			base = b
 		}
 		if s.files == nil {
 			return nil, badRequest("this server does not store files")
@@ -411,6 +415,13 @@ var fileURLOp = OpDef{
 			return nil, err
 		}
 		exp := time.Now().Add(time.Duration(ttl) * time.Second).Truncate(time.Second)
+		if s.files.Presigns() {
+			link, err := s.files.PresignGet(ctx, ns, ref.sha, time.Duration(ttl)*time.Second, ref.mediaType, contentDisposition(ref.name, ref.sha))
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"url": link, "expires_at": exp.UTC().Format(time.RFC3339)}, nil
+		}
 		sig, err := s.files.Signer().Sign(ns, table, req.ID, req.Field, ref.sha, exp.Unix())
 		if err != nil {
 			return nil, internal(err)

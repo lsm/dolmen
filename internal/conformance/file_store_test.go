@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -157,5 +159,37 @@ func TestARemoteUploadGetsTheFetchTimeoutOnTopOfTheOperationLimit(t *testing.T) 
 	code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"a","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": []byte("slow upload")})
 	if code != http.StatusOK {
 		t.Fatalf("an upload slower than -op-timeout to a remote store must still finish within -files-fetch-timeout: %d %v", code, body)
+	}
+}
+
+func TestFileURLOverAnS3StoreIsThePresignedObjectURL(t *testing.T) {
+	if testEngine(t) == store.EnginePostgres {
+		t.Skip("file fields need the S3 store on PostgreSQL, which does not accept them yet")
+	}
+	h := newHarnessBlobs(t, fakeBucket(t), nil)
+	h.seedTable("fil", "docs", fileTableFields())
+	data := []byte("presigned bytes")
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"a","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": data}); code != http.StatusOK {
+		t.Fatalf("multipart insert over S3: %d %v", code, body)
+	}
+	input := map[string]any{"namespace": "fil", "table": "docs", "id": 1, "field": "doc", "ttl_seconds": 120}
+	for transport, out := range map[string]map[string]any{"http": h.mustHTTP("file_url", input), "mcp": h.mustMCP("file_url", input)} {
+		link, _ := out["url"].(string)
+		u, err := url.Parse(link)
+		if err != nil || strings.HasPrefix(link, h.srv.URL) || u.Query().Get("X-Amz-Signature") == "" || u.Query().Get("X-Amz-Expires") != "120" {
+			t.Fatalf("%s: file_url over S3 must be the bucket's own presigned GET for ttl_seconds, got %q", transport, link)
+		}
+		if got := u.Query().Get("response-content-disposition"); !strings.HasPrefix(got, "attachment;") || u.Query().Get("response-content-type") != "text/plain" {
+			t.Fatalf("%s: the presigned URL must make the bucket answer as the download endpoint would: disposition %q type %q", transport, got, u.Query().Get("response-content-type"))
+		}
+		res, err := http.Get(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK || string(got) != string(data) {
+			t.Fatalf("%s: GET of the presigned URL: %d %q", transport, res.StatusCode, got)
+		}
 	}
 }

@@ -210,6 +210,17 @@ func (b *s3Blobs) DropNamespace(ctx context.Context, ns string) error {
 
 func (b *s3Blobs) Shared() bool { return true }
 
+func (b *s3Blobs) PresignGet(ctx context.Context, ns, sum string, ttl time.Duration, mediaType, disposition string) (string, error) {
+	params := url.Values{}
+	params.Set("response-content-type", mediaType)
+	params.Set("response-content-disposition", disposition)
+	u, err := b.client.PresignedGetObject(ctx, b.bucket, b.key(ns, sum), ttl, params)
+	if err != nil {
+		return "", unavailable(err)
+	}
+	return u.String(), nil
+}
+
 func (b *s3Blobs) Location(ns string) string {
 	return "s3://" + b.bucket + "/" + b.nsPrefix(ns)
 }
