@@ -724,3 +724,20 @@ func TestTheAdminSkillWarnsThatReadDefeatsPerRowPrivacy(t *testing.T) {
 		t.Fatal("dolmen-admin must warn that granting read on a row_access table shows every row to that caller")
 	}
 }
+
+func TestTheSkillsSendTheRequestPartWithFormString(t *testing.T) {
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		out, err := Render(name, Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: "sqlite"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "-F 'request=") {
+			t.Fatalf("%s must not send the request part with -F, which reads ;type= inside the JSON as an option", name)
+		}
+		for _, want := range []string{"--form-string 'request=", "of the same namespace", "revoking"} {
+			if !strings.Contains(strings.ToLower(string(out)), strings.ToLower(want)) {
+				t.Fatalf("%s must say %q", name, want)
+			}
+		}
+	}
+}

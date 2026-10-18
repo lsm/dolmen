@@ -238,18 +238,22 @@ with the JSON request in a first part named `request` and each file in its own p
 ```bash
 base='{{ .BaseURL }}'
 curl -s "${base%/}/v1/insert" \
-  -F 'request={"namespace":"research","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
+  --form-string 'request={"namespace":"research","table":"meetings","records":[{"title":"standup","recording":{"part":"rec"}}]}' \
   -F 'rec=@/tmp/standup.ogg'
 ```
 
+Send the request part with `--form-string`, never `-F`: `-F` reads `;type=` or `;filename=`
+inside your JSON as its own options and cuts the request short.
+
 The media type is taken from the part's `Content-Type`, or, when curl sends the default
-`application/octet-stream`, from the file name's extension; add `"media_type": "audio/ogg"` to the
+`application/octet-stream`, from the file name's extension, and failing both from the bytes themselves; add `"media_type": "audio/ogg"` to the
 value to set it yourself, and `"name": "q3.ogg"` to store a different file name. Several records,
 or several fields, may reference the same part. `null` clears the field. When the file is at a URL,
 write `{"url": "https://…"}` and the server fetches it, if the operator allowed that host; otherwise
 the error says so, and you download it and send it as a part. To reuse a file a row
 already holds, write `{"copy_from": {"table": "meetings", "id": 1, "field": "recording"}}` instead,
-in a plain JSON write or over MCP: no upload, and the source must be a row you can read. A read returns the
+in a plain JSON write or over MCP: no upload, and the source must be a row of the same namespace
+that you can read. A read returns the
 reference, never the bytes: `{"sha256": "9f86…", "size": 48213, "media_type": "audio/ogg",
 "name": "standup.ogg"}`. Fetch the bytes with one GET, addressed by row; it needs the same access
 as `read_rows` on that row, and supports `Range`:
@@ -262,7 +266,9 @@ To hand a file to a tool that has no dolmen credentials, call `file_url` with th
 `namespace`, `table`, `id` and `field`. It returns `{"url", "expires_at"}`: a link that anyone
 holding it can GET, for `ttl_seconds` (default 900, at most 3600). On a server that keeps files
 locally it also stops once the row's file is replaced; on one that keeps them in S3 it is the
-bucket's own link and works until it expires. Treat the URL like a password for that one file.
+bucket's own link and works until it expires, on the bucket's host. Revoking your key or grant
+does not end a link already issued, so treat the URL like a password for that one file and keep
+`ttl_seconds` short.
 
 MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
