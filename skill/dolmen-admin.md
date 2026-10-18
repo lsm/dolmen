@@ -208,8 +208,10 @@ DOLMEN_ENGINE=lakehouse dolmen -data /var/lib/dolmen
   - Credentials come only from the standard chain: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
     and `AWS_SESSION_TOKEN`, then `~/.aws/credentials`, then an IAM or IRSA role.
   - For MinIO or another S3-compatible service add `-files-s3-endpoint http://minio:9000
-    -files-s3-path-style`. `file_url` returns the bucket's presigned link, so that endpoint must be
-    reachable by whoever downloads, not only by the server.
+    -files-s3-path-style`. `file_url` returns the bucket's presigned link for that endpoint; when
+    clients reach the bucket at another address (a loopback MinIO, a private VPC endpoint), set
+    `-files-s3-public-endpoint https://files.example.com` and links are signed for it while the
+    server keeps using `-files-s3-endpoint`.
   - `-files-s3-prefix` lets several deployments share one bucket.
   - `-max-namespace-files-size` must stay `0`, and `dolmen backup` and `dolmen restore` refuse the
     data directory: back up the bucket with S3 tooling.
