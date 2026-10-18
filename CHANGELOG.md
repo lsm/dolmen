@@ -2,13 +2,18 @@
 
 ## Unreleased
 
-- A `{"part"}` file value sent without its bytes now says a JSON body or an MCP call cannot carry
-  files, names the multipart form of `/v1`, and offers `url`, `copy_from` and `null`, which work
-  over MCP. The write tools' descriptions say the same, and `create_table` lists `secret` and `file`.
+- The `dolmen-admin` skill gains "Running the server": what each engine needs (the lakehouse
+  sidecar bundle, PostgreSQL's DSN and query role), the local and S3 file stores, fetch hosts,
+  file limits, embeddings and backups per engine. It no longer calls the lakehouse engine
+  development-only.
 
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
   can share the catalog and the bucket; with the local store PostgreSQL still refuses them.
+
+- A `{"part"}` file value sent without its bytes now says a JSON body or an MCP call cannot carry
+  files, names the multipart form of `/v1`, and offers `url`, `copy_from` and `null`, which work
+  over MCP. The write tools' descriptions say the same, and `create_table` lists `secret` and `file`.
 
 - With `-files-store s3`, `file_url` returns the bucket's presigned `GET` (with the download's
   type and attachment headers) instead of a server link.
