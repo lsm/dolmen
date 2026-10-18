@@ -27,7 +27,7 @@ const (
 	DefaultMaxPendingFiles int64 = 8 << 30
 	MaxPartsPerRequest           = 100
 	tmpDirName                   = ".files-tmp"
-	nsDirSuffix                  = ".files"
+	NamespaceDirSuffix           = ".files"
 )
 
 type Config struct {
@@ -66,6 +66,8 @@ type Store struct {
 	live     map[string]bool
 	fetcher  *Fetcher
 	blobs    BlobStore
+	drops    map[string]int
+	placing  map[[2]string]*hashLock
 	signer   *Signer
 }
 
@@ -86,10 +88,22 @@ func New(cfg Config) *Store {
 	if cfg.Blobs == nil {
 		cfg.Blobs = NewLocal(cfg.Root)
 	}
-	return &Store{cfg: cfg, blobs: cfg.Blobs, signer: &Signer{path: filepath.Join(cfg.Root, signingKeyFile)}, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
+	return &Store{cfg: cfg, blobs: cfg.Blobs, drops: map[string]int{}, placing: map[[2]string]*hashLock{}, signer: &Signer{path: filepath.Join(cfg.Root, signingKeyFile)}, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
 }
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
+
+func (s *Store) Remote() bool {
+	sh, ok := s.blobs.(interface{ Shared() bool })
+	return ok && sh.Shared()
+}
+
+func (s *Store) dropping(ns string) error {
+	if s.drops[ns] > 0 {
+		return &Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: fmt.Sprintf("namespace %s is being dropped and its files deleted; retry the write once the drop finishes", ns)}
+	}
+	return nil
+}
 
 func (s *Store) tmpDir() string { return filepath.Join(s.cfg.Root, tmpDirName) }
 
@@ -345,39 +359,30 @@ func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, 
 		return store.FileBlob{}, fmt.Errorf("file part %q was already stored in another namespace", name)
 	}
 	s := r.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	info, err := s.blobs.Stat(ctx, ns, p.sum)
-	switch {
-	case err == nil && info.Size == p.size:
-		if err := os.Remove(p.tmp); err != nil {
+	if s.cfg.MaxNamespaceFiles > 0 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err := s.dropping(ns); err != nil {
 			return store.FileBlob{}, err
 		}
-		if n, ok := s.attaches[ns][p.sum]; ok {
-			s.attaches[ns][p.sum] = n + 1
+		if err := r.placeCapped(ctx, ns, p); err != nil {
+			return store.FileBlob{}, err
 		}
-	case err == nil || errors.Is(err, fs.ErrNotExist):
-		total, terr := s.namespaceTotal(ns)
-		if terr != nil {
-			return store.FileBlob{}, terr
+	} else {
+		s.mu.Lock()
+		if err := s.dropping(ns); err != nil {
+			s.mu.Unlock()
+			return store.FileBlob{}, err
 		}
-		if err == nil {
-			total -= info.Size
+		s.pin(ns, p.sum)
+		s.mu.Unlock()
+		err := r.place(ctx, ns, p)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.unpin(ns, p.sum)
+		if err != nil {
+			return store.FileBlob{}, err
 		}
-		if s.cfg.MaxNamespaceFiles > 0 && total+p.size > s.cfg.MaxNamespaceFiles {
-			return store.FileBlob{}, &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
-		}
-		if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
-			return store.FileBlob{}, storageErr(err)
-		}
-		s.totals[ns] = total + p.size
-		if s.attaches[ns] == nil {
-			s.attaches[ns] = map[string]int{}
-		}
-		s.attaches[ns][p.sum] = 1
-		r.created = append(r.created, created{ns: ns, sum: p.sum, size: p.size})
-	default:
-		return store.FileBlob{}, err
 	}
 	p.tmp = ""
 	s.pending -= p.pending
@@ -386,6 +391,98 @@ func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, 
 	r.pinned = append(r.pinned, [2]string{ns, p.sum})
 	p.placed[ns] = true
 	return p.blob(), nil
+}
+
+type hashLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (s *Store) lockHash(ns, sum string) func() {
+	key := [2]string{ns, sum}
+	s.mu.Lock()
+	l := s.placing[key]
+	if l == nil {
+		l = &hashLock{}
+		s.placing[key] = l
+	}
+	l.refs++
+	s.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		s.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(s.placing, key)
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (r *Request) place(ctx context.Context, ns string, p *part) error {
+	s := r.s
+	defer s.lockHash(ns, p.sum)()
+	info, err := s.blobs.Stat(ctx, ns, p.sum)
+	exists := err == nil && info.Size == p.size
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if exists {
+		if err := os.Remove(p.tmp); err != nil {
+			return err
+		}
+	} else if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
+		return storageErr(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n, ok := s.attaches[ns][p.sum]; ok {
+		s.attaches[ns][p.sum] = n + 1
+	} else if !exists {
+		if s.attaches[ns] == nil {
+			s.attaches[ns] = map[string]int{}
+		}
+		s.attaches[ns][p.sum] = 1
+		r.created = append(r.created, created{ns: ns, sum: p.sum, size: p.size})
+	}
+	return nil
+}
+
+func (r *Request) placeCapped(ctx context.Context, ns string, p *part) error {
+	s := r.s
+	info, err := s.blobs.Stat(ctx, ns, p.sum)
+	switch {
+	case err == nil && info.Size == p.size:
+		if err := os.Remove(p.tmp); err != nil {
+			return err
+		}
+		if n, ok := s.attaches[ns][p.sum]; ok {
+			s.attaches[ns][p.sum] = n + 1
+		}
+	case err == nil || errors.Is(err, fs.ErrNotExist):
+		total, terr := s.namespaceTotal(ns)
+		if terr != nil {
+			return terr
+		}
+		if err == nil {
+			total -= info.Size
+		}
+		if total+p.size > s.cfg.MaxNamespaceFiles {
+			return &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
+		}
+		if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
+			return storageErr(err)
+		}
+		s.totals[ns] = total + p.size
+		if s.attaches[ns] == nil {
+			s.attaches[ns] = map[string]int{}
+		}
+		s.attaches[ns][p.sum] = 1
+		r.created = append(r.created, created{ns: ns, sum: p.sum, size: p.size})
+	default:
+		return err
+	}
+	return nil
 }
 
 func syncDir(dir string) error {
@@ -414,10 +511,11 @@ func (r *Request) Discard() {
 	s := r.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	shared := s.Remote()
 	for _, c := range r.created {
-		if s.attaches[c.ns][c.sum] == 1 {
-			if s.blobs.Delete(context.Background(), c.ns, c.sum) == nil {
-				s.totals[c.ns] -= c.size
+		if !shared && s.attaches[c.ns][c.sum] == 1 && s.pins[c.ns][c.sum] <= 1 {
+			if t, ok := s.totals[c.ns]; s.blobs.Delete(context.Background(), c.ns, c.sum) == nil && ok {
+				s.totals[c.ns] = t - c.size
 			}
 		}
 		s.forget(c)
@@ -480,12 +578,23 @@ func (r *Request) Pin(ns, sum string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !ValidHash(sum) {
 		return invalid(http.StatusBadRequest, "the file to copy has no valid hash")
 	}
-	if _, err := s.blobs.Stat(context.Background(), ns, sum); err != nil {
+	s.mu.Lock()
+	if err := s.dropping(ns); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.pin(ns, sum)
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), storeCallTimeout)
+	defer cancel()
+	_, err := s.blobs.Stat(ctx, ns, sum)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		s.unpin(ns, sum)
 		if errors.Is(err, fs.ErrNotExist) {
 			return invalid(http.StatusNotFound, "the file to copy was removed while this write ran; read the source row again and retry")
 		}
@@ -494,7 +603,8 @@ func (r *Request) Pin(ns, sum string) error {
 	if n, ok := s.attaches[ns][sum]; ok {
 		s.attaches[ns][sum] = n + 1
 	}
-	s.pin(ns, sum)
 	r.pinned = append(r.pinned, [2]string{ns, sum})
 	return nil
 }
+
+const storeCallTimeout = 30 * time.Second

@@ -18,6 +18,7 @@ import (
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/files"
+	"github.com/lsm/dolmen/internal/files/s3store"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
@@ -79,6 +80,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -99,6 +102,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -120,6 +125,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -141,6 +148,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -182,6 +191,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -204,6 +215,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -232,6 +245,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -265,6 +280,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -290,6 +307,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -316,6 +335,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -342,6 +363,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -362,6 +385,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -382,6 +407,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 30 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -432,6 +459,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 0,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -452,6 +481,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 5 * time.Minute,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -472,6 +503,8 @@ func TestLoadConfig(t *testing.T) {
 				MaxSubscriptionAge: 24 * time.Hour,
 				VectorCacheSize:    store.DefaultVectorCacheBytes,
 				Files:              defaultFilesConfig,
+				FilesStore:         "local",
+				FilesS3:            defaultFilesS3,
 				Sync:               store.DefaultSync,
 				ShutdownGrace:      60 * time.Second,
 				Timeouts:           api.DefaultTimeouts(),
@@ -1274,6 +1307,8 @@ func TestLoadConfigSecretKey(t *testing.T) {
 		}
 	}
 }
+
+var defaultFilesS3 = s3store.Config{Endpoint: "https://s3.amazonaws.com"}
 
 var defaultFilesConfig = files.Config{
 	MaxFileSize:     files.DefaultMaxFileSize,

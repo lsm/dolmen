@@ -235,6 +235,11 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, internal(fmt.Errorf("file %s of %s row %d field %s is missing from the file store: %w", ref.sha, table, id, field, err)))
 			return
 		}
+		var fe *files.Error
+		if errors.As(err, &fe) {
+			writeError(w, r, err)
+			return
+		}
 		writeError(w, r, internal(err))
 		return
 	}

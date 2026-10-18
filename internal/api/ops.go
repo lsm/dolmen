@@ -15,6 +15,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/ops"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -549,6 +550,10 @@ var Ops = map[string]OpDef{
 			}
 			if s.files != nil {
 				if err := s.files.DropNamespace(ctx, ns); err != nil {
+					var fe *files.Error
+					if errors.As(err, &fe) {
+						return nil, err
+					}
 					return nil, internal(err)
 				}
 			}

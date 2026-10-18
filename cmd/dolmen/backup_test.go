@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen/internal/auth"
+	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
@@ -89,6 +90,29 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		{"backup on PostgreSQL", func() error {
 			return runBackup([]string{"-out", t.TempDir()}, pg, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "use pg_dump"},
+		{"backup with the S3 file store", func() error {
+			s3 := func(k string) string {
+				if k == "DOLMEN_FILES_STORE" {
+					return "s3"
+				}
+				return ""
+			}
+			return runBackup([]string{"-out", t.TempDir()}, s3, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "back up the bucket with your own S3 tooling"},
+		{"backup of a data directory a flag-configured S3 server used", func() error {
+			dir := t.TempDir()
+			if err := files.MarkS3(dir); err != nil {
+				return err
+			}
+			return runBackup([]string{"-out", t.TempDir(), "-data", dir}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "back up the bucket with your own S3 tooling"},
+		{"restore into a data directory an S3 server uses", func() error {
+			dir := t.TempDir()
+			if err := files.MarkS3(dir); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", t.TempDir(), "-data", dir}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "back up the bucket with your own S3 tooling"},
 		{"backup of a lakehouse directory without the engine", func() error {
 			data := t.TempDir()
 			if err := os.MkdirAll(filepath.Join(data, "app.lakehouse"), 0o700); err != nil {

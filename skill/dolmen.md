@@ -266,8 +266,8 @@ is replaced. Treat the URL like a password for that one file.
 MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
 write: a refusal for size answers `413`, and one for type answers `415` and names the accepted
-types. `storage_unavailable` (503) means the server is holding as much in-flight file data as it
-allows: retry the write shortly. File fields work on SQLite and lakehouse; PostgreSQL needs the future S3 file store.
+types. `storage_unavailable` (503) means the file store is briefly unable to take or serve files, or the server is holding as much in-flight file data as it
+allows: retry shortly. File fields work on SQLite and lakehouse; PostgreSQL does not accept them yet.
 
 ## JSON-RPC fallback
 

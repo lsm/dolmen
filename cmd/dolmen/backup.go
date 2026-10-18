@@ -33,6 +33,9 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 	if err := backupEngine(func(string) string { return *engine }, "backup"); err != nil {
 		return usageError(fs, stderr, err.Error())
 	}
+	if err := localFilesOnly(getenv, *dataDir, "backup"); err != nil {
+		return usageError(fs, stderr, err.Error())
+	}
 	backup := store.Backup
 	switch *engine {
 	case store.EngineLakehouse, store.EngineSQLite:
@@ -87,6 +90,9 @@ func runRestore(args []string, getenv func(string) string, stdout, stderr io.Wri
 		return usageError(fs, stderr, "-from is required: name the directory dolmen backup wrote")
 	}
 	if err := backupEngine(func(string) string { return *engine }, "restore"); err != nil {
+		return usageError(fs, stderr, err.Error())
+	}
+	if err := localFilesOnly(getenv, *dataDir, "restore"); err != nil {
 		return usageError(fs, stderr, err.Error())
 	}
 	manifest, err := store.ReadBackupManifest(*fromDir)
