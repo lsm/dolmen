@@ -34,6 +34,17 @@ type FileSource interface {
 	Fetch(ctx context.Context, url string) (string, error)
 }
 
+type fileConfirmer interface {
+	Confirm(ctx context.Context, ns string) error
+}
+
+func ConfirmFiles(ctx context.Context, ns string) error {
+	if c, ok := fileSourceFrom(ctx).(fileConfirmer); ok {
+		return c.Confirm(ctx, ns)
+	}
+	return nil
+}
+
 type CopyReach func(ctx context.Context, ns, table string) (*RowScope, error)
 
 type copyReachKey struct{}

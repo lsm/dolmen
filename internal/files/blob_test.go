@@ -186,3 +186,40 @@ func TestALocalPlacementSurvivesItsDirectoryBeingRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+type remoteLocal struct{ BlobStore }
+
+func (remoteLocal) Shared() bool { return true }
+
+func TestConfirmCatchesABlobAVacuumRemovedMidWrite(t *testing.T) {
+	ctx := context.Background()
+	for name, c := range map[string]struct {
+		blobs BlobStore
+		want  bool
+	}{
+		"remote": {remoteLocal{NewLocal(t.TempDir())}, true},
+		"local":  {NewLocal(t.TempDir()), false},
+	} {
+		s := New(Config{Root: t.TempDir(), Blobs: c.blobs})
+		r := s.NewRequest()
+		if err := r.Receive("f", "a.txt", "", strings.NewReader("confirm me")); err != nil {
+			t.Fatal(err)
+		}
+		b, err := r.Attach(ctx, "app", "f")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Confirm(ctx, "app"); err != nil {
+			t.Fatalf("%s: a blob still in the store must confirm: %v", name, err)
+		}
+		if err := c.blobs.Delete(ctx, "app", b.SHA256); err != nil {
+			t.Fatal(err)
+		}
+		err = r.Confirm(ctx, "app")
+		var fe *Error
+		if got := errors.As(err, &fe) && fe.Code == derr.StorageUnavailable; got != c.want {
+			t.Fatalf("%s: confirming a removed blob = %v, want a retryable refusal only on a shared store", name, err)
+		}
+		r.Close()
+	}
+}
