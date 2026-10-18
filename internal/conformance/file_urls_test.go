@@ -34,9 +34,6 @@ func (s *conformanceURLSource) Fetch(ctx context.Context, _ string) (string, err
 }
 
 func TestFileURLWritesReplayAcrossTransportsWithoutFetching(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("files need S3 on PostgreSQL")
-	}
 	h := newHarness(t)
 	handler := h.srv.Config.Handler
 	h.srv.Close()

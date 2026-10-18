@@ -234,6 +234,9 @@ func newTracedHarness(t *testing.T, tp trace.TracerProvider) *harness {
 func newHarnessAtMode(t *testing.T, dir string, emb *fakeProvider, mode harnessMode) *harness {
 	t.Helper()
 	h := &harness{t: t, dir: dir, emb: emb, mode: mode}
+	if testEngine(t) == store.EnginePostgres {
+		h.blobs = fakeBucket(t)
+	}
 	h.start()
 	return h
 }

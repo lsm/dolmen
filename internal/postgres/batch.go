@@ -2,17 +2,14 @@ package postgres
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lsm/dolmen/internal/derr"
-	"github.com/lsm/dolmen/internal/secret"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -20,96 +17,19 @@ var errBatchRetry = errors.New("a table changed while the batch was committing")
 
 const batchAttempts = 3
 
-func fingerprintAny(k *secret.Keyring, v any) any {
-	switch t := v.(type) {
-	case string:
-		return store.SecretFingerprint(k, t)
-	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = fingerprintAny(k, e)
-		}
-		return out
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for name, e := range t {
-			out[name] = fingerprintAny(k, e)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
-func lowerRecordKeys(records []map[string]any) []map[string]any {
-	out := make([]map[string]any, len(records))
-	for i, rec := range records {
-		nr := make(map[string]any, len(rec))
-		for k, v := range rec {
-			nr[strings.ToLower(k)] = v
-		}
-		out[i] = nr
-	}
-	return out
-}
-
 func (s *Store) batchPayloadHash(ctx context.Context, tx pgx.Tx, n namespace, writes []store.BatchWrite, opts store.BatchOpts) (store.IdemHash, error) {
-	states := make(map[string]tableState, len(writes))
-	secrets := false
+	schemas := make(map[string]*schema.TableSchema, len(writes))
 	for i, w := range writes {
-		state, ok := states[w.Table]
-		if !ok {
-			var err error
-			if state, err = s.loadTable(ctx, tx, n, w.Table); err != nil {
-				return store.IdemHash{}, fmt.Errorf("writes[%d]: %w", i, err)
-			}
-			states[w.Table] = state
+		if _, ok := schemas[w.Table]; ok {
+			continue
 		}
-		if len(state.schema.SecretFields()) > 0 {
-			secrets = true
-		}
-	}
-	sum := func(k *secret.Keyring) (string, error) {
-		sealed := make([]store.BatchWrite, 0, len(writes))
-		for _, w := range writes {
-			c := store.BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
-			if secrets {
-				sc := states[w.Table].schema
-				c.Records = store.FingerprintSecrets(k, sc, lowerRecordKeys(w.Records))
-				c.Args, _ = fingerprintAny(k, w.Args).([]any)
-				if m, ok := fingerprintAny(k, w.Set).(map[string]any); ok {
-					c.Set = m
-				}
-			}
-			sealed = append(sealed, c)
-		}
-		raw, err := json.Marshal(struct {
-			Limit   int                `json:"limit"`
-			Confirm bool               `json:"confirm"`
-			Writes  []store.BatchWrite `json:"writes"`
-		}{Limit: opts.Limit, Confirm: opts.Confirm, Writes: sealed})
+		state, err := s.loadTable(ctx, tx, n, w.Table)
 		if err != nil {
-			return "", err
+			return store.IdemHash{}, fmt.Errorf("writes[%d]: %w", i, err)
 		}
-		h := sha256.Sum256(raw)
-		return hex.EncodeToString(h[:]), nil
+		schemas[w.Table] = state.schema
 	}
-	primary, err := sum(s.secrets)
-	if err != nil {
-		return store.IdemHash{}, err
-	}
-	out := store.IdemHash{Primary: primary}
-	if !secrets || s.secrets == nil {
-		return out, nil
-	}
-	for _, old := range s.secrets.Retired() {
-		alt, err := sum(old)
-		if err != nil {
-			return store.IdemHash{}, err
-		}
-		out.Alternates = append(out.Alternates, alt)
-	}
-	return out, nil
+	return store.BatchPayloadHash(ctx, s.secrets, schemas, writes, opts)
 }
 
 func (s *Store) lookupBatchIdem(ctx context.Context, tx pgx.Tx, ns, owner, key string, wantHash store.IdemHash) (store.BatchResult, bool, error) {

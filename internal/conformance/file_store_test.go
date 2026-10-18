@@ -19,7 +19,6 @@ import (
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/files/s3store"
-	"github.com/lsm/dolmen/internal/store"
 )
 
 func newHarnessBlobs(t *testing.T, blobs files.BlobStore, to *api.Timeouts) *harness {
@@ -50,9 +49,6 @@ func fakeBucket(t *testing.T) files.BlobStore {
 }
 
 func TestFileFieldsWorkOverAnS3Store(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL, which does not accept them yet")
-	}
 	h := newHarnessBlobs(t, fakeBucket(t), nil)
 	h.seedTable("fil", "docs", fileTableFields())
 	data := []byte("kept in a bucket")
@@ -118,9 +114,6 @@ func (s *switchableBlobs) Open(ctx context.Context, ns, sum string) (files.Blob,
 }
 
 func TestAnUnreachableFileStoreIsStorageUnavailableOnEveryTransport(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL, which does not accept them yet")
-	}
 	blobs := &switchableBlobs{BlobStore: files.NewLocal(t.TempDir())}
 	h := newHarnessBlobs(t, blobs, nil)
 	h.seedTable("fil", "docs", fileTableFields())
@@ -150,9 +143,6 @@ func TestAnUnreachableFileStoreIsStorageUnavailableOnEveryTransport(t *testing.T
 }
 
 func TestARemoteUploadGetsTheFetchTimeoutOnTopOfTheOperationLimit(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL, which does not accept them yet")
-	}
 	blobs := &switchableBlobs{BlobStore: files.NewLocal(t.TempDir()), delay: 600 * time.Millisecond}
 	h := newHarnessBlobs(t, blobs, &api.Timeouts{Op: 200 * time.Millisecond})
 	h.seedTable("fil", "docs", fileTableFields())
@@ -163,9 +153,6 @@ func TestARemoteUploadGetsTheFetchTimeoutOnTopOfTheOperationLimit(t *testing.T) 
 }
 
 func TestFileURLOverAnS3StoreIsThePresignedObjectURL(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL, which does not accept them yet")
-	}
 	h := newHarnessBlobs(t, fakeBucket(t), nil)
 	h.seedTable("fil", "docs", fileTableFields())
 	data := []byte("presigned bytes")

@@ -202,6 +202,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if f.Type == schema.Secret && ch.Default != nil {
 				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "default"))
 			}
+			if f.Type == schema.File && ch.Default != nil {
+				return nil, invalidf("%s", schema.FileRefusal(f.Name, "default"))
+			}
 			if err := schema.ValidateIdent(f.Name, "field name"); err != nil {
 				return nil, invalidf("%s", err)
 			}
@@ -374,6 +377,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if *ch.Value && f.Type == schema.Secret {
 				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "fulltext"))
 			}
+			if *ch.Value && f.Type == schema.File {
+				return nil, invalidf("%s", schema.FileRefusal(f.Name, "fulltext"))
+			}
 			if *ch.Value && f.Type != schema.String && f.Type != schema.Text {
 				return nil, invalidf("field %q: fulltext is only allowed on string or text fields", f.Name)
 			}
@@ -392,6 +398,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if *ch.Value {
 				if f.Type == schema.Secret {
 					return nil, invalidf("%s", schema.SecretRefusal(f.Name, "vectorize"))
+				}
+				if f.Type == schema.File {
+					return nil, invalidf("%s", schema.FileRefusal(f.Name, "vectorize"))
 				}
 				if f.Type != schema.String && f.Type != schema.Text {
 					return nil, invalidf("field %q: vectorize is only allowed on string or text fields", f.Name)
@@ -414,6 +423,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			}
 			if f.Type == schema.Secret && len(*ch.Enum) > 0 {
 				return nil, invalidf("%s", schema.SecretRefusal(f.Name, "enum"))
+			}
+			if f.Type == schema.File && len(*ch.Enum) > 0 {
+				return nil, invalidf("%s", schema.FileRefusal(f.Name, "enum"))
 			}
 			if f.Type != schema.String {
 				return nil, invalidf("field %q: enum is only allowed on string fields (this field has type %s)", f.Name, f.Type)
@@ -717,7 +729,7 @@ func (s *Store) PlanMigration(ctx context.Context, ns, table string, changes []s
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
-	if err := store.RefuseFileFields("postgres", addedFields(changes)); err != nil {
+	if err := s.refuseFileFields(addedFields(changes)); err != nil {
 		return nil, err
 	}
 	if err := store.RequireSecretKey(s.secrets, addedFields(changes)); err != nil {
@@ -776,7 +788,7 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 	if len(changes) == 0 {
 		return nil, invalidf("no changes given")
 	}
-	if err := store.RefuseFileFields("postgres", addedFields(changes)); err != nil {
+	if err := s.refuseFileFields(addedFields(changes)); err != nil {
 		return nil, err
 	}
 	if err := store.RequireSecretKey(s.secrets, addedFields(changes)); err != nil {

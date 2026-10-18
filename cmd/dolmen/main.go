@@ -271,6 +271,7 @@ func openStore(cfg *config, tp trace.TracerProvider, mp metric.MeterProvider) (s
 			QueryRole:       cfg.PostgresQueryRole,
 			ChangeRetention: &retention,
 			SharedFilter:    cfg.Auth.On(),
+			SharedFiles:     cfg.FilesStore == "s3",
 			Secrets:         cfg.Secrets,
 			TracerProvider:  tp,
 			MeterProvider:   mp,

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/lsm/dolmen/internal/store"
 )
 
 func getURL(t *testing.T, link string) (int, string) {
@@ -23,10 +21,10 @@ func getURL(t *testing.T, link string) (int, string) {
 }
 
 func TestAFileURLDownloadsWithoutCredentialsUntilTheFileChanges(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarnessMode(t, authGateway)
+	if h.fileStore.Presigns() {
+		t.Skip("a server-signed link needs the local file store, which PostgreSQL refuses; TestFileURLOverAnS3StoreIsThePresignedObjectURL pins the S3 link")
+	}
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "docs", "row_access": "own",
 		"fields": []map[string]any{{"name": "title", "type": "string"}, {"name": "doc", "type": "file"}}})
@@ -74,9 +72,6 @@ func TestAFileURLDownloadsWithoutCredentialsUntilTheFileChanges(t *testing.T) {
 }
 
 func TestFileURLAgreesAcrossTransportsAndBoundsItsTTL(t *testing.T) {
-	if testEngine(t) == store.EnginePostgres {
-		t.Skip("file fields need the S3 store on PostgreSQL")
-	}
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"q3","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": []byte("quarterly notes")}); code != http.StatusOK {
@@ -91,7 +86,9 @@ func TestFileURLAgreesAcrossTransportsAndBoundsItsTTL(t *testing.T) {
 		}
 		link, _ := out["url"].(string)
 		u, err := url.Parse(link)
-		if err != nil || u.Path != "/v1/files" || u.Query().Get("sig") == "" {
+		local := err == nil && u.Path == "/v1/files" && u.Query().Get("sig") != ""
+		presigned := err == nil && u.Query().Get("X-Amz-Signature") != ""
+		if local == h.fileStore.Presigns() || presigned != h.fileStore.Presigns() {
 			t.Fatalf("%s file_url link %q: %v", transport, link, err)
 		}
 		if code, body := getURL(t, link); code != http.StatusOK || body != "quarterly notes" {

@@ -469,7 +469,7 @@ Each one a PR from main.
    them once after matching rows. Declarations stayed disabled until sweeping and constraint
    checks landed. The fingerprint helpers take the request's context and canonicalize file values
    for every engine, retaining SQLite's existing hashes. SQLite and lakehouse now accept file
-   declarations; PostgreSQL still refuses them until the S3 store exists.
+   declarations; PostgreSQL accepts them with `-files-store s3` (slice 3).
 3. The S3-compatible store, `file_url`, and `file` fields on PostgreSQL over
    the S3 store, in PRs of their own: the `BlobStore` interface with the local store behind it;
    `file_url` with signed local URLs; the S3 store and its flags; the S3 sweep under PostgreSQL's

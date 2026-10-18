@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
+  write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
+  can share the catalog and the bucket; with the local store PostgreSQL still refuses them.
+
 - With `-files-store s3`, `file_url` returns the bucket's presigned `GET` (with the download's
   type and attachment headers) instead of a server link.
 

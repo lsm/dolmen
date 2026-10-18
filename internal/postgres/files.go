@@ -5,8 +5,16 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
+
+func (s *Store) refuseFileFields(fields []schema.Field) error {
+	if s.sharedFiles {
+		return nil
+	}
+	return store.RefuseFileFields("postgres", fields)
+}
 
 func (s *Store) sweepFiles(ctx context.Context, ns string, sw store.FileSweeper) (*store.FileSweep, error) {
 	var swept store.FileSweep

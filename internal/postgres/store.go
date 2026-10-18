@@ -23,6 +23,7 @@ type Config struct {
 	QueryRole       string
 	MaxConns        int32
 	SharedFilter    bool
+	SharedFiles     bool
 	ChangeRetention *time.Duration
 	Secrets         *secret.Keyring
 	TracerProvider  trace.TracerProvider
@@ -44,6 +45,7 @@ type Store struct {
 	wake            *wakeSet
 	tr              *dbspan.Tracer
 	sharedFilter    bool
+	sharedFiles     bool
 	secrets         *secret.Keyring
 	gaugesOnce      sync.Once
 	stopGauges      func(context.Context) error
@@ -109,7 +111,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, &connectionError{"open pool", err}
 	}
 	startSQLParser()
-	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter, secrets: cfg.Secrets, tr: newTracer(cfg.TracerProvider, pool)}
+	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter, sharedFiles: cfg.SharedFiles, secrets: cfg.Secrets, tr: newTracer(cfg.TracerProvider, pool)}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)
 	}

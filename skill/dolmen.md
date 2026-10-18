@@ -268,7 +268,7 @@ MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused w
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
 write: a refusal for size answers `413`, and one for type answers `415` and names the accepted
 types. `storage_unavailable` (503) means the file store is briefly unable to take or serve files, or the server is holding as much in-flight file data as it
-allows: retry shortly. File fields work on SQLite and lakehouse; PostgreSQL does not accept them yet.
+allows: retry shortly. File fields work on every engine, except PostgreSQL without its S3 file store (the refusal says so).
 
 ## JSON-RPC fallback
 
