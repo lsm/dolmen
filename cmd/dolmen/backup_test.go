@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -110,18 +111,6 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 			st.Close()
 			return runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, env, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "would leave out"},
-		{"backup of a directory it cannot read", func() error {
-			data := t.TempDir()
-			locked := filepath.Join(data, "locked")
-			if err := os.MkdirAll(locked, 0o700); err != nil {
-				return err
-			}
-			if err := os.Chmod(locked, 0); err != nil {
-				return err
-			}
-			defer os.Chmod(locked, 0o700)
-			return runBackup([]string{"-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, env, &bytes.Buffer{}, &bytes.Buffer{})
-		}, "permission denied"},
 		{"backup with -engine lakehouse", func() error {
 			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
 			if err := runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
@@ -158,5 +147,24 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 		if err := c.run(); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: got %v, want an error naming %q", c.name, err, c.want)
 		}
+	}
+}
+
+func TestBackupNamesADirectoryItCannotRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod does not deny directory reads on Windows")
+	}
+	data := t.TempDir()
+	locked := filepath.Join(data, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(locked, 0o700)
+	err := runBackup([]string{"-data", data, "-out", filepath.Join(t.TempDir(), "backup")}, func(string) string { return "" }, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("backup of an unreadable directory: %v", err)
 	}
 }

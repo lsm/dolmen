@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -259,7 +260,11 @@ func TestALakehouseBackupHandlesSymlinksAndURIPathCharacters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(parent, "data #1?x=%20")
+	name := "data #1?x=%20"
+	if runtime.GOOS == "windows" {
+		name = "data #1 x=%20"
+	}
+	dir := filepath.Join(parent, name)
 	s := openStore(t, dir)
 	if err := s.CreateNamespace(t.Context(), "app", [16]byte{}); err != nil {
 		t.Fatal(err)
