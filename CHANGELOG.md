@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- A multipart part's `filename` over 255 bytes is refused instead of truncated, and file names
-  `.`, `..` and names with bidirectional controls (such as U+202E) are refused from a part or a
-  JSON `name`.
+- The `dolmen-admin` skill gains "Running the server": what each engine needs (the lakehouse
+  sidecar bundle, PostgreSQL's DSN and query role), the local and S3 file stores, fetch hosts,
+  file limits, embeddings and backups per engine. It no longer calls the lakehouse engine
+  development-only.
 
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
@@ -17,6 +18,10 @@
   configured by `-files-s3-bucket`, `-files-s3-endpoint`, `-files-s3-region`, `-files-s3-prefix`
   and `-files-s3-path-style`, with credentials from the standard AWS chain. An unreachable store
   answers `503` `storage_unavailable`.
+
+- A multipart part's `filename` over 255 bytes is refused instead of truncated, and file names
+  `.`, `..` and names with bidirectional controls (such as U+202E) are refused from a part or a
+  JSON `name`.
 
 - `file_url` returns a short-lived link (`ttl_seconds`, default 900, at most 3600) that downloads
   one row's file with no credentials, for tools that hold none. It needs the same access as
