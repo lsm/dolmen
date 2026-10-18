@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -637,5 +638,51 @@ func TestFileURLRefusesToQuoteAnUnusableHost(t *testing.T) {
 	_, err = srv.Dispatch(ctx, "file_url", []byte(`{"namespace":"app","table":"docs","id":1,"field":"doc"}`))
 	if err == nil || !strings.Contains(err.Error(), "not a usable host name") {
 		t.Fatalf("file_url behind an unusable Host must refuse rather than mint a dead link, got %v", err)
+	}
+}
+
+type refusingFilesEngine struct{ store.Engine }
+
+func (refusingFilesEngine) FileFieldsRefused() bool { return true }
+
+func TestDescribeServerSaysWhenFilesCannotBeWritten(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	for _, tc := range []struct {
+		label  string
+		server *Server
+		reason string
+	}{
+		{"no file store", New(st, fakeEmb{}), "HTTP server"},
+		{"engine refuses", New(refusingFilesEngine{st}, fakeEmb{}, WithFiles(files.New(files.Config{Root: t.TempDir(), FetchHosts: []string{"example.com"}}))), "-files-store s3"},
+	} {
+		res, err := tc.server.Dispatch(context.Background(), "describe_server", []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, _ := res.(map[string]any)["files"].(map[string]any)
+		if reason, _ := f["reason"].(string); f["enabled"] != false || !strings.Contains(reason, tc.reason) {
+			t.Fatalf("%s: files = %v, want enabled false with a reason naming %q", tc.label, f, tc.reason)
+		}
+	}
+}
+
+func TestDescribeServerReportsTheFetchHosts(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	srv := New(st, fakeEmb{}, WithFiles(files.New(files.Config{Root: t.TempDir(), MaxFileSize: 16 << 20, MaxNamespaceFiles: 64 << 20, FetchHosts: []string{" Example.COM. ", "*.wikimedia.org"}})))
+	res, err := srv.Dispatch(context.Background(), "describe_server", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := res.(map[string]any)["files"].(map[string]any)
+	if f["enabled"] != true || f["store"] != "local" || f["max_file_bytes"] != int64(16<<20) || f["max_namespace_bytes"] != int64(64<<20) || !reflect.DeepEqual(f["fetch_hosts"], []string{"example.com", "*.wikimedia.org"}) {
+		t.Fatalf("files = %v", f)
 	}
 }

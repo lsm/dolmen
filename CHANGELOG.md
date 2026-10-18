@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `describe_server` reports a `files` object: whether file fields work on the server (with the
+  reason when they do not), the store, `-max-file-size`, `-max-request-files-size`,
+  `-max-namespace-files-size` and the fetch hosts.
+
 - `{"url": …}` file fetches send the User-Agent `dolmen (+https://github.com/lsm/dolmen)` instead of
   Go's default, which hosts such as Wikimedia refuse with `403`.
 

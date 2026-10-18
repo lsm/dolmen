@@ -904,6 +904,8 @@ match, before ranking.
   `GET /v1/files?namespace=&table=&id=&field=`, which needs `read_rows` access to the row. MCP
   cannot carry files. Send the request part with `--form-string`: `-F` reads `;type=` or
   `;filename=` inside the JSON as its own options.
+- `describe_server`'s `files` object says whether file fields work on this server (with the
+  reason when they do not), the store, the size limits and the fetch hosts.
 - A `file_url` link is a bearer link until `expires_at`: revoking the caller's key or grant does
   not end it. With `-files-store s3` its host is `-files-s3-endpoint`.
 - Files are stored once per namespace however many rows reference them, and `drop_namespace`
