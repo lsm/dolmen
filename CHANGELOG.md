@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The `dolmen-admin` skill gains "Running the server": what each engine needs (the lakehouse
+  sidecar bundle, PostgreSQL's DSN and query role), the local and S3 file stores, fetch hosts,
+  file limits, embeddings and backups per engine. It no longer calls the lakehouse engine
+  development-only.
+
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
   can share the catalog and the bucket; with the local store PostgreSQL still refuses them.
