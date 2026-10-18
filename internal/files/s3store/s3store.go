@@ -21,17 +21,19 @@ import (
 const MaxFileSize int64 = 5 << 40
 
 type Config struct {
-	Bucket    string
-	Endpoint  string
-	Region    string
-	Prefix    string
-	PathStyle bool
-	Transport http.RoundTripper
-	Creds     *credentials.Credentials
+	Bucket         string
+	Endpoint       string
+	PublicEndpoint string
+	Region         string
+	Prefix         string
+	PathStyle      bool
+	Transport      http.RoundTripper
+	Creds          *credentials.Credentials
 }
 
 type s3Blobs struct {
 	client *minio.Client
+	signer *minio.Client
 	bucket string
 	prefix string
 }
@@ -43,9 +45,15 @@ func New(ctx context.Context, cfg Config) (files.BlobStore, error) {
 	if cfg.Endpoint == "" {
 		cfg.Endpoint = "https://s3.amazonaws.com"
 	}
-	u, err := url.Parse(cfg.Endpoint)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") {
-		return nil, fmt.Errorf("-files-s3-endpoint must be an http:// or https:// URL with no path, got %q", cfg.Endpoint)
+	u, err := endpointURL("-files-s3-endpoint", cfg.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	pub := u
+	if cfg.PublicEndpoint != "" {
+		if pub, err = endpointURL("-files-s3-public-endpoint", cfg.PublicEndpoint); err != nil {
+			return nil, err
+		}
 	}
 	creds := cfg.Creds
 	if creds == nil {
@@ -76,7 +84,34 @@ func New(ctx context.Context, cfg Config) (files.BlobStore, error) {
 	if !ok {
 		return nil, fmt.Errorf("S3 bucket %q does not exist at %s; create it, or set -files-s3-bucket to one that does", cfg.Bucket, cfg.Endpoint)
 	}
-	return &s3Blobs{client: client, bucket: cfg.Bucket, prefix: cfg.Prefix}, nil
+	signer := client
+	if pub != u {
+		region := cfg.Region
+		if region == "" {
+			if region, err = client.GetBucketLocation(ctx, cfg.Bucket); err != nil {
+				return nil, fmt.Errorf("cannot read the region of S3 bucket %q at %s: %s; set -files-s3-region", cfg.Bucket, cfg.Endpoint, s3ErrorClass(err))
+			}
+		}
+		signer, err = minio.New(pub.Host, &minio.Options{
+			Creds:        creds,
+			Secure:       pub.Scheme == "https",
+			Region:       region,
+			BucketLookup: lookup,
+			Transport:    cfg.Transport,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("-files-s3-public-endpoint: %w", err)
+		}
+	}
+	return &s3Blobs{client: client, signer: signer, bucket: cfg.Bucket, prefix: cfg.Prefix}, nil
+}
+
+func endpointURL(flag, raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || (u.Path != "" && u.Path != "/") {
+		return nil, fmt.Errorf("%s must be an http:// or https:// URL with no path, got %q", flag, raw)
+	}
+	return u, nil
 }
 
 func s3ErrorClass(err error) string {
@@ -214,7 +249,7 @@ func (b *s3Blobs) PresignGet(ctx context.Context, ns, sum string, ttl time.Durat
 	params := url.Values{}
 	params.Set("response-content-type", mediaType)
 	params.Set("response-content-disposition", disposition)
-	u, err := b.client.PresignedGetObject(ctx, b.bucket, b.key(ns, sum), ttl, params)
+	u, err := b.signer.PresignedGetObject(ctx, b.bucket, b.key(ns, sum), ttl, params)
 	if err != nil {
 		return "", unavailable(err)
 	}
