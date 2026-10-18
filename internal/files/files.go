@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -181,6 +182,12 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	if _, dup := r.parts[name]; dup {
 		return invalid(http.StatusBadRequest, "the multipart request has two parts named %q; give each file part its own name", name)
 	}
+	filename = BaseName(filename)
+	if filename != "" {
+		if rule := schema.FileNameRule(filename); rule != "" {
+			return invalid(http.StatusBadRequest, "file part %q has a filename that cannot be stored: %s; rename the file, or send it as -F '%s=@path;filename=report.pdf'", name, rule, name)
+		}
+	}
 	if len(r.parts) >= MaxPartsPerRequest {
 		return invalid(http.StatusBadRequest, "a request may carry at most %d file parts; split the write into several requests", MaxPartsPerRequest)
 	}
@@ -196,7 +203,7 @@ func (r *Request) Receive(name, filename, contentType string, body io.Reader) er
 	if err != nil {
 		return storageErr(err)
 	}
-	p := &part{name: name, filename: BaseName(filename), tmp: f.Name(), tmpName: f.Name(), placed: map[string]bool{}}
+	p := &part{name: name, filename: filename, tmp: f.Name(), tmpName: f.Name(), placed: map[string]bool{}}
 	r.parts[name] = p
 	r.order = append(r.order, name)
 	h := sha256.New()

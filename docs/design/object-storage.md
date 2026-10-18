@@ -81,7 +81,10 @@ as for every declared type), and the facade. `size` comes from the blob. `media_
 belong to the reference, not the blob: identical bytes attached as `audio/ogg` in one row and
 `application/octet-stream` in another are one blob with two references, each keeping its own type.
 `name` is `null` when nothing supplied one. It is validated wherever it enters: 1 to 255 bytes of
-UTF-8, no control characters, no `/` or `\`; otherwise `invalid_request` naming the rule.
+UTF-8, not `.` or `..`, no control characters, no bidirectional controls (such as U+202E), no `/`
+or `\`; otherwise `invalid_request` naming the rule. A part's `filename` keeps only its base name and
+then meets the same rule, never truncated. A name taken from a `url` fetch that breaks it is dropped,
+since the caller did not choose it; `"name"` in the value sets one.
 
 **The value on write.** A file value names where the bytes come from, never a hash:
 

@@ -26,13 +26,12 @@ func TestMediaTypeInference(t *testing.T) {
 	}
 }
 
-func TestAPartFileNameIsReducedToAValidBaseName(t *testing.T) {
+func TestAPartFileNameKeepsOnlyItsBaseName(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{`C:\Users\me\report.pdf`, "report.pdf"},
 		{"dir/sub/a.txt", "a.txt"},
-		{"a\tb\x01c.txt", "abc.txt"},
-		{"bad\xffbyte.txt", "bad_byte.txt"},
-		{strings.Repeat("é", 200), strings.Repeat("é", 127)},
+		{"a\tb.txt", "a\tb.txt"},
+		{strings.Repeat("é", 200), strings.Repeat("é", 200)},
 		{"dir/", ""},
 	} {
 		if got := BaseName(tc.in); got != tc.want {

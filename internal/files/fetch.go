@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
 )
 
 const DefaultFetchTimeout = 5 * time.Minute
@@ -199,7 +200,7 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 	if _, params, err := mime.ParseMediaType(res.Header.Get("Content-Disposition")); err == nil && params["filename"] != "" {
 		filename = params["filename"]
 	}
-	if filename == "/" || filename == "." {
+	if filename = BaseName(filename); schema.FileNameRule(filename) != "" {
 		filename = ""
 	}
 	err = r.Receive(name, filename, res.Header.Get("Content-Type"), res.Body)

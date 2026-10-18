@@ -11,7 +11,7 @@ func TestFileNameRules(t *testing.T) {
 			t.Errorf("%q: %v", name, err)
 		}
 	}
-	for _, name := range []string{"", strings.Repeat("a", 256), "dir/x", `dir\x`, "a\nb", "\xff"} {
+	for _, name := range []string{"", strings.Repeat("a", 256), "dir/x", `dir\x`, "a\nb", "\xff", ".", "..", "evil\u202efdp.exe", "a\u2066b", "a\u0085b"} {
 		if err := ValidateFileName("doc", name); err == nil {
 			t.Errorf("%q should be refused", name)
 		}

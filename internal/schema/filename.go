@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -30,16 +31,25 @@ func mediaToken(s string) bool {
 }
 
 func ValidateFileName(field, name string) error {
-	if name == "" || len(name) > 255 {
-		return fmt.Errorf("field %q: a file name must be 1 to 255 bytes", field)
-	}
-	if !utf8.ValidString(name) {
-		return fmt.Errorf("field %q: a file name must be valid UTF-8", field)
-	}
-	for _, r := range name {
-		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
-			return fmt.Errorf("field %q: a file name cannot contain control characters, / or \\; give the base name only, such as report.pdf", field)
-		}
+	if rule := FileNameRule(name); rule != "" {
+		return fmt.Errorf("field %q: %s", field, rule)
 	}
 	return nil
+}
+
+func FileNameRule(name string) string {
+	switch {
+	case name == "" || len(name) > 255:
+		return "a file name must be 1 to 255 bytes"
+	case !utf8.ValidString(name):
+		return "a file name must be valid UTF-8"
+	case name == "." || name == "..":
+		return "a file name cannot be . or ..; give the base name of a file, such as report.pdf"
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '/' || r == '\\' {
+			return "a file name cannot contain control characters, bidirectional controls, / or \\; give the base name only, such as report.pdf"
+		}
+	}
+	return ""
 }

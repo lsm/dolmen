@@ -107,6 +107,11 @@ func (s *Store) fileWireValue(field string, v any, fp *fileParts) (map[string]an
 		if f.Reader == nil {
 			return nil, derr.New(derr.InvalidRequest, "field %q: dolmen.FileUpload needs a Reader", field)
 		}
+		if base := files.BaseName(f.Name); base != "" {
+			if err := schema.ValidateFileName(field, base); err != nil {
+				return nil, derr.New(derr.InvalidRequest, "%s; set dolmen.FileUpload.Name to a valid base name, or leave it empty", err)
+			}
+		}
 		fp.n++
 		part := fmt.Sprintf("upload-%s-%d", fp.salt, fp.n)
 		if err := fp.req.Receive(part, f.Name, f.MediaType, f.Reader); err != nil {
