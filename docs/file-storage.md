@@ -130,7 +130,7 @@ curl -s localhost:8790/v1/vacuum -H 'Content-Type: application/json' -d '{"names
 ```
 
 It reports `files_removed`, `file_bytes_removed` and `file_bytes`, what the namespace still stores,
-on every engine. A failed vacuum removes nothing. Run it on a schedule for namespaces that replace
+on every engine. A vacuum that fails before its sweep removes nothing; one whose sweep fails part-way keeps what it already removed, which is only ever files no row referenced. Run it on a schedule for namespaces that replace
 or delete files often, and before raising a quota that a namespace has hit. `drop_namespace` takes
 its files with it, objects included on `s3`; `drop_table` leaves them for the next `vacuum`, since
 another table of the namespace may reference the same bytes.
