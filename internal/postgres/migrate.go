@@ -187,6 +187,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 		if err := store.ShapeChangeArgs(i, ch); err != nil {
 			return nil, err
 		}
+		if err := store.FileConstraintArgs(i, ch); err != nil {
+			return nil, err
+		}
 		switch ch.Op {
 		case schema.OpAddField:
 			if ch.Field == nil {

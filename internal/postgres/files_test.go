@@ -97,3 +97,34 @@ func TestPostgresSetFileConstraintsChecksStoredReferences(t *testing.T) {
 		t.Fatalf("constraints every stored file meets must plan: %v", err)
 	}
 }
+
+func TestPostgresSetFileConstraintsRefusesAChangeWithNothingToSet(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "fil", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "fil", "docs", []schema.Field{{Name: "doc", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	limit := int64(10)
+	for name, c := range map[string]struct {
+		ch   schema.Change
+		want string
+	}{
+		"nothing to set":       {schema.Change{Op: schema.OpSetFileConstraints, Name: "doc"}, "needs max_bytes"},
+		"max_bytes on another": {schema.Change{Op: schema.OpSetEnum, Name: "doc", Enum: &[]string{}, MaxBytes: &limit}, "only allowed on set_file_constraints"},
+	} {
+		err := s.write(ctx, "fil", [16]byte{}, func(tx pgx.Tx, n namespace) error {
+			state, err := s.loadTable(ctx, tx, n, "docs")
+			if err != nil {
+				return err
+			}
+			_, err = s.planMigration(ctx, tx, n, state, []schema.Change{c.ch}, store.Embedder{}, 0, nil)
+			return err
+		})
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want an error naming %q", name, err, c.want)
+		}
+	}
+}
