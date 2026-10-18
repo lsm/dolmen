@@ -1138,7 +1138,7 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   `read_rows` on that row, as an attachment with `X-Content-Type-Options: nosniff` and a sandbox
   CSP, supporting `Range` and `ETag`. A field
   may declare `max_bytes` and `media_types` (exact, or `audio/*`). MCP calls cannot carry files.
-  File fields work on SQLite and lakehouse; PostgreSQL refuses them until the S3 file store lands.
+  File fields work on SQLite and lakehouse; PostgreSQL still refuses them, even with `-files-store s3`; PostgreSQL support over the S3 store is the next step.
   `docs/design/object-storage.md` has the design.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Enum-validated writes**: a string field declared `enum: [...]` accepts only those values on every

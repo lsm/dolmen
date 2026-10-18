@@ -462,8 +462,9 @@ func (r *Request) Discard() {
 	s := r.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, shared := s.blobs.(*s3Blobs)
 	for _, c := range r.created {
-		if s.attaches[c.ns][c.sum] == 1 && s.pins[c.ns][c.sum] <= 1 {
+		if !shared && s.attaches[c.ns][c.sum] == 1 && s.pins[c.ns][c.sum] <= 1 {
 			if t, ok := s.totals[c.ns]; s.blobs.Delete(context.Background(), c.ns, c.sum) == nil && ok {
 				s.totals[c.ns] = t - c.size
 			}
@@ -528,12 +529,19 @@ func (r *Request) Pin(ns, sum string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !ValidHash(sum) {
 		return invalid(http.StatusBadRequest, "the file to copy has no valid hash")
 	}
-	if _, err := s.blobs.Stat(context.Background(), ns, sum); err != nil {
+	s.mu.Lock()
+	s.pin(ns, sum)
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), storeCallTimeout)
+	defer cancel()
+	_, err := s.blobs.Stat(ctx, ns, sum)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		s.unpin(ns, sum)
 		if errors.Is(err, fs.ErrNotExist) {
 			return invalid(http.StatusNotFound, "the file to copy was removed while this write ran; read the source row again and retry")
 		}
@@ -542,7 +550,8 @@ func (r *Request) Pin(ns, sum string) error {
 	if n, ok := s.attaches[ns][sum]; ok {
 		s.attaches[ns][sum] = n + 1
 	}
-	s.pin(ns, sum)
 	r.pinned = append(r.pinned, [2]string{ns, sum})
 	return nil
 }
+
+const storeCallTimeout = 30 * time.Second

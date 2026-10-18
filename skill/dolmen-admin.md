@@ -832,8 +832,8 @@ match, before ranking.
   deletes them with the namespace. A file stays on disk after the rows referencing it are deleted
   or cleared until `vacuum` removes it; `vacuum` reports `files_removed`, `file_bytes_removed` and
   `file_bytes`, the total `-max-namespace-files-size` counts. File fields work on SQLite and
-  lakehouse; `create_table` and `migrate add_field` refuse them on PostgreSQL until the S3 file
-  store lands.
+  lakehouse; `create_table` and `migrate add_field` refuse them on PostgreSQL for now,
+  even with `-files-store s3`; PostgreSQL support over the S3 store comes next.
 - `storage_unavailable` (503) means the server holds as much in-flight file data as
   `-max-pending-files-size` allows, or, with `-files-store s3`, that the bucket did not answer;
   either way the call may be retried. A namespace over
