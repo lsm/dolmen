@@ -463,7 +463,7 @@ func backupBlobs(ctx context.Context, dataDir, outDir, ns, snapshot string) ([]B
 }
 
 func copyFileSynced(src, dst string) (int64, string, error) {
-	in, err := os.Open(src)
+	in, err := openShared(src)
 	if err != nil {
 		return 0, "", err
 	}
