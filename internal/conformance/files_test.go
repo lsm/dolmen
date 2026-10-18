@@ -69,13 +69,50 @@ func TestAFileValueWithoutItsBytesTeachesMultipart(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("fil", "docs", fileTableFields())
 	rec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"part": "notes"}}}}
+	teaches := func(msg string) bool {
+		for _, want := range []string{"an MCP call cannot carry file bytes", "multipart/form-data", "/v1/", "curl --form-string 'request=<json>' -F 'notes=@path'", "copy_from", "null"} {
+			if !strings.Contains(msg, want) {
+				return false
+			}
+		}
+		return true
+	}
 	code, body := h.httpCall("insert", rec)
-	if code != http.StatusBadRequest || errCode(body) != "invalid_request" || !strings.Contains(errMessage(body), "curl -F") {
+	if code != http.StatusBadRequest || errCode(body) != "invalid_request" || !teaches(errMessage(body)) {
 		t.Fatalf("http: %d %v", code, body)
 	}
 	env := h.mcpCall("insert", rec).toolError()
-	if msg, _ := env["message"].(string); !strings.Contains(msg, "curl -F") {
+	if msg, _ := env["message"].(string); !teaches(msg) {
 		t.Fatalf("mcp: %v", env)
+	}
+}
+
+func TestToolDescriptionsTellHowToWriteAFile(t *testing.T) {
+	h := newHarness(t)
+	var out struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(h.mcpRaw(t, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)), &out); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, tool := range out.Result.Tools {
+		seen[tool.Name] = tool.Description
+	}
+	for _, op := range []string{"insert", "update", "upsert", "upsert_by_key", "batch"} {
+		for _, want := range []string{"file field", "copy_from", "multipart"} {
+			if !strings.Contains(seen[op], want) {
+				t.Errorf("%s description must mention %q: %s", op, want, seen[op])
+			}
+		}
+	}
+	if d := seen["create_table"]; !strings.Contains(d, "secret") || !strings.Contains(d, "file") {
+		t.Errorf("create_table must list the secret and file types: %s", d)
 	}
 }
 

@@ -148,7 +148,8 @@ var batchDescription = "Apply several writes to one namespace in a single transa
 	"Each entry in writes is one of the insert, update, delete, upsert or upsert_by_key operations with the same fields, " +
 	"and the results come back in the order the writes were given. " +
 	fmt.Sprintf("At most %d writes, and at most %d rows touched across the whole batch. ", store.MaxWritesPerBatch, store.MaxRowsTouchedPerBatch) +
-	"Prefer one batch over several calls when the writes belong together, and several smaller batches over one large one when they do not."
+	"Prefer one batch over several calls when the writes belong together, and several smaller batches over one large one when they do not. " +
+	fileWriteHint
 
 func applyBatchSchemas() {
 	def, ok := Ops["batch"]

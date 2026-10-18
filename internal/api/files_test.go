@@ -199,7 +199,7 @@ func TestFileWritesTeachTheNextCall(t *testing.T) {
 		}
 	}
 	code, body := post(t, srv.URL, "insert", map[string]any{"namespace": "app", "table": "meetings", "records": []any{map[string]any{"recording": map[string]any{"part": "rec"}}}})
-	if code != 400 || !strings.Contains(errMessage(body), "curl -F") {
+	if code != 400 || !strings.Contains(errMessage(body), "curl --form-string") {
 		t.Fatalf("a part value in a JSON body should teach the multipart form: %d %v", code, body)
 	}
 }

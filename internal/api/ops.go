@@ -223,6 +223,10 @@ func changesPageOutSchema() map[string]any {
 	}, "changes", "next_cursor")
 }
 
+const fileWriteHint = "A file field takes {\"part\": \"<form name>\"} only in a multipart/form-data request to /v1, since an MCP call " +
+	"cannot carry file bytes; over either transport, {\"url\": \"https://...\"} has the server fetch the file (when fetching is " +
+	"enabled), {\"copy_from\": {\"table\", \"id\", \"field\"}} reuses a stored file, and null clears it."
+
 var migrateChangeKeys = map[string][]string{
 	schema.OpAddField:           {"op", "field", "default"},
 	schema.OpRenameField:        {"op", "from", "to"},
@@ -809,7 +813,8 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"create_table": {
-		Description: "Create a table with typed fields. Types: string, text, number, boolean, timestamp, json, vector. " +
+		Description: "Create a table with typed fields. Types: string, text, number, boolean, timestamp, json, vector, " +
+			"secret (encrypted at rest, read back masked), file (stored bytes, read back as {sha256, size, media_type, name}). " +
 			"Annotations: fulltext=true indexes a string/text field for stemmed full-text search (plural/inflected terms match, e.g. payments <-> payment); type=vector stores caller-provided " +
 			"embeddings (dim required); vectorize=true on a string/text field makes the server embed that field automatically " +
 			"for vector search; enum=[values] restricts a string field to a closed vocabulary — writes carrying any other value " +
@@ -964,7 +969,8 @@ var Ops = map[string]OpDef{
 			"Full-text and vector indexes update automatically; " +
 			"vectorized fields are embedded by the server. Retried writes should pass idempotency_key: " +
 			"the key and its ids are recorded durably, so a retry with the same key and the same records " +
-			"returns the original ids (replayed=true, nothing re-inserted) instead of duplicating rows.",
+			"returns the original ids (replayed=true, nothing re-inserted) instead of duplicating rows. " +
+			fileWriteHint,
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1049,7 +1055,8 @@ var Ops = map[string]OpDef{
 			"and must satisfy required fields. Repeating the call converges instead of duplicating rows, so it " +
 			"is the retry-safe write path when the data carries its own identity (e.g. email, url, external id). " +
 			"Within a batch, later records update rows created by earlier ones with the same key. Key fields " +
-			"must be scalar (string, text, number, boolean, timestamp) and present, non-null, in every record.",
+			"must be scalar (string, text, number, boolean, timestamp) and present, non-null, in every record. " +
+			fileWriteHint,
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1817,7 +1824,8 @@ var Ops = map[string]OpDef{
 			"by setting the given fields. Values are validated against the table schema; unknown fields are rejected; " +
 			"a null value clears a field (required fields cannot be cleared). All matched rows get the same values. " +
 			"Search indexes stay consistent: full-text rows are reindexed when an indexed field changes, and " +
-			"vectorized fields are re-embedded. The filter is required; pass \"1=1\" to update every row.",
+			"vectorized fields are re-embedded. The filter is required; pass \"1=1\" to update every row. " +
+			fileWriteHint,
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -1882,7 +1890,8 @@ var Ops = map[string]OpDef{
 			"With matches it behaves exactly like update (all matched rows get the set values); with none it " +
 			"inserts set as a new record, which must then satisfy required fields. Returns the shared write " +
 			"shape: ids of the touched rows (the updated rows in id order, or the new row), inserted (0 or 1), " +
-			"and updated.",
+			"and updated. " +
+			fileWriteHint,
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
