@@ -741,3 +741,20 @@ func TestTheSkillsSendTheRequestPartWithFormString(t *testing.T) {
 		}
 	}
 }
+
+func TestTheAdminSkillTeachesHowToRunTheServer(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "postgresql", "duckdb"} {
+		out, err := Render("dolmen-admin", Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: dialect})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"## Running the server", "`lakehouse` | The `dolmen-duckdb-<version>-<platform>.tar.gz` bundle", "-files-store s3 -files-s3-bucket", "-files-s3-path-style", "`-files-fetch-hosts`", "`postgres` refuses\n  file fields with it", "dolmen backup -engine sqlite", "`postgres` refuses both commands: use `pg_dump`", "(`-files-s3-bucket` is `DOLMEN_FILES_S3_BUCKET`)", "(`sqlite`, `postgresql`, `duckdb`)"} {
+			if !strings.Contains(string(out), want) {
+				t.Fatalf("dolmen-admin (%s) must teach how to run the server, missing %q", dialect, want)
+			}
+		}
+		if strings.Contains(string(out), "development-only engine name") || strings.Contains(string(out), "Do not configure `-engine lakehouse`") {
+			t.Fatalf("dolmen-admin (%s) must not call the lakehouse engine development-only", dialect)
+		}
+	}
+}
