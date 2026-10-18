@@ -18,6 +18,7 @@ import (
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/files"
+	"github.com/lsm/dolmen/internal/files/s3store"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/store"
 	"github.com/lsm/dolmen/internal/version"
@@ -1307,7 +1308,7 @@ func TestLoadConfigSecretKey(t *testing.T) {
 	}
 }
 
-var defaultFilesS3 = files.S3Config{Endpoint: "https://s3.amazonaws.com"}
+var defaultFilesS3 = s3store.Config{Endpoint: "https://s3.amazonaws.com"}
 
 var defaultFilesConfig = files.Config{
 	MaxFileSize:     files.DefaultMaxFileSize,

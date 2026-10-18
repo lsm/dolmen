@@ -1,4 +1,4 @@
-package files
+package s3store
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,11 +15,12 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
 	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/files"
 )
 
-const MaxS3FileSize int64 = 5 << 40
+const MaxFileSize int64 = 5 << 40
 
-type S3Config struct {
+type Config struct {
 	Bucket    string
 	Endpoint  string
 	Region    string
@@ -36,7 +36,7 @@ type s3Blobs struct {
 	prefix string
 }
 
-func NewS3(ctx context.Context, cfg S3Config) (BlobStore, error) {
+func New(ctx context.Context, cfg Config) (files.BlobStore, error) {
 	if cfg.Bucket == "" {
 		return nil, errors.New("-files-s3-bucket is required with -files-store s3")
 	}
@@ -91,7 +91,7 @@ func s3ErrorClass(err error) string {
 	return "error"
 }
 
-func (b *s3Blobs) nsPrefix(ns string) string { return b.prefix + ns + nsDirSuffix + "/" }
+func (b *s3Blobs) nsPrefix(ns string) string { return b.prefix + ns + files.NamespaceDirSuffix + "/" }
 
 func (b *s3Blobs) key(ns, sum string) string { return b.nsPrefix(ns) + sum[:2] + "/" + sum }
 
@@ -102,15 +102,15 @@ func unavailable(err error) error {
 	if minio.ToErrorResponse(err).Code == "NoSuchKey" {
 		return fs.ErrNotExist
 	}
-	return &Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: "the file store did not answer (" + s3ErrorClass(err) + "), so nothing was written or read; retry shortly"}
+	return &files.Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: "the file store did not answer (" + s3ErrorClass(err) + "), so nothing was written or read; retry shortly"}
 }
 
-func (b *s3Blobs) Stat(ctx context.Context, ns, sum string) (BlobInfo, error) {
+func (b *s3Blobs) Stat(ctx context.Context, ns, sum string) (files.BlobInfo, error) {
 	info, err := b.client.StatObject(ctx, b.bucket, b.key(ns, sum), minio.StatObjectOptions{})
 	if err != nil {
-		return BlobInfo{}, unavailable(err)
+		return files.BlobInfo{}, unavailable(err)
 	}
-	return BlobInfo{Size: info.Size, Modified: info.LastModified}, nil
+	return files.BlobInfo{Size: info.Size, Modified: info.LastModified}, nil
 }
 
 func (b *s3Blobs) Put(ctx context.Context, ns, sum, path string) error {
@@ -127,7 +127,7 @@ type s3Blob struct {
 
 func (o s3Blob) Size() int64 { return o.size }
 
-func (b *s3Blobs) Open(ctx context.Context, ns, sum string) (Blob, error) {
+func (b *s3Blobs) Open(ctx context.Context, ns, sum string) (files.Blob, error) {
 	obj, err := b.client.GetObject(ctx, b.bucket, b.key(ns, sum), minio.GetObjectOptions{})
 	if err != nil {
 		return nil, unavailable(err)
@@ -144,7 +144,7 @@ func (b *s3Blobs) Delete(ctx context.Context, ns, sum string) error {
 	return unavailable(b.client.RemoveObject(ctx, b.bucket, b.key(ns, sum), minio.RemoveObjectOptions{}))
 }
 
-func (b *s3Blobs) List(ctx context.Context, ns string, fn func(sum string, info BlobInfo) error) error {
+func (b *s3Blobs) List(ctx context.Context, ns string, fn func(sum string, info files.BlobInfo) error) error {
 	prefix := b.nsPrefix(ns)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -154,10 +154,10 @@ func (b *s3Blobs) List(ctx context.Context, ns string, fn func(sum string, info 
 		}
 		rest := strings.TrimPrefix(obj.Key, prefix)
 		dir, sum, ok := strings.Cut(rest, "/")
-		if !ok || !ValidHash(sum) || dir != sum[:2] {
+		if !ok || !files.ValidHash(sum) || dir != sum[:2] {
 			continue
 		}
-		if err := fn(sum, BlobInfo{Size: obj.Size, Modified: obj.LastModified}); err != nil {
+		if err := fn(sum, files.BlobInfo{Size: obj.Size, Modified: obj.LastModified}); err != nil {
 			return err
 		}
 	}
@@ -208,22 +208,4 @@ func (b *s3Blobs) DropNamespace(ctx context.Context, ns string) error {
 	return failed
 }
 
-const storeMarkerFile = "files.store"
-
-func MarkS3(dataDir string) error {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dataDir, storeMarkerFile), []byte("s3\n"), 0o644)
-}
-
-func UsesS3(dataDir string) (bool, error) {
-	b, err := os.ReadFile(filepath.Join(dataDir, storeMarkerFile))
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(string(b)) == "s3", nil
-}
+func (b *s3Blobs) Shared() bool { return true }

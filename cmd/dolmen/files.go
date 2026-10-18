@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/lsm/dolmen/internal/files"
+	"github.com/lsm/dolmen/internal/files/s3store"
 	"github.com/lsm/dolmen/internal/store"
 )
 
@@ -49,7 +50,7 @@ func checkFilesStore(kind, bucket string, cfg files.Config) error {
 	if cfg.MaxNamespaceFiles > 0 {
 		return fmt.Errorf("-max-namespace-files-size needs the local file store: servers sharing an S3 bucket cannot keep one namespace's total exact; unset it, or use -files-store local")
 	}
-	if cfg.MaxFileSize > files.MaxS3FileSize {
+	if cfg.MaxFileSize > s3store.MaxFileSize {
 		return fmt.Errorf("-max-file-size is above S3's 5TiB object limit; lower it to 5TiB or less with -files-store s3")
 	}
 	return nil
@@ -72,7 +73,7 @@ func newFileStore(cfg *config) (*files.Store, error) {
 	if cfg.FilesStore == "s3" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		blobs, err := files.NewS3(ctx, cfg.FilesS3)
+		blobs, err := s3store.New(ctx, cfg.FilesS3)
 		if err != nil {
 			return nil, err
 		}

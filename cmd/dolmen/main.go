@@ -23,6 +23,7 @@ import (
 	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/embed"
 	"github.com/lsm/dolmen/internal/files"
+	"github.com/lsm/dolmen/internal/files/s3store"
 	"github.com/lsm/dolmen/internal/mcp"
 	"github.com/lsm/dolmen/internal/postgres"
 	"github.com/lsm/dolmen/internal/secret"
@@ -396,7 +397,7 @@ type config struct {
 	MaxNamespaceSize   int64
 	Files              files.Config
 	FilesStore         string
-	FilesS3            files.S3Config
+	FilesS3            s3store.Config
 	VectorCacheSize    int64
 	LogLevel           slog.Level
 	ShutdownGrace      time.Duration
@@ -730,7 +731,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		MaxNamespaceSize:   nsSize,
 		Files:              filesCfg,
 		FilesStore:         *filesStore,
-		FilesS3:            files.S3Config{Bucket: *s3Bucket, Endpoint: *s3Endpoint, Region: *s3Region, Prefix: *s3Prefix, PathStyle: *s3PathStyle},
+		FilesS3:            s3store.Config{Bucket: *s3Bucket, Endpoint: *s3Endpoint, Region: *s3Region, Prefix: *s3Prefix, PathStyle: *s3PathStyle},
 		VectorCacheSize:    vcSize,
 		LogLevel:           level,
 		ShutdownGrace:      grace,

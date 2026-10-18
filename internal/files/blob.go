@@ -36,7 +36,7 @@ type localBlobs struct {
 func NewLocal(root string) BlobStore { return &localBlobs{root: root} }
 
 func (l *localBlobs) nsDir(ns string) string {
-	return filepath.Join(l.root, filepath.FromSlash(ns)+nsDirSuffix)
+	return filepath.Join(l.root, filepath.FromSlash(ns)+NamespaceDirSuffix)
 }
 
 func (l *localBlobs) path(ns, sum string) string {

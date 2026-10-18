@@ -27,7 +27,7 @@ const (
 	DefaultMaxPendingFiles int64 = 8 << 30
 	MaxPartsPerRequest           = 100
 	tmpDirName                   = ".files-tmp"
-	nsDirSuffix                  = ".files"
+	NamespaceDirSuffix           = ".files"
 )
 
 type Config struct {
@@ -92,8 +92,8 @@ func New(cfg Config) *Store {
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
 
 func (s *Store) Remote() bool {
-	_, ok := s.blobs.(*s3Blobs)
-	return ok
+	sh, ok := s.blobs.(interface{ Shared() bool })
+	return ok && sh.Shared()
 }
 
 func (s *Store) dropping(ns string) error {
