@@ -199,7 +199,7 @@ func TestSetFileConstraints(t *testing.T) {
 	if testEngine(t) == store.EnginePostgres {
 		h.seedTable("fil", "docs", []map[string]any{{"name": "title", "type": "string"}})
 		code, body := h.httpCall("migrate", map[string]any{"namespace": "fil", "table": "docs", "changes": []any{map[string]any{"op": "set_file_constraints", "name": "title", "max_bytes": 1}}})
-		if code == http.StatusOK || !strings.Contains(errMessage(body), "not supported on this engine") {
+		if code == http.StatusOK || !strings.Contains(errMessage(body), "only allowed on file fields") {
 			t.Fatalf("engine %s: %d %v", testEngine(t), code, body)
 		}
 		return
