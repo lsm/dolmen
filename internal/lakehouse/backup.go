@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,9 +74,13 @@ func Backup(ctx context.Context, dataDir, outDir string, extraFiles []string) (s
 	return m, nil
 }
 
-func NamespacesIn(live string) ([]string, error) {
+func NamespacesIn(dataDir string) ([]string, error) {
+	live, err := filepath.EvalSymlinks(dataDir)
+	if err != nil {
+		return nil, err
+	}
 	var names []string
-	err := filepath.WalkDir(live, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(live, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -197,7 +202,7 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 }
 
 func snapshotTables(ctx context.Context, path string) ([]string, bool, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", readOnlyDSN(path))
 	if err != nil {
 		return nil, false, err
 	}
@@ -255,7 +260,7 @@ func catalogGeneration(ctx context.Context, path string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
 		return "", err
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	db, err := sql.Open("sqlite", readOnlyDSN(path))
 	if err != nil {
 		return "", err
 	}
@@ -293,4 +298,13 @@ func treeDirs(live, rel string) ([]string, error) {
 		return nil
 	})
 	return out, err
+}
+
+func readOnlyDSN(path string) string {
+	uriPath := filepath.ToSlash(path)
+	if len(uriPath) > 1 && uriPath[1] == ':' {
+		uriPath = "/" + uriPath
+	}
+	u := &url.URL{Scheme: "file", Path: uriPath, RawQuery: url.Values{"mode": {"ro"}}.Encode()}
+	return u.String()
 }

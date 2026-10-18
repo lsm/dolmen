@@ -252,3 +252,26 @@ func TestALakehouseBackupLeavesOutANamespaceDroppedWhileCopied(t *testing.T) {
 		}
 	}
 }
+
+func TestALakehouseBackupHandlesSymlinksAndURIPathCharacters(t *testing.T) {
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(parent, "data #1?x=%20")
+	s := openStore(t, dir)
+	if err := s.CreateNamespace(t.Context(), "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skip(err)
+	}
+	if names, err := NamespacesIn(link); err != nil || len(names) != 1 {
+		t.Fatalf("NamespacesIn through a symlink = %v, %v", names, err)
+	}
+	m, err := Backup(t.Context(), link, filepath.Join(t.TempDir(), "backup"), nil)
+	if err != nil || len(m.Files) != 1 {
+		t.Fatalf("backup of %s = %+v, %v", dir, m, err)
+	}
+}
