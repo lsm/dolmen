@@ -170,7 +170,8 @@ is today.
 already does for its frames, the handler re-arms the read deadline through `http.ResponseController`
 before each chunk, which makes it an idle timeout of that length. `-op-timeout` starts once the body
 has arrived and bounds the write itself; with `-files-store s3` a multipart write also gets
-`-files-fetch-timeout` added, since its parts still upload to the bucket inside the write. The server arms its write deadline when it reads the request
+`-files-fetch-timeout` added, since its parts still upload to the bucket inside the write; a write
+that both fetches a `url` and uploads parts gets it added twice. The server arms its write deadline when it reads the request
 headers, so the handler re-arms it before answering, as every other response path does.
 
 **Server-side fetch** (slice 2). A `url` value makes the server fetch the bytes before taking the

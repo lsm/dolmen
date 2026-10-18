@@ -585,7 +585,7 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (res any,
 		fetchTime = s.files.FetchTimeout()
 	}
 	if fileWriteOps[op] && s.files != nil && store.HasFileSource(ctx) {
-		fetchTime = max(fetchTime, s.files.UploadTimeout())
+		fetchTime += s.files.UploadTimeout()
 	}
 	ctx, cancel, overran := s.withOpDeadline(ctx, op, fetchTime)
 	defer cancel()
