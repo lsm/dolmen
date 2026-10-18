@@ -67,7 +67,7 @@ func (s *Store) DropNamespace(ctx context.Context, namespace string) (err error)
 		return facadeErr(ctx, err)
 	}
 	if s.files != nil {
-		if err := s.files.DropNamespace(ns); err != nil {
+		if err := s.files.DropNamespace(ctx, ns); err != nil {
 			return &derr.Error{Code: derr.Internal, Message: "namespace " + ns + " was dropped, but its files could not all be deleted", Cause: err}
 		}
 	}

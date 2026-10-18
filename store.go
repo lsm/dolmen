@@ -55,7 +55,7 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	if cfg.opener != nil {
+	if cfg.opener != nil && cfg.engine != store.EngineLakehouse {
 		return openWithOpener(cfg)
 	}
 	if dataDir == "" {
@@ -78,11 +78,16 @@ func Open(dataDir string, opts ...Option) (*Store, error) {
 	owners[dir] = s
 	ownersMu.Unlock()
 
-	eng, err := store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache), store.WithSecretKey(cfg.secrets), store.WithTracerProvider(cfg.tracerProvider), store.WithMeterProvider(cfg.meterProvider))
+	var eng store.Engine
+	if cfg.opener != nil {
+		eng, err = cfg.opener(store.WithOpenDir(cfg.openerContext(), dir), cfg.changeRetention)
+	} else {
+		eng, err = store.Open(dir, store.WithChangeRetention(cfg.changeRetention), store.WithVectorCacheBytes(cfg.vectorCache), store.WithSecretKey(cfg.secrets), store.WithTracerProvider(cfg.tracerProvider), store.WithMeterProvider(cfg.meterProvider))
+	}
 	if err != nil {
 		releaseOwnership(dir)
 		code := derr.Internal
-		if pathShapeError(err) || errors.Is(err, store.ErrCatalogTooNew) {
+		if pathShapeError(err) || errors.Is(err, store.ErrCatalogTooNew) || errors.Is(err, store.ErrInvalid) {
 			code = derr.InvalidRequest
 		}
 		return nil, derr.Wrap(code, fmt.Errorf("open data directory: %w", err))
@@ -106,7 +111,7 @@ func openWithOpener(cfg config) (*Store, error) {
 	owners[key] = s
 	ownersMu.Unlock()
 
-	eng, err := cfg.opener(dbstat.ContextWithMeter(dbspan.ContextWithProvider(secret.WithKeyring(context.Background(), cfg.secrets), cfg.tracerProvider), cfg.meterProvider), cfg.changeRetention)
+	eng, err := cfg.opener(cfg.openerContext(), cfg.changeRetention)
 	if err != nil {
 		releaseOwnership(key)
 		code := derr.Internal
@@ -117,6 +122,10 @@ func openWithOpener(cfg config) (*Store, error) {
 	}
 	s.eng = eng
 	return s, nil
+}
+
+func (cfg config) openerContext() context.Context {
+	return dbstat.ContextWithMeter(dbspan.ContextWithProvider(secret.WithKeyring(context.Background(), cfg.secrets), cfg.tracerProvider), cfg.meterProvider)
 }
 
 func releaseOwnership(dir string) {

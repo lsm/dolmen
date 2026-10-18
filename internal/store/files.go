@@ -367,7 +367,7 @@ type FileSweep struct {
 }
 
 type FileSweeper interface {
-	Sweep(ns string, referenced map[string]bool) (FileSweep, error)
+	Sweep(ctx context.Context, ns string, referenced map[string]bool) (FileSweep, error)
 }
 
 type fileSweeperKey struct{}

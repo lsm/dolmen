@@ -41,7 +41,7 @@ func (s *Store) Vacuum(ctx context.Context, ns string) (store.VacuumResult, erro
 			if err != nil {
 				return err
 			}
-			swept, err := sw.Sweep(ns, refs)
+			swept, err := sw.Sweep(ctx, ns, refs)
 			if err != nil {
 				return err
 			}

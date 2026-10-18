@@ -66,7 +66,7 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 				continue
 			}
 			if s.files == nil {
-				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: this store cannot hold files; file fields need the SQLite engine", k)
+				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: this store cannot hold files; file fields need the SQLite or lakehouse engine", k)
 			}
 			if fp == nil {
 				fp = &fileParts{req: s.files.NewRequest(), salt: randomSalt()}
@@ -201,7 +201,7 @@ func (s *Store) OpenFile(ctx context.Context, namespace, table string, id int64,
 	if n, ok := ref["size"].(json.Number); ok {
 		info.Size, _ = n.Int64()
 	}
-	f, err := s.files.Open(ns, info.SHA256)
+	f, err := s.files.Open(ctx, ns, info.SHA256)
 	if err != nil {
 		return nil, FileInfo{}, &derr.Error{Code: derr.Internal, Message: fmt.Sprintf("the file of %s row %d field %q cannot be read from the file store", table, id, field), Cause: err}
 	}
