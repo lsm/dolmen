@@ -270,6 +270,10 @@ bucket's own link and works until it expires, on the bucket's host. Revoking you
 does not end a link already issued, so treat the URL like a password for that one file and keep
 `ttl_seconds` short.
 
+Call `describe_server` before a first file write: its `files` object says whether file fields
+work on this server (and, when they do not, why), the largest file it takes, and the hosts a
+`{"url": …}` value may be fetched from (empty means send the file as a part).
+
 MCP tools cannot carry files: a `{"part": …}` value sent over MCP is refused with the curl form to
 use instead. A field's `max_bytes` and `media_types` (shown by `describe_table`) are checked on every
 write: a refusal for size answers `413`, and one for type answers `415` and names the accepted
