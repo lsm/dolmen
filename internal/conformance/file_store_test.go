@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -46,6 +47,41 @@ func fakeBucket(t *testing.T) files.BlobStore {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestFileURLOverAnS3StoreUsesThePublicEndpoint(t *testing.T) {
+	backend := s3mem.New()
+	if err := backend.CreateBucket("blobs"); err != nil {
+		t.Fatal(err)
+	}
+	internal := httptest.NewServer(gofakes3.New(backend).Server())
+	t.Cleanup(internal.Close)
+	target, _ := url.Parse(internal.URL)
+	public := httptest.NewServer(httputil.NewSingleHostReverseProxy(target))
+	t.Cleanup(public.Close)
+	b, err := s3store.New(context.Background(), s3store.Config{Bucket: "blobs", Endpoint: internal.URL, PublicEndpoint: public.URL, Region: "us-east-1", PathStyle: true, Creds: credentials.NewStaticV4("key", "secret", "")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarnessBlobs(t, b, nil)
+	h.seedTable("fil", "docs", fileTableFields())
+	data := []byte("served from the public endpoint")
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"a","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": data}); code != http.StatusOK {
+		t.Fatalf("multipart insert over S3: %d %v", code, body)
+	}
+	link, _ := h.mustMCP("file_url", map[string]any{"namespace": "fil", "table": "docs", "id": 1, "field": "doc"})["url"].(string)
+	if !strings.HasPrefix(link, public.URL+"/") {
+		t.Fatalf("file_url must be presigned for -files-s3-public-endpoint %s, got %q", public.URL, link)
+	}
+	res, err := http.Get(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || string(got) != string(data) {
+		t.Fatalf("GET through the public endpoint: %d %q", res.StatusCode, got)
+	}
 }
 
 func TestFileFieldsWorkOverAnS3Store(t *testing.T) {

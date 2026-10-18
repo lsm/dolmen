@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
@@ -165,4 +166,31 @@ func (f *flakyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		return nil, errors.New("connection refused")
 	}
 	return http.DefaultTransport.RoundTrip(r)
+}
+
+func TestAPublicEndpointSignsLinksWithoutCarryingTheStoresTraffic(t *testing.T) {
+	endpoint, creds := fakeS3(t, "blobs")
+	for _, region := range []string{"us-east-1", ""} {
+		b, err := New(context.Background(), Config{Bucket: "blobs", Endpoint: endpoint, PublicEndpoint: "https://files.example.test", Region: region, PathStyle: true, Creds: creds})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Put(context.Background(), "app", sumA, tempBlob(t, "kept")); err != nil {
+			t.Fatalf("region %q: writes must keep using -files-s3-endpoint: %v", region, err)
+		}
+		link, err := b.(interface {
+			PresignGet(context.Context, string, string, time.Duration, string, string) (string, error)
+		}).PresignGet(context.Background(), "app", sumA, time.Minute, "text/plain", "attachment")
+		if err != nil {
+			t.Fatalf("region %q: presigning must not need to reach the public endpoint: %v", region, err)
+		}
+		if !strings.HasPrefix(link, "https://files.example.test/blobs/") {
+			t.Fatalf("region %q: the link must be signed for the public endpoint, got %q", region, link)
+		}
+	}
+	for _, bad := range []string{"files.example.test", "https://files.example.test/path"} {
+		if _, err := New(context.Background(), Config{Bucket: "blobs", Endpoint: endpoint, PublicEndpoint: bad, Region: "us-east-1", PathStyle: true, Creds: creds}); err == nil || !strings.Contains(err.Error(), "-files-s3-public-endpoint") {
+			t.Errorf("public endpoint %q: %v", bad, err)
+		}
+	}
 }

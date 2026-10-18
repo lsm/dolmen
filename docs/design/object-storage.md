@@ -227,7 +227,11 @@ download URL the agent can hand to a tool that holds no credentials. It needs th
 download. On the S3 store the URL is the store's own presigned `GET`, with `response-content-type`
 and `response-content-disposition` set so the bytes arrive with the same type and as an attachment.
 It names the blob, not the row, so replacing the row's file does not revoke it; it works until it
-expires, at most an hour, unless a sweep removes the blob first. It needs no public base URL;
+expires, at most an hour, unless a sweep removes the blob first. It is signed for
+`-files-s3-public-endpoint` when that is set, so a bucket the server reaches at an internal address
+(a loopback MinIO, a VPC endpoint) still hands out links clients can open; uploads and reads keep
+using `-files-s3-endpoint`. Signing never contacts the public endpoint: with no `-files-s3-region`
+the region is read once at startup through the internal one. It needs no public base URL;
 `dolmen mcp` over stdio still refuses `file_url`, because that transport has no file store at all.
 On the local store it is the download endpoint with `exp` and `sig` query parameters: an HMAC-SHA256
 over the namespace, table, row id, field, hash and expiry, under a key generated on first use and kept
