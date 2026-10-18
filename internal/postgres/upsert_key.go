@@ -141,7 +141,7 @@ func (s *Store) upsertByKeyRows(ctx context.Context, ns, table string, keys []st
 			}
 		}
 		before, _ := json.Marshal(state.schema)
-		prepared, err := s.prepareValues(ctx, state, records, emb, false)
+		prepared, err := s.prepareValues(ctx, ns, state, records, emb, false)
 		if err != nil {
 			return store.InsertResult{}, err
 		}

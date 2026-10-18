@@ -338,6 +338,9 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 	if err := fn(tx, n); err != nil {
 		return err
 	}
+	if err := store.ConfirmFiles(ctx, name); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
