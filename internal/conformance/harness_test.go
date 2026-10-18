@@ -150,6 +150,7 @@ type harness struct {
 	emb *fakeProvider
 
 	fileStore *files.Store
+	blobs     files.BlobStore
 	api       *api.Server
 	grants    *auth.Registry
 	authn     *auth.Authenticator
@@ -267,7 +268,7 @@ func (h *harness) serveAPI() {
 	if h.authn != nil {
 		authn = h.authn
 	}
-	h.fileStore = files.New(files.Config{Root: h.dir})
+	h.fileStore = files.New(files.Config{Root: h.dir, Blobs: h.blobs})
 	opts := append(append([]api.Option(nil), h.apiOpts...), api.WithAuth(authn), api.WithFiles(h.fileStore))
 	if h.tracerProvider != nil {
 		tracing, err := telemetry.NewWithMeter(h.tracerProvider, nil, propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}), false)

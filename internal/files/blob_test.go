@@ -40,38 +40,6 @@ func (g *gatedPuts) Put(ctx context.Context, ns, sum, path string) error {
 	return g.BlobStore.Put(ctx, ns, sum, path)
 }
 
-func TestAFailedWriteKeepsABlobAnotherRequestIsStillUploading(t *testing.T) {
-	ctx := context.Background()
-	blobs := &gatedPuts{BlobStore: NewLocal(t.TempDir()), entered: make(chan struct{}), release: make(chan struct{}), gate: true}
-	s := New(Config{Root: t.TempDir(), Blobs: blobs})
-	slow, failed := s.NewRequest(), s.NewRequest()
-	defer slow.Close()
-	defer failed.Close()
-	for _, r := range []*Request{slow, failed} {
-		if err := r.Receive("f", "a.txt", "", strings.NewReader("shared bytes")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	done := make(chan error, 1)
-	go func() {
-		_, err := slow.Attach(ctx, "app", "f")
-		done <- err
-	}()
-	<-blobs.entered
-	b, err := failed.Attach(ctx, "app", "f")
-	if err != nil {
-		t.Fatal(err)
-	}
-	failed.Discard()
-	close(blobs.release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Open(ctx, "app", b.SHA256); err != nil {
-		t.Fatalf("a failed write deleted a blob another request was uploading: %v", err)
-	}
-}
-
 func TestAnUploadDoesNotHoldTheStoreLock(t *testing.T) {
 	ctx := context.Background()
 	blobs := &gatedPuts{BlobStore: NewLocal(t.TempDir()), entered: make(chan struct{}), release: make(chan struct{}), gate: true}
@@ -160,5 +128,42 @@ func TestAFailedWipeSaysWhereTheLeftoverFilesAre(t *testing.T) {
 	}
 	if !strings.Contains(fe.Message, "was dropped") || !strings.Contains(fe.Message, "s3://blobs/app.files/") {
 		t.Fatalf("the error must say the namespace is gone and where its files are left: %q", fe.Message)
+	}
+}
+
+func TestASecondUploadOfTheSameBytesWaitsAndNeverOwnsTheBlob(t *testing.T) {
+	ctx := context.Background()
+	blobs := &gatedPuts{BlobStore: NewLocal(t.TempDir()), entered: make(chan struct{}), release: make(chan struct{}), gate: true}
+	s := New(Config{Root: t.TempDir(), Blobs: blobs})
+	first, second := s.NewRequest(), s.NewRequest()
+	defer second.Close()
+	for _, r := range []*Request{first, second} {
+		if err := r.Receive("f", "a.txt", "", strings.NewReader("same bytes")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := first.Attach(ctx, "app", "f")
+		done <- err
+	}()
+	<-blobs.entered
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := second.Attach(ctx, "app", "f")
+		secondDone <- err
+	}()
+	close(blobs.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	b, _ := first.Describe("f")
+	first.Close()
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	second.Discard()
+	if _, err := s.Open(ctx, "app", b.SHA256); err != nil {
+		t.Fatalf("a failed write that found the blob already placed deleted another request's committed blob: %v", err)
 	}
 }

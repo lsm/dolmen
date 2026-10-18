@@ -213,6 +213,13 @@ func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) 
 	return fetchErr("fetching from %s broke off before the file arrived; the fetch may be retried", u.Hostname())
 }
 
+func (s *Store) UploadTimeout() time.Duration {
+	if !s.Remote() {
+		return 0
+	}
+	return s.fetcher.timeout
+}
+
 func (s *Store) FetchTimeout() time.Duration {
 	if !s.fetcher.Enabled() {
 		return 0

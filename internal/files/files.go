@@ -67,6 +67,7 @@ type Store struct {
 	fetcher  *Fetcher
 	blobs    BlobStore
 	drops    map[string]int
+	placing  map[[2]string]*hashLock
 }
 
 func New(cfg Config) *Store {
@@ -86,7 +87,7 @@ func New(cfg Config) *Store {
 	if cfg.Blobs == nil {
 		cfg.Blobs = NewLocal(cfg.Root)
 	}
-	return &Store{cfg: cfg, blobs: cfg.Blobs, drops: map[string]int{}, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
+	return &Store{cfg: cfg, blobs: cfg.Blobs, drops: map[string]int{}, placing: map[[2]string]*hashLock{}, totals: map[string]int64{}, pins: map[string]map[string]int{}, attaches: map[string]map[string]int{}, live: map[string]bool{}, fetcher: fetcher}
 }
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
@@ -391,8 +392,35 @@ func (r *Request) Attach(ctx context.Context, ns, name string) (store.FileBlob, 
 	return p.blob(), nil
 }
 
+type hashLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+func (s *Store) lockHash(ns, sum string) func() {
+	key := [2]string{ns, sum}
+	s.mu.Lock()
+	l := s.placing[key]
+	if l == nil {
+		l = &hashLock{}
+		s.placing[key] = l
+	}
+	l.refs++
+	s.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		s.mu.Lock()
+		if l.refs--; l.refs == 0 {
+			delete(s.placing, key)
+		}
+		s.mu.Unlock()
+	}
+}
+
 func (r *Request) place(ctx context.Context, ns string, p *part) error {
 	s := r.s
+	defer s.lockHash(ns, p.sum)()
 	info, err := s.blobs.Stat(ctx, ns, p.sum)
 	exists := err == nil && info.Size == p.size
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
