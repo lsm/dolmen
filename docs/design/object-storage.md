@@ -360,7 +360,10 @@ every write takes the namespace's catalog row `FOR NO KEY UPDATE` in its transac
 design orders blobs by that lock instead of by pins:
 
 - A part or fetched file uploads to its final key before the write takes the lock, so the lock is
-  never held for an upload.
+  not held for an upload, except inside a `batch`: its writes share one transaction and a later
+  write's `copy_from` may name a row an earlier one created, so a batch resolves its file values
+  inside that transaction and holds the namespace lock while its parts upload. Send large files
+  in single writes rather than in a batch.
 - Inside the write's transaction, after its rows are written and before it commits, every blob the
   write attached (a `part`, a `url` or a `copy_from`) is checked to still exist. If a sweep removed
   one in between, the write rolls back with `503` `storage_unavailable` saying to retry it; the
