@@ -16,10 +16,10 @@ func TestNamesAnEngineReservesAreRefusedOnThatEngine(t *testing.T) {
 	case store.EnginePostgres:
 		refused["user"], refused["any"] = true, true
 	case store.EngineLakehouse:
-		refused["map"], refused["any"] = true, true
+		refused["pivot"], refused["any"] = true, true
 	}
-	for i, name := range []string{"user", "any", "map"} {
-		table := []string{"t_user", "t_any", "t_map"}[i]
+	for i, name := range []string{"user", "any", "pivot"} {
+		table := []string{"t_user", "t_any", "t_pivot"}[i]
 		code, out := h.httpCall("create_table", map[string]any{"namespace": "kw", "table": table, "fields": []map[string]any{{"name": name, "type": "string"}}})
 		if !refused[name] {
 			if code != http.StatusOK {

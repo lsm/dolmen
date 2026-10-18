@@ -3,7 +3,7 @@
 ## Unreleased
 
 - On PostgreSQL and lakehouse, `create_table`, `add_field` and `rename_field` refuse a table or field
-  name that engine reserves as a keyword (`user` on PostgreSQL, `map` on DuckDB, `any` on both),
+  name that engine reserves as a keyword (`user` on PostgreSQL, `pivot` on DuckDB, `any` on both),
   which a query could only name in double quotes, and suggest a replacement. SQLite is unchanged,
   and existing tables keep their names.
 
