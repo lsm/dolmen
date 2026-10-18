@@ -50,6 +50,7 @@ dolmen -files-store s3 -files-s3-bucket dolmen-files -files-s3-region us-east-1
 | `-files-s3-bucket` | `DOLMEN_FILES_S3_BUCKET` | The bucket; required. It must exist: startup refuses a missing or unreachable bucket |
 | `-files-s3-endpoint` | `DOLMEN_FILES_S3_ENDPOINT` | Endpoint URL, `https://s3.amazonaws.com` by default; `http://` is allowed for a local MinIO |
 | `-files-s3-region` | `DOLMEN_FILES_S3_REGION` | Region; empty lets the client discover it |
+| `-files-s3-public-endpoint` | `DOLMEN_FILES_S3_PUBLIC_ENDPOINT` | Endpoint `file_url` links are presigned for, when clients reach the bucket at another address than the server does; uploads and reads keep using `-files-s3-endpoint` |
 | `-files-s3-prefix` | `DOLMEN_FILES_S3_PREFIX` | Key prefix, so several deployments can share one bucket |
 | `-files-s3-path-style` | `DOLMEN_FILES_S3_PATH_STYLE` | Path-style addressing, which MinIO and some S3-compatible services need |
 
@@ -81,9 +82,10 @@ dolmen -files-store s3 -files-s3-bucket dolmen-files \
   -files-s3-endpoint http://minio:9000 -files-s3-region us-east-1 -files-s3-path-style
 ```
 
-`file_url` on this store returns the bucket's own presigned `GET`, built on the endpoint the server
-uses. A client must be able to reach that host, so an endpoint that only the server can reach (a
-loopback MinIO, a private VPC address) gives links nobody else can open.
+`file_url` on this store returns the bucket's own presigned `GET`, built on `-files-s3-endpoint`
+unless `-files-s3-public-endpoint` is set. When the server reaches the bucket at an address clients
+cannot (a loopback MinIO, a private VPC endpoint), set `-files-s3-public-endpoint` to the address
+they use, such as `https://files.example.com`; otherwise the links open for nobody but the server.
 
 The first start with `s3` writes `<data>/files.store`, which makes `dolmen backup` and
 `dolmen restore` refuse that data directory, since the files are not in it.
