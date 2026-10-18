@@ -187,6 +187,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 		if err := store.ShapeChangeArgs(i, ch); err != nil {
 			return nil, err
 		}
+		if err := store.FileConstraintArgs(i, ch); err != nil {
+			return nil, err
+		}
 		switch ch.Op {
 		case schema.OpAddField:
 			if ch.Field == nil {
@@ -573,9 +576,53 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			plan.Operations = append(plan.Operations, "set_row_access false (the owner column and its values are kept)")
 
 		case schema.OpSetFileConstraints:
-			return nil, invalidf("field %q: file fields are not supported on this engine yet, so there are no file constraints to set", ch.Name)
+			f, err := findField(ch.Name)
+			if err != nil {
+				return nil, err
+			}
+			next, err := store.FileConstraintField(*f, ch)
+			if err != nil {
+				return nil, err
+			}
+			if onDisk[f.Name] {
+				phys := ident(source[f.Name])
+				rows, err := tx.Query(ctx, "SELECT id, ("+phys+"::jsonb->>'size')::bigint, "+phys+"::jsonb->>'media_type' FROM "+table+" WHERE "+phys+" IS NOT NULL ORDER BY id")
+				if err != nil {
+					return nil, err
+				}
+				var violating int64
+				var sample []int64
+				for rows.Next() {
+					var id, size int64
+					var mt *string
+					if err := rows.Scan(&id, &size, &mt); err != nil {
+						rows.Close()
+						return nil, err
+					}
+					media := ""
+					if mt != nil {
+						media = *mt
+					}
+					if (next.MaxBytes > 0 && size > next.MaxBytes) || !schema.MediaTypeAllowed(next.MediaTypes, media) {
+						violating++
+						if len(sample) < 5 {
+							sample = append(sample, id)
+						}
+					}
+				}
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				rows.Close()
+				if violating > 0 {
+					return nil, store.FileRowsRefusal(f.Name, violating, sample, scope != nil)
+				}
+			}
+			f.MaxBytes, f.MediaTypes = next.MaxBytes, next.MediaTypes
+			plan.Operations = append(plan.Operations, fmt.Sprintf("set_file_constraints %s max_bytes=%d media_types=%v", ch.Name, next.MaxBytes, next.MediaTypes))
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_row_access)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, set_row_access)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
