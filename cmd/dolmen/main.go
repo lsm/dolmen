@@ -445,6 +445,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	filesStore := fs.String("files-store", envOr("DOLMEN_FILES_STORE", "local", getenv), "where file fields keep their bytes: local (beside each namespace) or s3 (an S3-compatible bucket, configured by the -files-s3-* flags)")
 	s3Bucket := fs.String("files-s3-bucket", envOr("DOLMEN_FILES_S3_BUCKET", "", getenv), "S3 bucket for file bytes, required with -files-store s3")
 	s3Endpoint := fs.String("files-s3-endpoint", envOr("DOLMEN_FILES_S3_ENDPOINT", "https://s3.amazonaws.com", getenv), "S3 endpoint URL; http:// is allowed, for a local MinIO")
+	s3PublicEndpoint := fs.String("files-s3-public-endpoint", envOr("DOLMEN_FILES_S3_PUBLIC_ENDPOINT", "", getenv), "S3 endpoint URL that file_url links are presigned for, when clients reach the bucket at another address than the server does; empty uses -files-s3-endpoint")
 	s3Region := fs.String("files-s3-region", envOr("DOLMEN_FILES_S3_REGION", "", getenv), "S3 region; empty lets the client discover it")
 	s3Prefix := fs.String("files-s3-prefix", envOr("DOLMEN_FILES_S3_PREFIX", "", getenv), "key prefix for file bytes, so one bucket can serve several deployments")
 	s3PathStyle := fs.Bool("files-s3-path-style", envTrue(getenv("DOLMEN_FILES_S3_PATH_STYLE")), "use path-style S3 addressing, which MinIO and some other S3-compatible stores need")
@@ -732,7 +733,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 		MaxNamespaceSize:   nsSize,
 		Files:              filesCfg,
 		FilesStore:         *filesStore,
-		FilesS3:            s3store.Config{Bucket: *s3Bucket, Endpoint: *s3Endpoint, Region: *s3Region, Prefix: *s3Prefix, PathStyle: *s3PathStyle},
+		FilesS3:            s3store.Config{Bucket: *s3Bucket, Endpoint: *s3Endpoint, PublicEndpoint: *s3PublicEndpoint, Region: *s3Region, Prefix: *s3Prefix, PathStyle: *s3PathStyle},
 		VectorCacheSize:    vcSize,
 		LogLevel:           level,
 		ShutdownGrace:      grace,
