@@ -50,7 +50,7 @@ func (s *Store) updateOrUpsert(ctx context.Context, nsName, table, where string,
 			return UpsertResult{}, false, nil
 		}
 		if attempt >= 2 {
-			return UpsertResult{}, true, invalidf("table schema changed concurrently; retry the %s", verbFor(allowInsert))
+			return UpsertResult{}, true, invalidf("the table's schema or the rows its filter matches changed concurrently; retry the %s", verbFor(allowInsert))
 		}
 	}
 }
