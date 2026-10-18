@@ -161,10 +161,11 @@ read fails on the surface that regressed.
 The wire attaches a file with a `{"part": "<name>"}` value naming a multipart part. The façade takes
 a `dolmen.FileUpload{Reader, Name, MediaType}` value instead (or a pointer to one), streams it
 through the same file store, and hands the engine the same `{"part": …}` value, so `max_bytes`,
-`media_types`, name cleaning, media type inference, the idempotency fingerprint and the cleanup of
+`media_types`, the file name rule, media type inference, the idempotency fingerprint and the cleanup of
 a failed write are one implementation. A `{"part": …}` map written through the façade is refused
 the way an MCP call is: the façade names its own uploads with a random suffix, so a literal map
-cannot name one. The caller's record maps are never rewritten.
+cannot name one. A `Name` that breaks the file name rule is refused naming `dolmen.FileUpload.Name`
+rather than the generated part. The caller's record maps are never rewritten.
 
 `dolmen.FileURL{URL, Name, MediaType}` and `dolmen.FileCopy{Table, ID, Field, Name, MediaType}` (or
 pointers) become the wire's `{"url": …}` and `{"copy_from": …}` values, with an empty `Name` or
