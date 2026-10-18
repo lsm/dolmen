@@ -116,3 +116,18 @@ func TestAnEngineRestoreOverDifferentDataSaysWhereItMustGo(t *testing.T) {
 		t.Fatalf("restore over a different catalog: %v", err)
 	}
 }
+
+func TestAnEngineRestoreOverADifferentDataFileSaysWhereItMustGo(t *testing.T) {
+	target := t.TempDir()
+	out := engineBackup(t, target)
+	data := filepath.Join(target, "app.lakehouse", "data", "t", "part.parquet")
+	if err := os.MkdirAll(filepath.Dir(data), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(data, []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(context.Background(), out, target); err == nil || !strings.Contains(err.Error(), "only into "+target) {
+		t.Fatalf("restore over a different data file: %v", err)
+	}
+}

@@ -695,7 +695,7 @@ while working:
 ### Export a table by keyset paging
 
 There is no `dump` or `export_table` op. A whole namespace is backed up out of band, on the server:
-{{ if eq .Dialect "postgresql" }}`pg_dump`, since `dolmen backup` refuses on this engine{{ else }}`dolmen backup`{{ end }}.
+{{ if eq .Dialect "postgresql" }}`pg_dump`, since `dolmen backup` refuses on this engine{{ else if eq .Dialect "duckdb" }}`dolmen backup -engine lakehouse`{{ else }}`dolmen backup`{{ end }}.
 To get a table's rows somewhere else, page `query` on `id`:
 
 ```

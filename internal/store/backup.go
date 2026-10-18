@@ -225,7 +225,7 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 		if err := verifyBlob(filepath.Join(fromDir, rel), b); err != nil {
 			return BackupManifest{}, err
 		}
-		restored, err := blobRestored(filepath.Join(dataDir, rel), b)
+		restored, err := blobRestored(filepath.Join(dataDir, rel), b, m.DataDir)
 		if err != nil {
 			return BackupManifest{}, err
 		}
@@ -242,7 +242,7 @@ func Restore(ctx context.Context, fromDir, dataDir string) (BackupManifest, erro
 		if err := verifyBlob(filepath.Join(fromDir, rel), b); err != nil {
 			return BackupManifest{}, err
 		}
-		restored, err := blobRestored(filepath.Join(dataDir, rel), b)
+		restored, err := blobRestored(filepath.Join(dataDir, rel), b, m.DataDir)
 		if err != nil {
 			return BackupManifest{}, err
 		}
@@ -460,7 +460,7 @@ func verifyBlob(path string, b BackupBlob) error {
 	return nil
 }
 
-func blobRestored(target string, b BackupBlob) (bool, error) {
+func blobRestored(target string, b BackupBlob, onlyInto string) (bool, error) {
 	n, sum, err := fileDigest(target)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -470,6 +470,9 @@ func blobRestored(target string, b BackupBlob) (bool, error) {
 	}
 	if n == b.Bytes && sum == b.SHA256 {
 		return true, nil
+	}
+	if onlyInto != "" {
+		return false, fmt.Errorf("%s already exists and differs from the backup; restore never overwrites data, and this backup restores only into %s, so remove that file there and restore again", target, onlyInto)
 	}
 	return false, fmt.Errorf("%s already exists and differs from the backup; restore never overwrites data, so remove it or restore into an empty data directory", target)
 }
