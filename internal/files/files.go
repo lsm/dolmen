@@ -265,7 +265,11 @@ func (p *part) blob() store.FileBlob {
 
 func (r *Request) missingPart(name string) error {
 	if len(r.order) == 0 {
-		return invalid(http.StatusBadRequest, "{\"part\": %q} names a multipart file part, but the request carries none; send the write as multipart/form-data with the file in a part named %s (curl -F 'request=<json>' -F '%s=@path')", name, name, name)
+		alt := "{\"copy_from\": {\"table\", \"id\", \"field\"}} reuses a stored file and null clears the field"
+		if r.s.Fetches() {
+			alt = "{\"url\": \"https://...\"} has the server fetch the file, " + alt
+		}
+		return invalid(http.StatusBadRequest, "{\"part\": %q} names a multipart file part, but the request carries none: a JSON body or an MCP call cannot carry file bytes. Send the write over HTTP to POST /v1/<operation> as multipart/form-data, with the JSON request in a part named request and the file in a part named %s (curl --form-string 'request=<json>' -F '%s=@path'); over MCP too, %s", name, name, name, alt)
 	}
 	return invalid(http.StatusBadRequest, "{\"part\": %q} names no file part of this request; the request carries %s", name, quoteList(r.order))
 }

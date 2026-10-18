@@ -85,7 +85,7 @@ type fileCopy struct {
 func parseFileValue(f schema.Field, v any) (fileValue, error) {
 	m, ok := v.(map[string]any)
 	if !ok {
-		return fileValue{}, invalidf("field %q is a file field: write {\"part\": \"<form name>\"} and send the file in the same request as multipart/form-data, with the JSON request in a part named request (curl -F 'request=<json>' -F '<form name>=@path'); to clear it, write null", f.Name)
+		return fileValue{}, invalidf("field %q is a file field: write {\"part\": \"<form name>\"} and send the file in the same request as multipart/form-data, with the JSON request in a part named request (curl --form-string 'request=<json>' -F '<form name>=@path'); an MCP call cannot carry file bytes, so there write {\"url\": \"https://...\"} for the server to fetch or {\"copy_from\": {\"table\", \"id\", \"field\"}} to reuse a stored file; to clear it, write null", f.Name)
 	}
 	if _, isRead := m["sha256"]; isRead {
 		return fileValue{}, invalidf("field %q: a file value read back from a row cannot be written; to attach a file, write {\"part\": \"<form name>\"} and send the file in the same multipart request, or write null to clear the field", f.Name)
@@ -263,7 +263,7 @@ func CoerceFile(ctx context.Context, reader FileReader, nsName string, f schema.
 		fv.part = part
 	}
 	if src == nil {
-		return nil, invalidf("field %q: {\"part\": %q} needs the file in the same request, and this request carries none (a JSON body or an MCP call cannot); send the write over HTTP as multipart/form-data, with the JSON request in a part named request and the file in a part named %s (curl -F 'request=<json>' -F '%s=@path')", f.Name, fv.part, fv.part, fv.part)
+		return nil, invalidf("field %q: {\"part\": %q} needs the file in the same request, and this request carries none (a JSON body or an MCP call cannot); send the write over HTTP as multipart/form-data, with the JSON request in a part named request and the file in a part named %s (curl --form-string 'request=<json>' -F '%s=@path')", f.Name, fv.part, fv.part, fv.part)
 	}
 	b, err := src.Describe(fv.part)
 	if err != nil {

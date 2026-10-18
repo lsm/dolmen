@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A `{"part"}` file value sent without its bytes now says a JSON body or an MCP call cannot carry
+  files, names the multipart form of `/v1`, and offers `url`, `copy_from` and `null`, which work
+  over MCP. The write tools' descriptions say the same, and `create_table` lists `secret` and `file`.
+
 - **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
   write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
   can share the catalog and the bucket; with the local store PostgreSQL still refuses them.
