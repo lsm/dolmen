@@ -209,3 +209,7 @@ func (b *s3Blobs) DropNamespace(ctx context.Context, ns string) error {
 }
 
 func (b *s3Blobs) Shared() bool { return true }
+
+func (b *s3Blobs) Location(ns string) string {
+	return "s3://" + b.bucket + "/" + b.nsPrefix(ns)
+}

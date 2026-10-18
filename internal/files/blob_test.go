@@ -3,6 +3,7 @@ package files
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,5 +138,27 @@ func TestNoFileAttachesToANamespaceWhileItsFilesAreDeleted(t *testing.T) {
 	}
 	if _, err := r.Attach(ctx, "app", "f"); err != nil {
 		t.Fatalf("once the drop finishes, attaching works again: %v", err)
+	}
+}
+
+type failingWipe struct {
+	BlobStore
+}
+
+func (failingWipe) DropNamespace(context.Context, string) error {
+	return &Error{Status: http.StatusServiceUnavailable, Code: derr.StorageUnavailable, Message: "the file store did not answer"}
+}
+
+func (failingWipe) Location(ns string) string { return "s3://blobs/" + ns + ".files/" }
+
+func TestAFailedWipeSaysWhereTheLeftoverFilesAre(t *testing.T) {
+	s := New(Config{Root: t.TempDir(), Blobs: failingWipe{NewLocal(t.TempDir())}})
+	err := s.DropNamespace(context.Background(), "app")
+	var fe *Error
+	if !errors.As(err, &fe) || fe.Code != derr.StorageUnavailable || fe.Status != http.StatusServiceUnavailable {
+		t.Fatalf("a failed wipe must stay a retryable storage error, got %v", err)
+	}
+	if !strings.Contains(fe.Message, "was dropped") || !strings.Contains(fe.Message, "s3://blobs/app.files/") {
+		t.Fatalf("the error must say the namespace is gone and where its files are left: %q", fe.Message)
 	}
 }
