@@ -66,7 +66,7 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 				continue
 			}
 			if s.files == nil {
-				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: this store cannot hold files; file fields need the SQLite engine", k)
+				return ctx, nil, nil, derr.New(derr.InvalidRequest, "field %q: this store cannot hold files; file fields need the SQLite or lakehouse engine", k)
 			}
 			if fp == nil {
 				fp = &fileParts{req: s.files.NewRequest(), salt: randomSalt()}
