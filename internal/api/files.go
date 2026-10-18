@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/lsm/dolmen/internal/auth"
 	"github.com/lsm/dolmen/internal/files"
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
@@ -169,17 +171,20 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, &Error{Status: http.StatusMethodNotAllowed, Code: ErrCodeInvalid, Message: "use GET to download a file; files are attached by sending them with a write, as multipart"})
 		return
 	}
-	authed, err := s.Authenticated(r)
-	r = authed
-	if err != nil {
-		writeError(w, r, WrapError(err))
-		return
+	qv := r.URL.Query()
+	signed := qv.Has("sig")
+	if !signed {
+		authed, err := s.Authenticated(r)
+		r = authed
+		if err != nil {
+			writeError(w, r, WrapError(err))
+			return
+		}
 	}
 	if s.files == nil {
 		writeError(w, r, notFound("this server does not store files"))
 		return
 	}
-	qv := r.URL.Query()
 	ns, table, field, idText := qv.Get("namespace"), qv.Get("table"), qv.Get("field"), qv.Get("id")
 	if ns == "" || table == "" || field == "" || idText == "" {
 		writeError(w, r, badRequest("download a file with GET /v1/files?namespace=<ns>&table=<table>&id=<row id>&field=<file field>"))
@@ -190,24 +195,21 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, badRequest("id must be a positive row id"))
 		return
 	}
+	if signed {
+		ctx, err := s.verifySignedDownload(r.Context(), qv, normNS(ns), normTable(table), id, field, time.Now())
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		r = r.WithContext(ctx)
+	}
 	body, _ := json.Marshal(map[string]any{"namespace": ns, "table": table, "ids": []int64{id}})
-	res, err := s.Dispatch(r.Context(), "read_rows", body)
+	ref, err := s.fileRefFor(r.Context(), normNS(ns), normTable(table), id, field)
+	if signed && linkNoLongerMatches(err, ref, qv.Get("sha256")) {
+		err = invalidLink()
+	}
 	if err != nil {
 		writeError(w, r, err)
-		return
-	}
-	ref, err := fileRefFrom(res, table, id, field)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	sc, _, err := s.eng.TableState(r.Context(), normNS(ns), normTable(table), nil)
-	if err != nil {
-		writeError(w, r, wrapStoreErr(err))
-		return
-	}
-	if f := sc.Field(field); f == nil || f.Type != schema.File {
-		writeError(w, r, badRequest("field %q of %s is not a file field", field, table))
 		return
 	}
 	if s.beforeFileOpen != nil {
@@ -326,4 +328,159 @@ func (s *Server) copyReach(ctx context.Context, ns, table string) (*store.RowSco
 	}
 	scope, _, err := s.resolveScope(ctx, ns, table)
 	return scope, err
+}
+
+const (
+	defaultFileURLTTL = 900
+	maxFileURLTTL     = 3600
+)
+
+type publicBaseKey struct{}
+
+func WithPublicBase(ctx context.Context, base func() (string, error)) context.Context {
+	return context.WithValue(ctx, publicBaseKey{}, base)
+}
+
+func (s *Server) PublicBase(r *http.Request) func() (string, error) {
+	return func() (string, error) {
+		if !s.UsableHost(r) {
+			return "", errUnusableHost
+		}
+		return s.publicContext(r).BaseURL, nil
+	}
+}
+
+func publicBaseFrom(ctx context.Context) (string, error) {
+	if f, ok := ctx.Value(publicBaseKey{}).(func() (string, error)); ok {
+		return f()
+	}
+	return "", badRequest("file_url links to this server's HTTP download endpoint, which this transport does not serve; call file_url over HTTP (/v1/file_url or /mcp)")
+}
+
+type fileURLReq struct {
+	Namespace string `json:"namespace"`
+	Table     string `json:"table"`
+	ID        int64  `json:"id"`
+	Field     string `json:"field"`
+	TTL       *int64 `json:"ttl_seconds"`
+}
+
+var fileURLOp = OpDef{
+	Description: "Get a short-lived URL that downloads one row's file with a plain GET and no credentials, to hand to a tool that holds none. It needs the same access as reading the row with read_rows. The URL stops working at expires_at, and as soon as the row's file is replaced.",
+	InputSchema: map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"namespace":   nsProp("Namespace of the table"),
+			"table":       existingTableProp("Table name"),
+			"id":          map[string]any{"type": "integer", "minimum": 1, "description": "Row id"},
+			"field":       prop("string", "Name of the file field"),
+			"ttl_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": maxFileURLTTL, "default": defaultFileURLTTL, "description": "Seconds until the URL expires"},
+		},
+		"required": []string{"namespace", "table", "id", "field"},
+	},
+	OutputSchema: outSchema(map[string]any{
+		"url":        prop("string", "Download URL; fetch it with curl -o path '<url>'"),
+		"expires_at": map[string]any{"type": "string", "format": "date-time", "description": "When the URL stops working"},
+	}, "url", "expires_at"),
+	Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+		var req fileURLReq
+		if err := decode(body, &req); err != nil {
+			return nil, err
+		}
+		base, err := publicBaseFrom(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if s.files == nil {
+			return nil, badRequest("this server does not store files")
+		}
+		ttl := int64(defaultFileURLTTL)
+		if req.TTL != nil {
+			if *req.TTL < 1 || *req.TTL > maxFileURLTTL {
+				return nil, badRequest("ttl_seconds must be between 1 and %d", maxFileURLTTL)
+			}
+			ttl = *req.TTL
+		}
+		if req.ID < 1 {
+			return nil, badRequest("id must be a positive row id")
+		}
+		ns, table := normNS(req.Namespace), normTable(req.Table)
+		ref, err := s.fileRefFor(ctx, ns, table, req.ID, req.Field)
+		if err != nil {
+			return nil, err
+		}
+		exp := time.Now().Add(time.Duration(ttl) * time.Second).Truncate(time.Second)
+		sig, err := s.files.Signer().Sign(ns, table, req.ID, req.Field, ref.sha, exp.Unix())
+		if err != nil {
+			return nil, internal(err)
+		}
+		q := url.Values{}
+		q.Set("namespace", ns)
+		q.Set("table", table)
+		q.Set("id", strconv.FormatInt(req.ID, 10))
+		q.Set("field", req.Field)
+		q.Set("sha256", ref.sha)
+		q.Set("exp", strconv.FormatInt(exp.Unix(), 10))
+		q.Set("sig", sig)
+		return map[string]any{"url": base + "/v1/files?" + q.Encode(), "expires_at": exp.UTC().Format(time.RFC3339)}, nil
+	},
+}
+
+func (s *Server) fileRefFor(ctx context.Context, ns, table string, id int64, field string) (fileRef, error) {
+	body, _ := json.Marshal(map[string]any{"namespace": ns, "table": table, "ids": []int64{id}})
+	res, err := s.Dispatch(ctx, "read_rows", body)
+	if err != nil {
+		return fileRef{}, err
+	}
+	ref, err := fileRefFrom(res, table, id, field)
+	if err != nil {
+		return fileRef{}, err
+	}
+	sc, _, err := s.eng.TableState(ctx, ns, table, nil)
+	if err != nil {
+		return fileRef{}, wrapStoreErr(err)
+	}
+	if f := sc.Field(field); f == nil || f.Type != schema.File {
+		return fileRef{}, badRequest("field %q of %s is not a file field", field, table)
+	}
+	return ref, nil
+}
+
+func linkNoLongerMatches(err error, ref fileRef, sum string) bool {
+	if err == nil {
+		return ref.sha != sum
+	}
+	code := WrapError(err).Code
+	return code == ErrCodeNotFound || code == ErrCodeInvalid
+}
+
+func invalidLink() error {
+	return forbidden("this download link is invalid, or the row's file has changed since it was issued; call file_url again for a new link")
+}
+
+func (s *Server) verifySignedDownload(ctx context.Context, qv url.Values, ns, table string, id int64, field string, now time.Time) (context.Context, error) {
+	exp, err := strconv.ParseInt(qv.Get("exp"), 10, 64)
+	if err != nil {
+		return nil, invalidLink()
+	}
+	if now.Unix() > exp {
+		return nil, forbidden("this download link expired at %s; call file_url again for a new link", time.Unix(exp, 0).UTC().Format(time.RFC3339))
+	}
+	sum := qv.Get("sha256")
+	if !files.ValidHash(sum) {
+		return nil, invalidLink()
+	}
+	ok, err := s.files.Signer().Valid(ns, table, id, field, sum, exp, qv.Get("sig"))
+	if err != nil {
+		return nil, internal(err)
+	}
+	if !ok {
+		return nil, invalidLink()
+	}
+	return auth.WithIdentity(ctx, auth.Identity{Principal: auth.AdminPrincipal, Source: "file-url"}), nil
+}
+
+func init() {
+	Ops["file_url"] = fileURLOp
 }
