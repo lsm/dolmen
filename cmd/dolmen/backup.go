@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -74,8 +75,9 @@ func runRestore(args []string, getenv func(string) string, stdout, stderr io.Wri
 	fs.SetOutput(stderr)
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory to restore into; nothing in it is ever overwritten")
 	fromDir := fs.String("from", "", "backup directory written by dolmen backup")
+	engine := fs.String("engine", envOr("DOLMEN_ENGINE", store.EngineSQLite, getenv), "storage engine the restored data directory serves: sqlite or lakehouse, as given to the server")
 	fs.Usage = func() {
-		fmt.Fprint(stderr, "Usage: dolmen restore -from DIR [-data DIR]\n\nChecks every file in the backup against its manifest and SQLite's integrity check before writing anything, then moves each into place atomically. A file already in place is skipped, so an interrupted restore can be run again.\n\nFlags:\n")
+		fmt.Fprint(stderr, "Usage: dolmen restore -from DIR [-data DIR] [-engine sqlite|lakehouse]\n\nChecks every file in the backup against its manifest and SQLite's integrity check before writing anything, then moves each into place atomically. A file already in place is skipped, so an interrupted restore can be run again.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := parseSubcommand(fs, args, stderr); err != nil {
@@ -84,8 +86,15 @@ func runRestore(args []string, getenv func(string) string, stdout, stderr io.Wri
 	if *fromDir == "" {
 		return usageError(fs, stderr, "-from is required: name the directory dolmen backup wrote")
 	}
-	if err := backupEngine(getenv, "restore"); err != nil {
+	if err := backupEngine(func(string) string { return *engine }, "restore"); err != nil {
 		return usageError(fs, stderr, err.Error())
+	}
+	manifest, err := store.ReadBackupManifest(*fromDir)
+	if err != nil {
+		return err
+	}
+	if from := cmp.Or(manifest.Engine, store.EngineSQLite); from != *engine {
+		return usageError(fs, stderr, fmt.Sprintf("%s is a %s backup and this restore is for the %s engine; restore it with -engine %s into a data directory that engine serves", *fromDir, from, *engine, from))
 	}
 	m, err := store.Restore(context.Background(), *fromDir, *dataDir)
 	if err != nil {

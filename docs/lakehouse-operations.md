@@ -104,5 +104,6 @@ metadata files and its file-field blobs while the server keeps running. It check
 every file the snapshot's metadata references, and retries a namespace (up to five times) when a
 batch, a `vacuum`, or a `drop_table` overlapped it, since those are what delete files a snapshot can
 still name; a namespace dropped during its copy is left out of the backup. The
-catalogs record absolute paths, so `dolmen restore` puts a lakehouse backup back only into the data
-directory it came from, at the same path; it refuses any other.
+catalogs record absolute paths, so `dolmen restore -engine lakehouse` puts a lakehouse backup back
+only into the data directory it came from, at the same path; it refuses any other, and restore
+refuses a backup taken from the other engine.

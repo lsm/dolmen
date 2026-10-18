@@ -127,8 +127,22 @@ func TestBackupAndRestoreNameWhatTheyNeed(t *testing.T) {
 			if err := runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 				return err
 			}
-			return runRestore([]string{"-from", out, "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
+			return runRestore([]string{"-engine", "lakehouse", "-from", out, "-data", t.TempDir()}, env, &bytes.Buffer{}, &bytes.Buffer{})
 		}, "restores only there"},
+		{"restore of a lakehouse backup on SQLite", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-engine", "lakehouse", "-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", out, "-data", data}, env, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "is a lakehouse backup"},
+		{"restore of a SQLite backup on the lakehouse engine", func() error {
+			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
+			if err := runBackup([]string{"-data", data, "-out", out}, env, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+				return err
+			}
+			return runRestore([]string{"-from", out, "-data", t.TempDir()}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{})
+		}, "is a sqlite backup"},
 		{"restore of a lakehouse backup elsewhere", func() error {
 			data, out := t.TempDir(), filepath.Join(t.TempDir(), "backup")
 			if err := runBackup([]string{"-data", data, "-out", out}, lakehouse, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
