@@ -1575,6 +1575,14 @@ make release-all     # release binaries + SBOM + SHA256SUMS
 make image           # build a local container image
 ```
 
+### Lakehouse from Go
+
+`dolmen.Open(dir, lakehouse.With(lakehouse.Config{Sidecar: "/path/to/dolmen-duckdb", Extensions:
+"/path/to/duckdb-extensions"}))` from `github.com/lsm/dolmen/lakehouse` opens a lakehouse data
+directory in process, with the same rules as `dolmen -engine lakehouse`. The package keeps the
+Iceberg and Parquet dependencies out of SQLite-only builds. Filters and `Query` run in the
+`dolmen-duckdb` sidecar, so without `Sidecar` they answer `ErrSQLEngineUnavailable`.
+
 ### PostgreSQL development status
 
 The PostgreSQL backend is under development. It is selectable from the binary with

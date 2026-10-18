@@ -6,6 +6,9 @@
   one row's file with no credentials, for tools that hold none. It needs the same access as
   `read_rows` on the row, and the link stops working once the row's file is replaced.
 
+- Go library: `github.com/lsm/dolmen/lakehouse` opens the lakehouse engine with
+  `dolmen.Open(dir, lakehouse.With(lakehouse.Config{...}))`; `file` fields work there too.
+
 - `dolmen backup` copies the files that `file` fields reference, listing each with its SHA-256 in
   the manifest (format 2 when there are any), and `dolmen restore` verifies and restores them.
   Backup no longer refuses a data directory that stores files.

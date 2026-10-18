@@ -331,8 +331,8 @@ Running the full suite on the engine exposed three more gaps, closed in the same
   contract's `not_found` and `query_error` messages, a malformed filter says it is not a valid
   `WHERE` expression, and an impossible table name is taught as on SQLite.
 
-The Go library still refuses `WithEngine("lakehouse")`, and the embedded-parity tests skip it.
-Supporting it would add a public option, the way `dolmen/postgres` does for adapter #2.
+The Go library opens the engine with `lakehouse.With` from `github.com/lsm/dolmen/lakehouse`,
+the way `dolmen/postgres` does for adapter #2, and the embedded-parity tests run on it.
 
 **Decided:** §10 Q3 takes the recommended answer. A sidecar that is down or cannot start answers
 the new `sql_engine_unavailable` code (HTTP 503), beside `embedder_unavailable`, with

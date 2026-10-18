@@ -55,6 +55,14 @@ The engine stays private, and the reason the original decision gave — that bac
 interfaces must evolve without breaking consumers and mocks — is unaffected, because
 nothing outside the module can name the interface being passed.
 
+`github.com/lsm/dolmen/lakehouse` follows the same rule for the Iceberg, Arrow and Parquet
+dependencies: `dolmen.Open(dir, lakehouse.With(lakehouse.Config{Sidecar, Extensions,
+MaxOpenNamespaces}))`. Unlike PostgreSQL the engine lives in the data directory, so `Open` keeps
+its usual directory handling for it: one store per directory, a conflict with any other engine
+open on it, and the local file store for `file` fields there. The facade hands the opener the
+directory in its context. `Sidecar` and `Extensions` are the server's `-duckdb-sidecar` and
+`-duckdb-extensions`; without a sidecar, filters and `Query` answer `ErrSQLEngineUnavailable`.
+
 ## 2. Curated core
 
 The entry point is `Open(dataDir string, opts ...Option) (*Store, error)`, paired
