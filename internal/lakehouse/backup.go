@@ -94,7 +94,7 @@ func NamespacesIn(dataDir string) ([]string, error) {
 		if !ok {
 			return nil
 		}
-		if _, err := os.Stat(filepath.Join(path, "catalog.db")); err == nil {
+		if _, err := os.Stat(filepath.Join(path, "catalog.db")); !errors.Is(err, fs.ErrNotExist) {
 			rel, err := filepath.Rel(live, filepath.Join(filepath.Dir(path), stem))
 			if err != nil {
 				return err

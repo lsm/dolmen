@@ -527,3 +527,12 @@ func WriteBackupManifest(outDir string, m *BackupManifest) error {
 	}
 	return writeFileSynced(filepath.Join(outDir, BackupManifestFile), append(raw, '\n'))
 }
+
+func NamespacesIn(dataDir string) ([]string, error) {
+	var names []string
+	if err := walkNamespaces(dataDir, "", &names); err != nil {
+		return nil, err
+	}
+	sortNS(names)
+	return names, nil
+}

@@ -34,14 +34,25 @@ func runBackup(args []string, getenv func(string) string, stdout, stderr io.Writ
 	}
 	backup := store.Backup
 	switch *engine {
-	case store.EngineLakehouse:
-		backup = lakehouse.Backup
-	case store.EngineSQLite:
-		if names, err := lakehouse.NamespacesIn(*dataDir); err == nil && len(names) > 0 {
-			return usageError(fs, stderr, fmt.Sprintf("%s holds lakehouse namespaces (%s first); back it up with -engine lakehouse", *dataDir, names[0]))
-		}
+	case store.EngineLakehouse, store.EngineSQLite:
 	default:
 		return usageError(fs, stderr, fmt.Sprintf("-engine %q is not one backup handles; use sqlite or lakehouse", *engine))
+	}
+	lake, err := lakehouse.NamespacesIn(*dataDir)
+	if err != nil {
+		return fmt.Errorf("inspect data directory %s: %w", *dataDir, err)
+	}
+	lite, err := store.NamespacesIn(*dataDir)
+	if err != nil {
+		return fmt.Errorf("inspect data directory %s: %w", *dataDir, err)
+	}
+	switch {
+	case *engine == store.EngineLakehouse && len(lake) == 0 && len(lite) > 0:
+		return usageError(fs, stderr, fmt.Sprintf("%s holds SQLite namespaces (%s first) and no lakehouse ones; back it up with -engine sqlite", *dataDir, lite[0]))
+	case *engine == store.EngineSQLite && len(lake) > 0:
+		return usageError(fs, stderr, fmt.Sprintf("%s holds lakehouse namespaces (%s first); back it up with -engine lakehouse", *dataDir, lake[0]))
+	case *engine == store.EngineLakehouse:
+		backup = lakehouse.Backup
 	}
 	m, err := backup(context.Background(), *dataDir, *outDir, []string{auth.RegistryFile})
 	if err != nil {
