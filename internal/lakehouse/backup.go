@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +21,7 @@ import (
 
 var backupAttempts, backupPause = 5, 200 * time.Millisecond
 
-var beforeBlobCopy func(ns string)
+var beforeBlobCopy, beforeSnapshot func(ns string)
 
 var errTornStamp = errors.New("its vacuum stamp was being written as it was read; rerun the backup")
 
@@ -129,8 +131,17 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 	if _, err := os.Stat(liveCatalog); errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
+	if beforeSnapshot != nil {
+		beforeSnapshot(ns)
+	}
 	catalog, err := store.SnapshotSQLite(ctx, liveCatalog, outDir, filepath.Join(rel, "catalog.db"))
 	if err != nil {
+		if _, serr := os.Stat(liveCatalog); errors.Is(serr, fs.ErrNotExist) {
+			for _, dir := range []string{rel, filepath.FromSlash(ns) + ".files"} {
+				os.RemoveAll(filepath.Join(outDir, dir))
+			}
+			return false, nil
+		}
 		return false, err
 	}
 	catalog.Namespace = ns
@@ -171,15 +182,26 @@ func backupNamespace(ctx context.Context, live, outDir, ns string, m *store.Back
 	} else if now != gen {
 		return true, fmt.Errorf("it was dropped and recreated while it was copied; rerun the backup")
 	}
+	copied := map[string]bool{}
 	for _, b := range blobs {
 		if !strings.HasSuffix(b.Path, "/"+b.SHA256) {
 			return false, fmt.Errorf("file %s does not hash to its name (sha256 %s); the file store is damaged", b.Path, b.SHA256)
 		}
+		copied[b.SHA256] = true
 	}
 	if missing, err := unreachable(live, outDir, locations); err != nil {
 		return false, err
 	} else if missing != "" {
 		return true, fmt.Errorf("file %s, which its catalog references, changed while it was copied; rerun the backup", missing)
+	}
+	refs, err := backupReferences(ctx, live, outDir, snapshot, locations)
+	if err != nil {
+		return false, err
+	}
+	for _, sum := range slices.Sorted(maps.Keys(refs)) {
+		if !copied[sum] {
+			return true, fmt.Errorf("a row references file %s, which is missing from the data directory; if a vacuum removed it after its row changed, rerun the backup", sum)
+		}
 	}
 	if after, err := readStamp(stampPath); errors.Is(err, strconv.ErrSyntax) {
 		return true, errTornStamp

@@ -1,6 +1,7 @@
 package lakehouse
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
@@ -290,5 +291,79 @@ func TestALakehouseBackupIgnoresHiddenFilesBesideNamespaces(t *testing.T) {
 	m, err := Backup(t.Context(), dir, filepath.Join(t.TempDir(), "backup"), nil)
 	if err != nil || len(m.Files) != 1 || len(m.Dirs) == 0 {
 		t.Fatalf("backup beside hidden files = %+v, %v", m, err)
+	}
+}
+
+type hashedFiles map[string]store.FileBlob
+
+func (f hashedFiles) Describe(part string) (store.FileBlob, error) { return f[part], nil }
+func (f hashedFiles) Attach(_ context.Context, _, part string) (store.FileBlob, error) {
+	return f[part], nil
+}
+func (f hashedFiles) Pin(_, _ string) error                         { return nil }
+func (f hashedFiles) Fetch(context.Context, string) (string, error) { return "", nil }
+
+func TestALakehouseBackupRequiresEveryReferencedBlob(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := openStore(t, dir)
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "docs", []schema.Field{{Name: "doc", Type: schema.File}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	src := hashedFiles{}
+	paths := map[string]string{}
+	for _, part := range []string{"stored", "pending"} {
+		sum := fmt.Sprintf("%x", sha256.Sum256([]byte(part)))
+		src[part] = store.FileBlob{SHA256: sum, Size: int64(len(part)), MediaType: "text/plain"}
+		paths[part] = filepath.Join(dir, "app.files", sum[:2], sum)
+		os.MkdirAll(filepath.Dir(paths[part]), 0o700)
+		os.WriteFile(paths[part], []byte(part), 0o600)
+	}
+	insert := func(part string) {
+		if _, err := s.Insert(store.WithFileSource(ctx, src), "app", "docs", []map[string]any{{"doc": map[string]any{"part": part}}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("stored")
+	if _, err := s.GetRows(ctx, "app", "docs", []int64{1}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	insert("pending")
+	if _, err := Backup(ctx, dir, filepath.Join(t.TempDir(), "backup"), nil); err != nil {
+		t.Fatalf("backup with every blob present: %v", err)
+	}
+	attempts := backupAttempts
+	backupAttempts = 1
+	defer func() { backupAttempts = attempts }()
+	for _, part := range []string{"pending", "stored"} {
+		if err := os.Remove(paths[part]); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Backup(ctx, dir, filepath.Join(t.TempDir(), "backup"), nil)
+		if err == nil || !strings.Contains(err.Error(), src[part].SHA256) {
+			t.Fatalf("backup without the %s row's blob: %v", part, err)
+		}
+		os.WriteFile(paths[part], []byte(part), 0o600)
+	}
+}
+
+func TestALakehouseBackupLeavesOutANamespaceDroppedBeforeItsSnapshot(t *testing.T) {
+	dir, s := backupSource(t)
+	defer s.Close()
+	beforeSnapshot = func(ns string) {
+		if err := s.DropNamespace(t.Context(), ns, [16]byte{}); err != nil {
+			t.Error(err)
+		}
+	}
+	defer func() { beforeSnapshot = nil }()
+	m, err := Backup(t.Context(), dir, filepath.Join(t.TempDir(), "backup"), nil)
+	if err != nil || len(m.Files) != 0 {
+		t.Fatalf("backup after a drop = %+v, %v", m, err)
 	}
 }
