@@ -731,7 +731,7 @@ func TestTheAdminSkillTeachesHowToRunTheServer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"## Running the server", "`lakehouse` | The `dolmen-duckdb-<version>-<platform>.tar.gz` bundle", "-files-store s3 -files-s3-bucket", "-files-s3-path-style", "`-files-fetch-hosts`", "`postgres` refuses\n  file fields with it", "dolmen backup -engine sqlite", "`postgres` refuses both commands: use `pg_dump`"} {
+		for _, want := range []string{"## Running the server", "`lakehouse` | The `dolmen-duckdb-<version>-<platform>.tar.gz` bundle", "-files-store s3 -files-s3-bucket", "-files-s3-path-style", "`-files-fetch-hosts`", "`postgres` refuses\n  file fields with it", "dolmen backup -engine sqlite", "`postgres` refuses both commands: use `pg_dump`", "(`-files-s3-bucket` is `DOLMEN_FILES_S3_BUCKET`)", "(`sqlite`, `postgresql`, `duckdb`)"} {
 			if !strings.Contains(string(out), want) {
 				t.Fatalf("dolmen-admin (%s) must teach how to run the server, missing %q", dialect, want)
 			}

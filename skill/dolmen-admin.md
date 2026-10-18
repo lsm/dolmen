@@ -170,7 +170,8 @@ error envelope (`{"ok":false,"error":{...}}`), not a JSON-RPC result.
 The operator sets all of this when starting the server; no operation changes it, so when the user
 asks you to set up a server, switch its engine or move its files, hand them the settings below.
 Secrets go in the environment, never a flag, because flags show up in process listings.
-`dolmen -help` lists every flag with its environment variable, and `capabilities` reports
+Every flag below can be set instead by an environment variable named `DOLMEN_` plus the flag in
+upper case with `_` for `-` (`-files-s3-bucket` is `DOLMEN_FILES_S3_BUCKET`), and `capabilities` reports
 `query_dialect`, which names the engine a running server uses (`sqlite`, `postgresql` or `duckdb`).
 
 ### Storage engine
@@ -572,7 +573,7 @@ locked-out server.
   `ann_recall_bound` (`null` when exact — a number in (0,1] iff `ann`), `notifications`,
   `subscribe`, `query_dialect` and `filter_dialect`. Field names and types are pinned across
   conforming engines; check it before relying on approximate vector search or live streams. The two
-  dialect fields name a SQL family (`sqlite`, `postgresql`) so you can branch on it instead of
+  dialect fields name a SQL family (`sqlite`, `postgresql`, `duckdb`) so you can branch on it instead of
   provoking a syntax error: `query_dialect` is the dialect `query` accepts, `filter_dialect` the one
   a `filter` is read in with authentication off. With authentication on, every engine reads a
   filter against one shared allowlist and `filter_dialect` is informational.
