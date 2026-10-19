@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Four file errors now point the caller somewhere it can go: a refused fetch says to ask the
+  operator for `-files-fetch-hosts` or to send the file over HTTP (MCP cannot carry bytes); the
+  `-max-namespace-files-size` refusal says `vacuum` needs `admin`; a refused `copy_from` mentions
+  `read` access; and a read-back file reference points to `copy_from`.
+
 - On PostgreSQL and lakehouse, `create_table`, `add_field` and `rename_field` refuse a table or field
   name that engine reserves as a keyword (`user` on PostgreSQL, `pivot` on DuckDB, `any` on both),
   which a query could only name in double quotes, and suggest a replacement. SQLite is unchanged,

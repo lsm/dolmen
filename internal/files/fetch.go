@@ -24,13 +24,15 @@ const DefaultFetchTimeout = 5 * time.Minute
 type FetchWording struct {
 	Hosts    string
 	Timeout  string
+	Allow    string
 	Fallback string
 }
 
 var ServerFetchWording = FetchWording{
 	Hosts:    "-files-fetch-hosts",
 	Timeout:  "-files-fetch-timeout",
-	Fallback: "download the file with curl -o and send it as a multipart part with {\"part\": \"<form name>\"}",
+	Allow:    "ask the operator to list the host in -files-fetch-hosts",
+	Fallback: "over HTTP, download the file and send it as a multipart part with {\"part\": \"<form name>\"}; an MCP call cannot carry file bytes",
 }
 
 const FetchUserAgent = "dolmen (+https://github.com/lsm/dolmen)"
@@ -145,7 +147,7 @@ func (f *Fetcher) check(u *url.URL) error {
 		return fetchErr("URLs with credentials (user:password@) are not fetched, because no credentials are sent; remove them, or %s", f.say.Fallback)
 	}
 	if !f.allowed(u.Hostname()) {
-		return fetchErr("host %q is not in %s; %s instead", u.Hostname(), f.say.Hosts, f.say.Fallback)
+		return fetchErr("host %q is not in %s; %s, or %s", u.Hostname(), f.say.Hosts, f.say.Allow, f.say.Fallback)
 	}
 	return nil
 }
@@ -156,7 +158,7 @@ func fetchErr(format string, args ...any) *Error {
 
 func (r *Request) ReceiveURL(ctx context.Context, name, raw string, f *Fetcher) error {
 	if !f.Enabled() {
-		return fetchErr("this server does not fetch URLs (%s is empty); %s", f.say.Hosts, f.say.Fallback)
+		return fetchErr("this server does not fetch URLs (%s is empty); %s, or %s", f.say.Hosts, f.say.Allow, f.say.Fallback)
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
