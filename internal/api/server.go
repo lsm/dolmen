@@ -194,7 +194,7 @@ func fieldItemSchema(desc string, withDefault bool) map[string]any {
 	properties := map[string]any{
 		"name": map[string]any{
 			"type":        "string",
-			"description": "Field name (lowercase [a-z0-9_], max 64 chars; not a SQLite/SQL keyword or reserved name)",
+			"description": "Field name (lowercase [a-z0-9_], max 64 chars; not a SQLite/SQL keyword or reserved name, nor on PostgreSQL or lakehouse a keyword that engine reserves)",
 			"pattern":     schema.IdentPattern(),
 			"not": map[string]any{
 				"enum": schema.ReservedFieldNames(),

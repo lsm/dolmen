@@ -3,6 +3,8 @@ package conformance
 import (
 	"reflect"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/files"
 )
 
 func TestDescribeServerTellsAClientHowItCanAuthenticate(t *testing.T) {
@@ -38,5 +40,19 @@ func TestDescribeServerSaysNothingAboutAuthWhenItIsOff(t *testing.T) {
 	h := newHarnessMode(t, authOff)
 	if data := h.mustHTTP("describe_server", map[string]any{}); data["auth"] != nil || data["capabilities"] != nil {
 		t.Fatalf("with auth off describe_server must keep its v0.2 shape, got %v", data)
+	}
+}
+
+func TestDescribeServerReportsFileSettings(t *testing.T) {
+	h := newHarness(t)
+	data := h.mustHTTP("describe_server", map[string]any{})
+	f, _ := data["files"].(map[string]any)
+	want := "local"
+	if h.fileStore.Remote() {
+		want = "s3"
+	}
+	hosts, _ := f["fetch_hosts"].([]any)
+	if f["enabled"] != true || f["store"] != want || f["max_file_bytes"] != float64(files.DefaultMaxFileSize) || f["max_request_bytes"] != float64(files.DefaultMaxRequestFiles) || f["max_namespace_bytes"] != float64(0) || hosts == nil || len(hosts) != 0 {
+		t.Fatalf("describe_server files = %v, want enabled on the %s store with the default limits and no fetch hosts", data["files"], want)
 	}
 }

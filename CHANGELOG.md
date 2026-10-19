@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- On PostgreSQL and lakehouse, `create_table`, `add_field` and `rename_field` refuse a table or field
+  name that engine reserves as a keyword (`user` on PostgreSQL, `pivot` on DuckDB, `any` on both),
+  which a query could only name in double quotes, and suggest a replacement. SQLite is unchanged,
+  and existing tables keep their names.
+
+- `describe_server` reports a `files` object: whether file fields work on the server (with the
+  reason when they do not), the store, `-max-file-size`, `-max-request-files-size`,
+  `-max-namespace-files-size` and the fetch hosts.
+
 - `-files-s3-public-endpoint` (`DOLMEN_FILES_S3_PUBLIC_ENDPOINT`) presigns `file_url` links for the
   address clients reach the bucket at, while uploads and reads keep using `-files-s3-endpoint`.
 

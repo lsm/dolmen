@@ -659,7 +659,9 @@ var Ops = map[string]OpDef{
 			"download repairs that, an operator has to fix or replace it). " +
 			"Under auth: on it also reports auth (the mode and the identity sources this server accepts: admin-key, " +
 			"api-keys, trusted-proxy for a gateway, oidc for sign-in) and inlines the engine's capabilities; under " +
-			"auth: off both are absent and the response is unchanged. " +
+			"auth: off both are absent. " +
+			"It always reports files: whether file fields work here (with the reason when they do not), the store, " +
+			"the size limits, and the hosts a {\"url\": ...} value may be fetched from. " +
 			"Call it to answer those questions without attempting a write or a text search. Status only — " +
 			"no secrets are exposed, no embedding is run, and no network request is made: usable reflects " +
 			"configuration, so an endpoint that is down or rejects the request still fails at first use, " +
@@ -714,7 +716,22 @@ var Ops = map[string]OpDef{
 				c["description"] = "The engine's capability surface, exactly as the capabilities operation reports it; present only when authentication is on"
 				return c
 			}(),
-		}, "embedding"),
+			"files": map[string]any{
+				"type":        "object",
+				"description": "Whether this server takes file fields and the limits it applies to them",
+				"properties": map[string]any{
+					"enabled":             prop("boolean", "Whether file fields can be written and downloaded on this server"),
+					"reason":              prop("string", "Why file fields are off and what turns them on; present only when enabled is false"),
+					"store":               map[string]any{"type": "string", "enum": []string{"local", "s3"}, "description": "Where file bytes are kept: local, beside each namespace, or s3, an S3-compatible bucket"},
+					"max_file_bytes":      map[string]any{"type": "integer", "minimum": 1, "description": "Largest single file a write may attach (-max-file-size); a field's max_bytes may lower it"},
+					"max_request_bytes":   map[string]any{"type": "integer", "minimum": 1, "description": "Most file bytes one multipart write may carry across its parts (-max-request-files-size)"},
+					"max_namespace_bytes": map[string]any{"type": "integer", "minimum": 0, "description": "Largest total of one namespace's stored files (-max-namespace-files-size); 0 is unbounded"},
+					"fetch_hosts":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Hosts a {\"url\": ...} file value may be fetched from: exact names, *.example.com, or * for any public host; empty means url values are refused, so send the file as a multipart part"},
+				},
+				"required":             []string{"enabled"},
+				"additionalProperties": false,
+			},
+		}, "embedding", "files"),
 		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
 			var req struct{}
 			if err := decode(body, &req); err != nil {
@@ -733,7 +750,7 @@ var Ops = map[string]OpDef{
 			if c, ok := s.emb.(interface{ ModelState() string }); ok {
 				emb["model_state"] = c.ModelState()
 			}
-			out := map[string]any{"embedding": emb}
+			out := map[string]any{"embedding": emb, "files": s.fileSettings()}
 			if s.authn.On() {
 				sources := []string{}
 				if s.authn.AdminKeyConfigured() {
@@ -828,7 +845,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace to create the table in"),
-				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_/pragma_ prefix, __fts, or dbstat; not a SQLite/SQL keyword or reserved name)"),
+				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_/pragma_ prefix, __fts, or dbstat; not a SQLite/SQL keyword or reserved name, nor on PostgreSQL or lakehouse a keyword that engine reserves)"),
 				"fields": map[string]any{
 					"type":        "array",
 					"description": "Field definitions",

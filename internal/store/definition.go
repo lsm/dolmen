@@ -38,3 +38,17 @@ func stampOwner(sc *schema.TableSchema, owner string) string {
 	}
 	return owner
 }
+
+func ValidateEngineNames(dialect, table string, fields []schema.Field) error {
+	if table != "" {
+		if err := schema.ValidateEngineIdent(dialect, table, "table name"); err != nil {
+			return invalidf("%s", err)
+		}
+	}
+	for _, f := range fields {
+		if err := schema.ValidateEngineIdent(dialect, f.Name, "field name"); err != nil {
+			return invalidf("%s", err)
+		}
+	}
+	return nil
+}

@@ -94,6 +94,17 @@ func New(cfg Config) *Store {
 
 func (s *Store) Fetches() bool { return s.fetcher.Enabled() }
 
+type Settings struct {
+	MaxFile      int64
+	MaxRequest   int64
+	MaxNamespace int64
+	FetchHosts   []string
+}
+
+func (s *Store) Settings() Settings {
+	return Settings{MaxFile: s.cfg.MaxFileSize, MaxRequest: s.cfg.MaxRequestFiles, MaxNamespace: s.cfg.MaxNamespaceFiles, FetchHosts: append([]string{}, s.fetcher.hosts...)}
+}
+
 type presigner interface {
 	PresignGet(ctx context.Context, ns, sum string, ttl time.Duration, mediaType, disposition string) (string, error)
 }

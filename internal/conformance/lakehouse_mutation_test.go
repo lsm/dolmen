@@ -202,13 +202,13 @@ func TestLakehouseMutationBackendConformance(t *testing.T) {
 			if _, err := eng.Upsert(ctx, ns, "people", "id = 1", nil, map[string]any{"name": "x"}, store.WriteOpts{}, emb, nil, stale); !errors.Is(err, derr.ErrConflict) {
 				t.Fatalf("an upsert scoped against another schema version must be refused: %v", err)
 			}
-			if _, err := eng.CreateTable(ctx, ns, "stamped", []schema.Field{{Name: "at", Type: schema.Timestamp}}, store.TableOpts{}, [16]byte{}); err != nil {
+			if _, err := eng.CreateTable(ctx, ns, "stamped", []schema.Field{{Name: "seen_at", Type: schema.Timestamp}}, store.TableOpts{}, [16]byte{}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := eng.Insert(ctx, ns, "stamped", []map[string]any{{"at": "2026-01-01T00:00:00Z"}}, store.WriteOpts{}, emb, nil, none); err != nil {
+			if _, err := eng.Insert(ctx, ns, "stamped", []map[string]any{{"seen_at": "2026-01-01T00:00:00Z"}}, store.WriteOpts{}, emb, nil, none); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := eng.Update(ctx, ns, "stamped", "1=1", nil, map[string]any{"at": "now()"}, emb, nil, none); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "now()") {
+			if _, err := eng.Update(ctx, ns, "stamped", "1=1", nil, map[string]any{"seen_at": "now()"}, emb, nil, none); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "now()") {
 				t.Fatalf("an update's error must name the value the caller sent: %v", err)
 			}
 			if semi, err := eng.Delete(ctx, ns, "people", "name = 'a;b'", nil, store.DeleteOpts{DryRun: true}, nil, none); err != nil || semi.Matched != 0 {

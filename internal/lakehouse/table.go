@@ -131,6 +131,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 	if err != nil {
 		return nil, err
 	}
+	if err := store.ValidateEngineNames("duckdb", name, fields); err != nil {
+		return nil, err
+	}
 	if err := store.RequireSecretKey(s.secrets, fields); err != nil {
 		return nil, err
 	}

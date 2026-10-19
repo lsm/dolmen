@@ -495,3 +495,18 @@ func (s *Server) verifySignedDownload(ctx context.Context, qv url.Values, ns, ta
 func init() {
 	Ops["file_url"] = fileURLOp
 }
+
+func (s *Server) fileSettings() map[string]any {
+	if s.files == nil {
+		return map[string]any{"enabled": false, "reason": "this server serves no files, as dolmen mcp over stdio does not; write and download files through the HTTP server"}
+	}
+	if r, ok := s.eng.(interface{ FileFieldsRefused() bool }); ok && r.FileFieldsRefused() {
+		return map[string]any{"enabled": false, "reason": "file fields on this PostgreSQL server need the S3 file store; the operator enables them with -files-store s3"}
+	}
+	store := "local"
+	if s.files.Remote() {
+		store = "s3"
+	}
+	cfg := s.files.Settings()
+	return map[string]any{"enabled": true, "store": store, "max_file_bytes": cfg.MaxFile, "max_request_bytes": cfg.MaxRequest, "max_namespace_bytes": cfg.MaxNamespace, "fetch_hosts": cfg.FetchHosts}
+}

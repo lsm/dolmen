@@ -53,7 +53,7 @@ func TestLakehouseTypedReadsBackendConformance(t *testing.T) {
 				{Name: "ratio", Type: schema.Number},
 				{Name: "ok", Type: schema.Boolean, Default: false},
 				{Name: "meta", Type: schema.JSON},
-				{Name: "at", Type: schema.Timestamp},
+				{Name: "seen_at", Type: schema.Timestamp},
 				{Name: "v", Type: schema.Vector, Dim: 2},
 				{Name: "token", Type: schema.Secret},
 			}
@@ -61,7 +61,7 @@ func TestLakehouseTypedReadsBackendConformance(t *testing.T) {
 				t.Fatal(err)
 			}
 			records := []map[string]any{
-				{"title": "a", "score": 3, "ratio": 2.5, "ok": true, "meta": map[string]any{"k": []any{1, "x"}}, "at": "2026-10-05T12:00:00Z", "v": []any{1, 0.5}, "token": "PLAINTEXT-a"},
+				{"title": "a", "score": 3, "ratio": 2.5, "ok": true, "meta": map[string]any{"k": []any{1, "x"}}, "seen_at": "2026-10-05T12:00:00Z", "v": []any{1, 0.5}, "token": "PLAINTEXT-a"},
 				{"title": "b"},
 				{"title": "never requested"},
 			}
@@ -77,15 +77,15 @@ func TestLakehouseTypedReadsBackendConformance(t *testing.T) {
 			}
 			first, second := res.Rows[0], res.Rows[1]
 			want := map[string]any{
-				"id":    int64(1),
-				"title": "a",
-				"score": int64(3),
-				"ratio": 2.5,
-				"ok":    true,
-				"meta":  map[string]any{"k": []any{json.Number("1"), "x"}},
-				"at":    "2026-10-05T12:00:00Z",
-				"v":     []float64{1, 0.5},
-				"token": secret.Mask,
+				"id":      int64(1),
+				"title":   "a",
+				"score":   int64(3),
+				"ratio":   2.5,
+				"ok":      true,
+				"meta":    map[string]any{"k": []any{json.Number("1"), "x"}},
+				"seen_at": "2026-10-05T12:00:00Z",
+				"v":       []float64{1, 0.5},
+				"token":   secret.Mask,
 			}
 			for k, v := range want {
 				if !reflect.DeepEqual(first[k], v) {
