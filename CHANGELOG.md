@@ -6,6 +6,10 @@
   `any` → `any_`, `pivot` → `pivot_`) with the same warning as a SQLite keyword, so its proposal
   is one `create_table` accepts.
 
+- The skills say how `file_url` links end on each store, that a stopped link's `403` means calling
+  `file_url` again, which reserved words each engine refuses, the request shapes of `upsert` and
+  `upsert_by_key`, the S3 permissions, and how to provision PostgreSQL's two roles.
+
 - On PostgreSQL and lakehouse, `create_table`, `add_field` and `rename_field` refuse a table or field
   name that engine reserves as a keyword (`user` on PostgreSQL, `pivot` on DuckDB, `any` on both),
   which a query could only name in double quotes, and suggest a replacement. SQLite is unchanged,
