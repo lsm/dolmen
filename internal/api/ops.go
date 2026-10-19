@@ -956,7 +956,7 @@ var Ops = map[string]OpDef{
 					return nil, badRequest("samples[%d] must be an object, not null", i)
 				}
 			}
-			inf := schema.InferSchema(req.Samples)
+			inf := schema.InferSchemaIn(s.eng.Capabilities().QueryDialect, req.Samples)
 			if inf.Fields == nil {
 				inf.Fields = []schema.Field{}
 			}

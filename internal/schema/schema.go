@@ -683,6 +683,11 @@ type inferUnit struct {
 }
 
 func InferSchema(samples []map[string]any) Inference {
+	return InferSchemaIn("", samples)
+}
+
+func InferSchemaIn(dialect string, samples []map[string]any) Inference {
+	engineWords := engineKeywords[dialect]
 	keys := map[string]*inferredKey{}
 	for _, s := range samples {
 		for k, v := range s {
@@ -703,6 +708,9 @@ func InferSchema(samples []map[string]any) Inference {
 	groups := map[string][]string{}
 	for raw := range keys {
 		base := cleanName(raw)
+		if engineWords[base] {
+			base += "_"
+		}
 		groups[base] = append(groups[base], raw)
 	}
 
@@ -791,7 +799,7 @@ func InferSchema(samples []map[string]any) Inference {
 			case reserved[strings.ToLower(raw)]:
 				result.Warnings = append(result.Warnings,
 					fmt.Sprintf("reserved key %q was renamed to %q", raw, name))
-			case sqlKeywords[strings.ToLower(raw)]:
+			case sqlKeywords[strings.ToLower(raw)] || engineWords[cleanName(raw)]:
 				result.Warnings = append(result.Warnings,
 					fmt.Sprintf("SQL keyword key %q was renamed to %q", raw, name))
 			default:

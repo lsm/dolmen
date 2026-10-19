@@ -66,7 +66,7 @@ Notes on the test tiers:
 
 Request flow: transport → `internal/api` op table → `store.Engine` (SQLite). Most storage-backed `OpDef.Func` bodies call the engine directly and reach for `internal/ops` helpers where needed (namespace ensure, vector-query preparation, error classification). Three kinds of exception are worth knowing before you trace or add an operation:
 
-- **Pure operations** never touch the engine. `describe_server` reads only the embedding provider, and `infer_schema` only calls `schema.InferSchema`.
+- **Pure operations** never touch the engine. `describe_server` reads only the embedding provider, and `infer_schema` only calls `schema.InferSchemaIn` with the engine's query dialect from `Capabilities`.
 - **The change feed** goes through an API-layer helper. Both `changes_since` and `wait_for` call `runChangesSince`, which is what actually invokes `engine.ChangesSince`. `wait_for` wraps that in its own polling loop with the deadline and timeout handling living in the API layer, not the engine. Change either operation's feed semantics in the helper so both stay in step.
 - **SSE** is not an operation at all. `/v1/subscribe` is a plain handler in `sse.go` that calls `engine.Listen` directly. The Go facade skips the transport and op table and calls the engine directly too, using the same `internal/ops` helpers. There is no shared operation layer that every call passes through; parity between surfaces is enforced by the conformance suite, not by a common code path.
 
