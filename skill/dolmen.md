@@ -120,7 +120,8 @@ bootstrap key, which belongs to its operator).
   not retry, and do not probe other tables for one that works. Call `whoami`, which needs no
   grant, and tell the user its `principal` and `groups` along with the operation and table you
   need, so an administrator can grant it. A table you hold nothing on answers `403` whether or not
-  it exists, so a `403` does not confirm that a table is there.
+  it exists, so a `403` does not confirm that a table is there. A `403` from a `file_url` link is
+  different: the link stopped, and calling `file_url` again gives a new one.
 
 `whoami` also lists your `grants`: every grant naming your principal or one of your groups, each
 with its `object` and `verbs`. A grant on a namespace covers every table under it, so your verbs on a
@@ -233,7 +234,9 @@ A `file` field holds a reference to bytes the server stores beside the namespace
 in the same call as the write: send the operation as `multipart/form-data` to `/v1/{operation}`,
 with the JSON request in a first part named `request` and each file in its own part, and write
 `{"part": "<part name>"}` as the field's value. `insert`, `update`, `upsert`, `upsert_by_key` and
-`batch` accept this; you never read the file yourself:
+`batch` accept this (`update` and `upsert` take `filter`, optional `args` and `set`, and `upsert`
+inserts `set` as a new row when nothing matches; `upsert_by_key` takes `on`, the natural-key
+fields, and `records`); you never read the file yourself:
 
 ```bash
 base='{{ .BaseURL }}'
@@ -265,10 +268,13 @@ curl -s -o standup.ogg "${base%/}/v1/files?namespace=research&table=meetings&id=
 To hand a file to a tool that has no dolmen credentials, call `file_url` with the same
 `namespace`, `table`, `id` and `field`. It returns `{"url", "expires_at"}`: a link that anyone
 holding it can GET, for `ttl_seconds` (default 900, at most 3600). On a server that keeps files
-locally it also stops once the row's file is replaced; on one that keeps them in S3 it is the
-bucket's own link and works until it expires, on the bucket's host. Revoking your key or grant
-does not end a link already issued, so treat the URL like a password for that one file and keep
-`ttl_seconds` short.
+locally it also stops once the row's file is replaced with different bytes, or the row is deleted
+or cleared; a link that stopped answers `403` and says to call `file_url` again, which is the fix,
+not the `whoami` step below. On a server that keeps them in S3 it is the bucket's own presigned
+link: it keeps serving the file it was made for until it expires, even after the row changes,
+until a `vacuum` or `drop_namespace` removes that file, and the bucket itself answers its errors.
+Revoking your key or grant does not end a link already issued, so treat the URL like a password
+for that one file and keep `ttl_seconds` short.
 
 Call `describe_server` before a first file write: its `files` object says whether file fields
 work on this server (and, when they do not, why), the largest file it takes, and the hosts a
@@ -621,7 +627,7 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Resource | Limit | Behavior |
 |---|---|---|
 | Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
-| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, as are, on PostgreSQL and lakehouse, the words that engine reserves (`user`, `any`, `pivot` and the like), and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, as are the words the server's engine reserves: on PostgreSQL such as `user` and `any`, on lakehouse such as `pivot`, `at` and `any` (the error names the word and suggests a replacement), and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |

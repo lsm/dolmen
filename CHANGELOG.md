@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The skills say how `file_url` links end on each store, that a stopped link's `403` means calling
+  `file_url` again, which reserved words each engine refuses, the request shapes of `upsert` and
+  `upsert_by_key`, the S3 permissions, and how to provision PostgreSQL's two roles.
+
 - Four file errors now point the caller somewhere it can go: a refused fetch says to ask the
   operator for `-files-fetch-hosts` or to send the file over HTTP (MCP cannot carry bytes); the
   `-max-namespace-files-size` refusal says `vacuum` needs `admin`; a refused `copy_from` mentions
