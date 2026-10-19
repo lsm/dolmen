@@ -101,7 +101,7 @@ func TestFileValuesThatCannotBeWritten(t *testing.T) {
 		limit int
 	}{
 		{"no source", ctx, map[string]any{"part": "f"}, "curl --form-string", 0},
-		{"read-back object", WithFileSource(ctx, src), map[string]any{"sha256": "x", "size": 1}, "cannot be written", 0},
+		{"read-back object", WithFileSource(ctx, src), map[string]any{"sha256": "x", "size": 1}, "write {\"copy_from\"", 0},
 		{"plain string", WithFileSource(ctx, src), "abc", "is a file field", 0},
 		{"unfetchable url", WithFileSource(ctx, src), map[string]any{"url": "https://x"}, "cannot fetch", 0},
 		{"unknown key", WithFileSource(ctx, src), map[string]any{"part": "big", "size": 1}, "unknown key", 0},

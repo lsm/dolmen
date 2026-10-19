@@ -88,7 +88,7 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 		return fileValue{}, invalidf("field %q is a file field: write {\"part\": \"<form name>\"} and send the file in the same request as multipart/form-data, with the JSON request in a part named request (curl --form-string 'request=<json>' -F '<form name>=@path'); an MCP call cannot carry file bytes, so there write {\"url\": \"https://...\"} for the server to fetch or {\"copy_from\": {\"table\", \"id\", \"field\"}} to reuse a stored file; to clear it, write null", f.Name)
 	}
 	if _, isRead := m["sha256"]; isRead {
-		return fileValue{}, invalidf("field %q: a file value read back from a row cannot be written; to attach a file, write {\"part\": \"<form name>\"} and send the file in the same multipart request, or write null to clear the field", f.Name)
+		return fileValue{}, invalidf("field %q: a file value read back from a row cannot be written; to reuse that row's file, write {\"copy_from\": {\"table\": \"<table>\", \"id\": <id>, \"field\": \"<file field>\"}} naming the row it was read from; to attach new bytes, write {\"part\": \"<form name>\"} in a multipart request; or write null to clear the field", f.Name)
 	}
 	var out fileValue
 	keys := make([]string, 0, len(m))
@@ -304,7 +304,7 @@ func fileLimits(f schema.Field, what string, b FileBlob) error {
 
 func copyFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, fv fileValue) (any, error) {
 	c := fv.copy
-	unreadable := invalidf("field %q: copy_from names no file you can read: table %s has no readable row %d with a file in field %q", f.Name, c.table, c.id, c.field)
+	unreadable := invalidf("field %q: copy_from names no file you can read: table %s has no readable row %d with a file in field %q; check the table, id and field, and, when the server checks access, that you hold read access to table %s", f.Name, c.table, c.id, c.field, c.table)
 	var scope *RowScope
 	if reach, ok := ctx.Value(copyReachKey{}).(CopyReach); ok {
 		var err error

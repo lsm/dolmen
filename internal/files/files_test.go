@@ -141,7 +141,7 @@ func TestIdenticalBytesArePlacedOnceAndTheCapCountsThemOnce(t *testing.T) {
 	}
 	err := place("abcdefgh")
 	var fe *Error
-	if !errors.As(err, &fe) || fe.Status != 507 || !strings.Contains(fe.Message, "-max-namespace-files-size") {
+	if !errors.As(err, &fe) || fe.Status != 507 || !strings.Contains(fe.Message, "-max-namespace-files-size") || !strings.Contains(fe.Message, "admin on the namespace") {
 		t.Fatalf("over the cap: %v", err)
 	}
 	var n int
