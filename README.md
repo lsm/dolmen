@@ -1144,7 +1144,7 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   replaced. With `-files-store s3` it is the bucket's presigned `GET` instead, with the same type
   and attachment headers, which works until it expires. A field
   may declare `max_bytes` and `media_types` (exact, or `audio/*`). MCP calls cannot carry files.
-  File fields work on SQLite and lakehouse with either store, and on PostgreSQL with `-files-store s3`; PostgreSQL refuses them with the local store, which one server's disk would hide from the others.
+  File fields work on SQLite and lakehouse with either store, and on PostgreSQL with `-files-store s3`; PostgreSQL refuses them with the local store, which one server's disk would hide from the others. Running the stores, their limits, S3 permissions and backups: [file storage](docs/file-storage.md).
   `docs/design/object-storage.md` has the design.
 - **Full-text** via SQLite FTS5 shadow tables, maintained on insert/update/delete/migrate.
 - **Enum-validated writes**: a string field declared `enum: [...]` accepts only those values on every
