@@ -88,7 +88,7 @@ func parseFileValue(f schema.Field, v any) (fileValue, error) {
 		return fileValue{}, invalidf("field %q is a file field: write {\"part\": \"<form name>\"} and send the file in the same request as multipart/form-data, with the JSON request in a part named request (curl --form-string 'request=<json>' -F '<form name>=@path'); an MCP call cannot carry file bytes, so there write {\"url\": \"https://...\"} for the server to fetch or {\"copy_from\": {\"table\", \"id\", \"field\"}} to reuse a stored file; to clear it, write null", f.Name)
 	}
 	if _, isRead := m["sha256"]; isRead {
-		return fileValue{}, invalidf("field %q: a file value read back from a row cannot be written; to reuse that row's file, write {\"copy_from\": {\"table\": \"<table>\", \"id\": <id>, \"field\": %q}}; to attach new bytes, write {\"part\": \"<form name>\"} in a multipart request; or write null to clear the field", f.Name, f.Name)
+		return fileValue{}, invalidf("field %q: a file value read back from a row cannot be written; to reuse that row's file, write {\"copy_from\": {\"table\": \"<table>\", \"id\": <id>, \"field\": \"<file field>\"}} naming the row it was read from; to attach new bytes, write {\"part\": \"<form name>\"} in a multipart request; or write null to clear the field", f.Name)
 	}
 	var out fileValue
 	keys := make([]string, 0, len(m))

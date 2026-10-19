@@ -349,7 +349,7 @@ func TestWritingBackAReadReferenceTeachesCopyFrom(t *testing.T) {
 	ref := h.mustHTTP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"]
 	rec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": ref}}}
 	code, body := h.httpCall("insert", rec)
-	if code != http.StatusBadRequest || !strings.Contains(errMessage(body), `{"copy_from": {"table": "<table>", "id": <id>, "field": "doc"}}`) {
+	if code != http.StatusBadRequest || !strings.Contains(errMessage(body), `{"copy_from": {"table": "<table>", "id": <id>, "field": "<file field>"}}`) {
 		t.Fatalf("http: %d %v", code, body)
 	}
 	if msg, _ := h.mcpCall("insert", rec).toolError()["message"].(string); !strings.Contains(msg, "copy_from") {
