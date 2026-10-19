@@ -433,7 +433,7 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"list_namespaces": {
-		Description: "List the namespaces on this server (one isolated SQLite file per namespace). " +
+		Description: "List the namespaces on this server (each an isolated database). " +
 			"Use it to see which namespaces already exist before creating or reusing one. " +
 			"An optional prefix (a namespace path) restricts the listing to that path's subtree, " +
 			"recursively, the prefix itself included; omit it to list everything.",
@@ -514,7 +514,7 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"drop_namespace": {
-		Description: "Drop a namespace and every table in it, deleting its SQLite file and WAL sidecars. " +
+		Description: "Drop a namespace and every table in it, deleting its storage (on SQLite its file and WAL sidecars) and its stored files. " +
 			"Irreversible. confirm must repeat the namespace name — a guard against dropping the wrong one " +
 			"(it normalizes like the namespace itself, so case and surrounding whitespace don't matter). " +
 			"In-flight requests on the namespace finish first (or fail); any later write-op use of the same name recreates " +

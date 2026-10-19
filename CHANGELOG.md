@@ -61,7 +61,10 @@
   or serve files right now. The Go library exports `dolmen.ErrSQLEngineUnavailable` and
   `dolmen.ErrStorageUnavailable`.
 - **The admin skill teaches running the server** (#665): what each engine needs, the local and S3
-  file stores, fetch hosts, file limits, embeddings and backups per engine.
+  file stores, fetch hosts, file limits, embeddings and backups per engine, including the S3
+  permissions and PostgreSQL's two roles. The skills also say how `file_url` links end on each
+  store, which reserved words each engine refuses, and the request shapes of `upsert` and
+  `upsert_by_key` (#686).
 
 ### Changed
 

@@ -182,6 +182,20 @@ upper case with `_` for `-` (`-files-s3-bucket` is `DOLMEN_FILES_S3_BUCKET`), an
 | `postgres` | `DOLMEN_PG_DSN`, plus `-pg-query-role`, a pre-provisioned restricted role, for `query`; file fields need `-files-store s3` | Several servers share one database, or PostgreSQL is already operated |
 | `lakehouse` | The `dolmen-duckdb-<version>-<platform>.tar.gz` bundle from the same release, unpacked beside `dolmen` (or `-duckdb-sidecar` and `-duckdb-extensions` pointing at it), and a local data directory owned by one server | Other tools should read the tables as Apache Iceberg and Parquet |
 
+PostgreSQL 16 or newer needs one database and two roles, provisioned before dolmen starts; it
+never creates a role:
+
+```sql
+CREATE DATABASE dolmen;
+CREATE ROLE dolmen_backend LOGIN PASSWORD 'replace-me';
+GRANT CONNECT, CREATE ON DATABASE dolmen TO dolmen_backend;
+CREATE ROLE dolmen_query NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+GRANT dolmen_query TO dolmen_backend WITH INHERIT FALSE, SET TRUE;
+```
+
+Then `DOLMEN_PG_DSN=postgres://dolmen_backend:…@db:5432/dolmen` and `-pg-query-role dolmen_query`.
+Keep the password in the DSN's environment variable, not in `-pg-dsn`.
+
 A lakehouse server without its sidecar still starts, but refuses `query` and every operation that
 takes a `filter`, with an error naming the sidecar.
 
@@ -212,6 +226,10 @@ DOLMEN_ENGINE=lakehouse dolmen -data /var/lib/dolmen
     clients reach the bucket at another address (a loopback MinIO, a private VPC endpoint), set
     `-files-s3-public-endpoint https://files.example.com` and links are signed for it while the
     server keeps using `-files-s3-endpoint`.
+  - The credentials need `s3:ListBucket` and `s3:GetBucketLocation` on the bucket and
+    `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` and `s3:AbortMultipartUpload` on its keys.
+    A presigned link stops working when the credentials that signed it expire, so with STS or IRSA
+    credentials links may end before `ttl_seconds`.
   - `-files-s3-prefix` lets several deployments share one bucket.
   - `-max-namespace-files-size` must stay `0`, and `dolmen backup` and `dolmen restore` refuse the
     data directory: back up the bucket with S3 tooling.
@@ -909,7 +927,15 @@ match, before ranking.
 - `describe_server`'s `files` object says whether file fields work on this server (with the
   reason when they do not), the store, the size limits and the fetch hosts.
 - A `file_url` link is a bearer link until `expires_at`: revoking the caller's key or grant does
-  not end it. With `-files-store s3` its host is `-files-s3-endpoint`.
+  not end it. With `-files-store s3` it is the bucket's presigned link, on `-files-s3-public-endpoint`
+  when set and `-files-s3-endpoint` otherwise; it serves the file until it expires or a `vacuum`
+  or `drop_namespace` removes the file, even after the row changes. On the local store it stops
+  once the row's file is replaced with different bytes or the row is gone, and a stopped link's
+  `403` means call `file_url` again. It lasts `ttl_seconds` (default 900, at most 3600), and the
+  download it gives, like `GET /v1/files`, supports `Range`.
+- A refused size answers `413` and a refused type `415`, naming the accepted types. The media
+  type comes from an explicit `media_type`, else the part's `Content-Type`, else the file name's
+  extension, else the bytes.
 - Files are stored once per namespace however many rows reference them, and `drop_namespace`
   deletes them with the namespace. A file stays on disk after the rows referencing it are deleted
   or cleared until `vacuum` removes it; `vacuum` reports `files_removed`, `file_bytes_removed` and
@@ -1040,7 +1066,7 @@ A complete call, previewed first:
 | Resource | Limit | Behavior |
 |---|---|---|
 | Namespace path | 1–3 segments (`a/b/c`), each `^[a-z0-9][a-z0-9_-]{0,63}$` (max 64 chars per segment) | rejected |
-| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, as are, on PostgreSQL and lakehouse, the words that engine reserves (`user`, `any`, `pivot` and the like), and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
+| Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, as are the words the server's engine reserves: on PostgreSQL such as `user` and `any`, on lakehouse such as `pivot`, `at` and `any` (the error names the word and suggests a replacement), and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
 | Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |

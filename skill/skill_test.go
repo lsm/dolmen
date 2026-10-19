@@ -758,3 +758,23 @@ func TestTheAdminSkillTeachesHowToRunTheServer(t *testing.T) {
 		}
 	}
 }
+
+func TestTheSkillsSayHowFileLinksEnd(t *testing.T) {
+	for _, name := range []string{"dolmen", "dolmen-admin"} {
+		out, err := Render(name, Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: "sqlite"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"call `file_url` again", "replaced with different bytes", "`vacuum` or `drop_namespace` removes", "on lakehouse such as `pivot`"} {
+			if !strings.Contains(strings.Join(strings.Fields(string(out)), " "), want) {
+				t.Fatalf("%s must say %q", name, want)
+			}
+		}
+	}
+	out, _ := Render("dolmen-admin", Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: "postgresql"})
+	for _, want := range []string{"s3:GetBucketLocation", "GRANT dolmen_query TO dolmen_backend WITH INHERIT FALSE, SET TRUE"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("dolmen-admin must say %q", want)
+		}
+	}
+}
