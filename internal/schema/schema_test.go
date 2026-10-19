@@ -805,3 +805,27 @@ func TestSecretFieldOptionsRefused(t *testing.T) {
 		t.Fatal("secret values are stored as ciphertext blobs")
 	}
 }
+
+func TestInferRenamesTheEnginesReservedWords(t *testing.T) {
+	samples := []map[string]any{{"user": "ada", "any": 1, "pivot": true, "title": "x"}}
+	for dialect, want := range map[string][]string{
+		"":           {"any", "pivot", "title", "user"},
+		"postgresql": {"any_", "pivot", "title", "user_"},
+		"duckdb":     {"any_", "pivot_", "title", "user"},
+	} {
+		inf := InferSchemaIn(dialect, samples)
+		var got []string
+		for _, f := range inf.Fields {
+			got = append(got, f.Name)
+			if err := ValidateEngineIdent(dialect, f.Name, "field name"); err != nil {
+				t.Errorf("%s: inferred %v", dialect, err)
+			}
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: fields %v, want %v", dialect, got, want)
+		}
+		if dialect == "postgresql" && !strings.Contains(strings.Join(inf.Warnings, "\n"), `SQL keyword key "user" was renamed to "user_"`) {
+			t.Errorf("a rename must warn like a SQLite keyword's: %v", inf.Warnings)
+		}
+	}
+}

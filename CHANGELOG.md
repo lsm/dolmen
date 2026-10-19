@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- On PostgreSQL and lakehouse, `infer_schema` renames keys the engine reserves (`user` → `user_`,
+  `any` → `any_`, `pivot` → `pivot_`) with the same warning as a SQLite keyword, so its proposal
+  is one `create_table` accepts.
+
 - The skills say how `file_url` links end on each store, that a stopped link's `403` means calling
   `file_url` again, which reserved words each engine refuses, the request shapes of `upsert` and
   `upsert_by_key`, the S3 permissions, and how to provision PostgreSQL's two roles.
