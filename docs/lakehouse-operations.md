@@ -44,7 +44,7 @@ downloads an extension. Unpack its contents
 into the directory that holds `dolmen`, and the defaults above find it:
 
 ```bash
-tar -xzf dolmen-duckdb-v0.6.0-linux-amd64.tar.gz --strip-components=1 -C /usr/local/bin
+tar -xzf dolmen-duckdb-v0.7.0-linux-amd64.tar.gz --strip-components=1 -C /usr/local/bin
 ```
 
 To build it yourself, `sidecar/duckdb/package.sh <platform> <version> <out-dir>` fetches the

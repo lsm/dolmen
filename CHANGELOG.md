@@ -2,130 +2,83 @@
 
 ## Unreleased
 
-- On PostgreSQL and lakehouse, `infer_schema` renames keys the engine reserves (`user` → `user_`,
-  `any` → `any_`, `pivot` → `pivot_`) with the same warning as a SQLite keyword, so its proposal
-  is one `create_table` accepts.
+## v0.7.0
 
-- The skills say how `file_url` links end on each store, that a stopped link's `403` means calling
-  `file_url` again, which reserved words each engine refuses, the request shapes of `upsert` and
-  `upsert_by_key`, the S3 permissions, and how to provision PostgreSQL's two roles.
+### Added
 
-- Four file errors now point the caller somewhere it can go: a refused fetch says to ask the
-  operator for `-files-fetch-hosts` or to send the file over HTTP (MCP cannot carry bytes); the
-  `-max-namespace-files-size` refusal says `vacuum` needs `admin`; a refused `copy_from` mentions
-  `read` access; and a read-back file reference points to `copy_from`.
+- **File fields** (#613). A `file` field holds a SHA-256 reference to bytes kept outside the
+  tables, stored once per namespace however many rows reference them.
+  - Writes attach files in the same call: `insert`, `update`, `upsert`, `upsert_by_key` and `batch`
+    accept `multipart/form-data` with the JSON in a `request` part and `{"part": "<name>"}` values
+    (`curl --form-string 'request=<json>' -F 'rec=@file'`). `{"url": "https://…"}` has the server
+    fetch the file from hosts listed in `-files-fetch-hosts` (off by default; non-public
+    addresses, credentials in URLs and redirects off the list are refused), and
+    `{"copy_from": {"table", "id", "field"}}` reuses a file a readable row of the same namespace
+    holds. `url`, `copy_from` and `null` work over MCP; a `{"part"}` sent over MCP says how to
+    send it instead, a refused fetch says to ask the operator for the host or send the file over
+    HTTP, and a refused `copy_from` mentions `read` access (#687).
+  - Fields may declare `max_bytes` and `media_types`; `set_file_constraints` changes them and
+    names the stored rows that would break them. File names are 1 to 255 bytes, without `/`, `\`,
+    control or bidirectional characters, `.` or `..`.
+  - `GET /v1/files?namespace=&table=&id=&field=` downloads one row's file with `read_rows`
+    authorization, `Range` and `ETag`. `file_url` returns a link that needs no credentials, for
+    `ttl_seconds` (default 900, at most 3,600).
+  - Two stores: `-files-store local` (the default) beside each namespace, and `-files-store s3`, an
+    S3-compatible bucket (`-files-s3-bucket`, `-files-s3-endpoint`, `-files-s3-region`,
+    `-files-s3-prefix`, `-files-s3-path-style`, `-files-s3-public-endpoint`; credentials from the
+    standard AWS chain), where `file_url` returns the bucket's presigned `GET`.
+  - SQLite and lakehouse take file fields with either store, PostgreSQL with the S3 store, so
+    several servers can share the catalog and the bucket.
+  - Limits: `-max-file-size` (1 GiB), `-max-request-files-size` (2 GiB per write),
+    `-max-namespace-files-size` (local store, unbounded by default) and `-max-pending-files-size`
+    (8 GiB in flight). `vacuum` removes files no row references and reports `files_removed`,
+    `file_bytes_removed` and `file_bytes`; `drop_namespace` deletes them. The quota refusal says
+    `vacuum` needs `admin`.
+  - `describe_server` reports a `files` object: whether file fields work on this server and why
+    not, the store, the limits and the fetch hosts.
+  - `dolmen backup` copies the files the snapshot references, with their SHA-256 in the manifest,
+    and `dolmen restore` verifies and restores them; both refuse a data directory on the S3 store.
+  - Go library: `dolmen.FileUpload`, `dolmen.FileCopy` and `dolmen.FileURL` record values,
+    `WithFileFetch(hosts, timeout)` and `OpenFile`.
+  - [docs/file-storage.md](docs/file-storage.md) covers running the stores, S3 permissions,
+    limits, vacuum and backups.
+- **The lakehouse engine is selectable** with `-engine lakehouse` (#316). Tables are Apache Iceberg
+  (Parquet) under the data directory, with `query` and filters in the `dolmen-duckdb` sidecar.
+  - Every operation is implemented, `batch`, secret rotation and `subscribe` included, and CI runs
+    the full conformance suite and the black-box tests on it.
+  - Releases attach a `dolmen-duckdb` bundle for `linux-amd64`, `linux-arm64`, `darwin-arm64` and
+    `windows-amd64`: the sidecar, the pinned DuckDB library and its extensions
+    (`sidecar/duckdb/package.sh` builds it). The SBOM does not cover the DuckDB components.
+  - Filters run in their own sidecar, so `query` cannot read the unmasked views they use.
+  - `vacuum` compacts each table into one Parquet file in a single Iceberg commit and expires older
+    snapshots; it can run again after more writes (#652).
+  - `dolmen backup -engine lakehouse` and `dolmen restore -engine lakehouse` snapshot a running
+    lakehouse, catalogs, Parquet and metadata files and file blobs included (manifest format 3),
+    and restore into the same data directory path (#650).
+  - Go library: `github.com/lsm/dolmen/lakehouse` opens it with
+    `dolmen.Open(dir, lakehouse.With(lakehouse.Config{...}))` (#649).
+  - [docs/lakehouse-operations.md](docs/lakehouse-operations.md) covers running it.
+- **New error codes**, both `503` and retryable: `sql_engine_unavailable`, when the lakehouse SQL
+  sidecar is missing or failed to start, and `storage_unavailable`, when the file store cannot take
+  or serve files right now. The Go library exports `dolmen.ErrSQLEngineUnavailable` and
+  `dolmen.ErrStorageUnavailable`.
+- **The admin skill teaches running the server** (#665): what each engine needs, the local and S3
+  file stores, fetch hosts, file limits, embeddings and backups per engine, including the S3
+  permissions and PostgreSQL's two roles. The skills also say how `file_url` links end on each
+  store, which reserved words each engine refuses, and the request shapes of `upsert` and
+  `upsert_by_key` (#686).
+
+### Changed
 
 - On PostgreSQL and lakehouse, `create_table`, `add_field` and `rename_field` refuse a table or field
   name that engine reserves as a keyword (`user` on PostgreSQL, `pivot` on DuckDB, `any` on both),
-  which a query could only name in double quotes, and suggest a replacement. SQLite is unchanged,
-  and existing tables keep their names.
-
-- `describe_server` reports a `files` object: whether file fields work on the server (with the
-  reason when they do not), the store, `-max-file-size`, `-max-request-files-size`,
-  `-max-namespace-files-size` and the fetch hosts.
-
-- `-files-s3-public-endpoint` (`DOLMEN_FILES_S3_PUBLIC_ENDPOINT`) presigns `file_url` links for the
-  address clients reach the bucket at, while uploads and reads keep using `-files-s3-endpoint`.
-
-- `{"url": …}` file fetches send the User-Agent `dolmen (+https://github.com/lsm/dolmen)` instead of
-  Go's default, which hosts such as Wikimedia refuse with `403`.
-
-- The `dolmen-admin` skill gains "Running the server": what each engine needs (the lakehouse
-  sidecar bundle, PostgreSQL's DSN and query role), the local and S3 file stores, fetch hosts,
-  file limits, embeddings and backups per engine. It no longer calls the lakehouse engine
-  development-only.
-
-- The skills send a multipart write's request part with `curl --form-string`, which `;type=` or
-  `;filename=` in the JSON cannot cut short, and say that `copy_from` stays within one namespace,
-  that an issued `file_url` link outlives a revoked key, and that every engine's `vacuum` reports
-  file stats.
-
-- **PostgreSQL file fields**: with `-files-store s3`, PostgreSQL accepts `file` fields with every
-  write form, downloads, `file_url`, `set_file_constraints` and the vacuum sweep. Several servers
-  can share the catalog and the bucket; with the local store PostgreSQL still refuses them.
-
-- A `{"part"}` file value sent without its bytes now says a JSON body or an MCP call cannot carry
-  files, names the multipart form of `/v1`, and offers `url`, `copy_from` and `null`, which work
-  over MCP. The write tools' descriptions say the same, and `create_table` lists `secret` and `file`.
-
-- With `-files-store s3`, `file_url` returns the bucket's presigned `GET` (with the download's
-  type and attachment headers) instead of a server link.
-
-- On SQLite, an `update` whose filter matches no row no longer stores the files it carries, which
-  stayed behind until the next `vacuum` and counted toward `-max-namespace-files-size`. The values
-  are still checked, so a bad part or an oversized file is refused as before.
-
-- `-files-store s3` keeps file bytes in an S3-compatible bucket (AWS, MinIO, R2 and others),
-  configured by `-files-s3-bucket`, `-files-s3-endpoint`, `-files-s3-region`, `-files-s3-prefix`
-  and `-files-s3-path-style`, with credentials from the standard AWS chain. An unreachable store
-  answers `503` `storage_unavailable`.
-
-- A multipart part's `filename` over 255 bytes is refused instead of truncated, and file names
-  `.`, `..` and names with bidirectional controls (such as U+202E) are refused from a part or a
-  JSON `name`.
-
-- `file_url` returns a short-lived link (`ttl_seconds`, default 900, at most 3600) that downloads
-  one row's file with no credentials, for tools that hold none. It needs the same access as
-  `read_rows` on the row, and the link stops working once the row's file is replaced.
-
-- `dolmen backup` and `dolmen restore` work on the lakehouse engine: a consistent snapshot of each
-  namespace's catalog, Parquet and metadata files and file-field blobs while the server runs,
-  restored into the same data directory path (manifest format 3).
-
-- Go library: `github.com/lsm/dolmen/lakehouse` opens the lakehouse engine with
-  `dolmen.Open(dir, lakehouse.With(lakehouse.Config{...}))`; `file` fields work there too.
-
-- `dolmen backup` copies the files that `file` fields reference, listing each with its SHA-256 in
-  the manifest (format 2 when there are any), and `dolmen restore` verifies and restores them.
-  Backup no longer refuses a data directory that stores files.
-
-- **Lakehouse file fields**: multipart, URL and `copy_from` writes, idempotent replay,
-  downloads with row authorization, namespace cleanup, vacuum sweeping and schema-only
-  `set_file_constraints` now share SQLite's behavior. References are stored as Parquet strings;
-  blobs stay beside each namespace in its own `.files` directory.
-
-- Go library: `dolmen.FileCopy` and `dolmen.FileURL` record values, and `WithFileFetch(hosts,
-  timeout)` to let `FileURL` fetch.
-
-- File values can be `{"url": "https://…"}`: the server fetches the file, from hosts listed in the
-  new `-files-fetch-hosts` (off by default), bounded by `-files-fetch-timeout`. Non-public
-  addresses, URLs with credentials and redirects off the list are refused.
-
-- File values can be `{"copy_from": {"table", "id", "field"}}`, reusing a file another row the
-  caller can read already holds, in a plain JSON write or over MCP.
-
-- **File fields** (object storage, slice 1): a `file` field holds a SHA-256 reference to bytes
-  stored beside the namespace. `insert`, `update`, `upsert`, `upsert_by_key` and `batch` attach
-  files in the same call as `multipart/form-data` (`curl -F 'request=<json>' -F 'rec=@file'`), and
-  `GET /v1/files` downloads one by row. New flags
-  `-max-file-size`, `-max-namespace-files-size`, `-max-request-files-size` and
-  `-max-pending-files-size`. SQLite and lakehouse engines.
-
-- **New error code `storage_unavailable`** (503), reserved for the file store of `file` fields: the
-  store cannot take the write right now, and it may be retried. The Go library exports it as
-  `dolmen.ErrStorageUnavailable`.
-
-- Lakehouse filters run in their own SQL sidecar, so `query` can no longer read the unmasked views
-  filters use (`_dolmen_filter.<table>`), even through DuckDB's `query()` or `query_table()`.
-
-- Releases attach a `dolmen-duckdb` bundle per platform (`linux-amd64`, `linux-arm64`,
-  `darwin-arm64`, `windows-amd64`): the lakehouse SQL sidecar, the pinned DuckDB library and its
-  extensions, built by `sidecar/duckdb/package.sh`. CI tests the lakehouse against that bundle. The
-  release notes state that the SBOM does not cover the DuckDB components.
-
-- Lakehouse slice 14 makes `vacuum` compact: each table's live rows are rewritten into one Parquet
-  file in a single Iceberg commit, which drops its position-delete files, and older snapshots are
-  expired with the files only they referenced.
-
-- **New error code `sql_engine_unavailable`** (503): the lakehouse engine's DuckDB sidecar is
-  missing or failed to start. The Go library exports it as `dolmen.ErrSQLEngineUnavailable`.
-
-- Lakehouse slice 12 makes the engine selectable with `-engine lakehouse`. `-duckdb-sidecar` and
-  `-duckdb-extensions` locate the SQL sidecar. The engine now implements every operation: `batch`
-  (atomic, by snapshotting the namespace catalog and restoring it on failure or after a crash),
-  secret rotation, `vacuum` and `subscribe`. The served skills describe DuckDB SQL and the
-  lakehouse full-text grammar. `docs/lakehouse-operations.md` covers running it. CI runs the full
-  conformance suite and the black-box tests on it.
+  which a query could only name in double quotes, and suggest a replacement (#676). SQLite is
+  unchanged, and existing tables keep their names. `infer_schema` renames those words there
+  (`user` → `user_`) with the same warning as a SQLite keyword, so its proposal is one
+  `create_table` accepts (#688).
+- `dolmen backup` and `dolmen restore` take `-engine sqlite|lakehouse` (default `DOLMEN_ENGINE`,
+  then `sqlite`), and refuse a data directory holding the other engine's namespaces.
+- The served skills no longer call the lakehouse engine development-only.
 
 ## v0.6.0
 
