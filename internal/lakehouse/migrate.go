@@ -107,6 +107,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if _, err := store.ValidateTableDefinition(next.Name, []schema.Field{field}); err != nil {
 				return nil, nil, err
 			}
+			if err := store.ValidateEngineNames("duckdb", "", []schema.Field{field}); err != nil {
+				return nil, nil, err
+			}
 			if err := store.RequireSecretKey(s.secrets, []schema.Field{field}); err != nil {
 				return nil, nil, err
 			}
@@ -143,6 +146,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 				return nil, nil, err
 			}
 			if err := schema.ValidateIdent(ch.To, "field name"); err != nil {
+				return nil, nil, invalidf("%v", err)
+			}
+			if err := schema.ValidateEngineIdent("duckdb", ch.To, "field name"); err != nil {
 				return nil, nil, invalidf("%v", err)
 			}
 			if ch.To != ch.From {
