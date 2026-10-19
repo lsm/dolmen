@@ -301,7 +301,7 @@ func TestCopyFromReusesAFileWithoutReuploading(t *testing.T) {
 		}
 	}
 	missing := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": map[string]any{"copy_from": map[string]any{"table": "docs", "id": 99, "field": "doc"}}}}}
-	if code, body := h.httpCall("insert", missing); code != http.StatusBadRequest || !strings.Contains(errMessage(body), "copy_from names no file you can read") {
+	if code, body := h.httpCall("insert", missing); code != http.StatusBadRequest || !strings.Contains(errMessage(body), "copy_from names no file you can read") || !strings.Contains(errMessage(body), "read access to table docs") {
 		t.Fatalf("copy from a missing row: %d %v", code, body)
 	}
 }
@@ -317,7 +317,7 @@ func TestCopyFromNeverReachesAnotherPrincipalsRow(t *testing.T) {
 		t.Fatalf("alice insert: %d %v", code, body)
 	}
 	res, out := h.asIdentity(t, "bob", "", "insert", `{"namespace":"acme","table":"docs","records":[{"doc":{"copy_from":{"table":"docs","id":1,"field":"doc"}}}]}`)
-	if res.StatusCode != http.StatusBadRequest || !strings.Contains(errMessage(out), "copy_from names no file you can read") {
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(errMessage(out), "copy_from names no file you can read") || !strings.Contains(errMessage(out), "read access to table docs") {
 		t.Fatalf("bob copying alice's file: %d %v", res.StatusCode, out)
 	}
 	res, out = h.asIdentity(t, "alice", "", "insert", `{"namespace":"acme","table":"docs","records":[{"doc":{"copy_from":{"table":"docs","id":1,"field":"doc"}}}]}`)
@@ -335,7 +335,24 @@ func TestAURLValueTeachesTheAlternativeWhenFetchingIsOff(t *testing.T) {
 		t.Fatalf("http: %d %v", code, body)
 	}
 	env := h.mcpCall("insert", rec).toolError()
-	if msg, _ := env["message"].(string); !strings.Contains(msg, "multipart part") {
+	if msg, _ := env["message"].(string); !strings.Contains(msg, "-files-fetch-hosts") || !strings.Contains(msg, "ask the operator") || !strings.Contains(msg, "an MCP call cannot carry file bytes") {
 		t.Fatalf("mcp: %v", env)
+	}
+}
+
+func TestWritingBackAReadReferenceTeachesCopyFrom(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	if code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"doc":{"part":"f"}}]}`, map[string][]byte{"f": []byte("kept")}); code != http.StatusOK {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	ref := h.mustHTTP("read_rows", map[string]any{"namespace": "fil", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"]
+	rec := map[string]any{"namespace": "fil", "table": "docs", "records": []any{map[string]any{"doc": ref}}}
+	code, body := h.httpCall("insert", rec)
+	if code != http.StatusBadRequest || !strings.Contains(errMessage(body), `{"copy_from": {"table": "docs", "id": <id>, "field": "doc"}}`) {
+		t.Fatalf("http: %d %v", code, body)
+	}
+	if msg, _ := h.mcpCall("insert", rec).toolError()["message"].(string); !strings.Contains(msg, "copy_from") {
+		t.Fatalf("mcp: %v", msg)
 	}
 }
