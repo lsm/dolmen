@@ -845,7 +845,7 @@ var Ops = map[string]OpDef{
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"namespace": nsProp("Namespace to create the table in"),
-				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_/pragma_ prefix, __fts, or dbstat; not a SQLite/SQL keyword or reserved name)"),
+				"table":     tableProp("Table name (lowercase [a-z0-9_]; no sqlite_/pragma_ prefix, __fts, or dbstat; not a SQLite/SQL keyword or reserved name, nor on PostgreSQL or lakehouse a keyword that engine reserves)"),
 				"fields": map[string]any{
 					"type":        "array",
 					"description": "Field definitions",
