@@ -105,7 +105,8 @@ files once it holds the namespace's write lock, finds one gone, and fails with `
 | `-max-pending-files-size` | `8GiB` | Bytes all in-flight writes hold in temporary space, server-wide | `503` `storage_unavailable`, retry |
 
 A field's `media_types` refuses other types with `415`. The `request` part of a multipart write
-counts toward the ordinary 32 MiB body limit.
+counts toward the ordinary 32 MiB body limit. `describe_server` reports the limits a caller meets in its `files`
+object, with whether file fields work on the server and the fetch hosts.
 
 ## Fetching from URLs
 
