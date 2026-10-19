@@ -507,7 +507,7 @@ func (r *Request) placeCapped(ctx context.Context, ns string, p *part) error {
 			total -= info.Size
 		}
 		if total+p.size > s.cfg.MaxNamespaceFiles {
-			return &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files and run vacuum, or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
+			return &Error{Status: http.StatusInsufficientStorage, Code: derr.Internal, Message: fmt.Sprintf("namespace %s holds %d bytes of files and this %d-byte file would pass its -max-namespace-files-size of %d bytes, so nothing was written; clear file fields or delete rows that hold files, then have someone with admin on the namespace run vacuum to remove the unreferenced files; or have the operator raise the limit", ns, total, p.size, s.cfg.MaxNamespaceFiles)}
 		}
 		if err := s.blobs.Put(ctx, ns, p.sum, p.tmp); err != nil {
 			return storageErr(err)

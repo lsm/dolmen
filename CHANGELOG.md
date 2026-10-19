@@ -15,7 +15,8 @@
     addresses, credentials in URLs and redirects off the list are refused), and
     `{"copy_from": {"table", "id", "field"}}` reuses a file a readable row of the same namespace
     holds. `url`, `copy_from` and `null` work over MCP; a `{"part"}` sent over MCP says how to
-    send it instead.
+    send it instead, a refused fetch says to ask the operator for the host or send the file over
+    HTTP, and a refused `copy_from` mentions `read` access (#687).
   - Fields may declare `max_bytes` and `media_types`; `set_file_constraints` changes them and
     names the stored rows that would break them. File names are 1 to 255 bytes, without `/`, `\`,
     control or bidirectional characters, `.` or `..`.
@@ -31,7 +32,8 @@
   - Limits: `-max-file-size` (1 GiB), `-max-request-files-size` (2 GiB per write),
     `-max-namespace-files-size` (local store, unbounded by default) and `-max-pending-files-size`
     (8 GiB in flight). `vacuum` removes files no row references and reports `files_removed`,
-    `file_bytes_removed` and `file_bytes`; `drop_namespace` deletes them.
+    `file_bytes_removed` and `file_bytes`; `drop_namespace` deletes them. The quota refusal says
+    `vacuum` needs `admin`.
   - `describe_server` reports a `files` object: whether file fields work on this server and why
     not, the store, the limits and the fetch hosts.
   - `dolmen backup` copies the files the snapshot references, with their SHA-256 in the manifest,
@@ -71,7 +73,9 @@
 - On PostgreSQL and lakehouse, `create_table`, `add_field` and `rename_field` refuse a table or field
   name that engine reserves as a keyword (`user` on PostgreSQL, `pivot` on DuckDB, `any` on both),
   which a query could only name in double quotes, and suggest a replacement (#676). SQLite is
-  unchanged, and existing tables keep their names.
+  unchanged, and existing tables keep their names. `infer_schema` renames those words there
+  (`user` → `user_`) with the same warning as a SQLite keyword, so its proposal is one
+  `create_table` accepts (#688).
 - `dolmen backup` and `dolmen restore` take `-engine sqlite|lakehouse` (default `DOLMEN_ENGINE`,
   then `sqlite`), and refuse a data directory holding the other engine's namespaces.
 - The served skills no longer call the lakehouse engine development-only.

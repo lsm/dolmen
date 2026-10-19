@@ -99,9 +99,9 @@ func TestFetchRefusals(t *testing.T) {
 		f          *Fetcher
 		want       string
 	}{
-		{"disabled", srv.URL, NewFetcher(nil, 0), "does not fetch URLs"},
+		{"disabled", srv.URL, NewFetcher(nil, 0), "ask the operator to list the host in -files-fetch-hosts"},
 		{"scheme", "file:///etc/passwd", testFetcher(srv), "not an http or https URL"},
-		{"host outside the list", "http://other.example/x", testFetcher(srv), "not in -files-fetch-hosts"},
+		{"host outside the list", "http://other.example/x", testFetcher(srv), "ask the operator to list the host in -files-fetch-hosts"},
 		{"loopback", srv.URL, func() *Fetcher { f := testFetcher(srv); f.blocked = nonPublic; return f }(), "not public"},
 		{"redirect off the list", srv.URL + "/away", testFetcher(srv), "not in -files-fetch-hosts"},
 		{"upstream error", srv.URL + "/broken", testFetcher(srv), "HTTP 502; the fetch may be retried"},

@@ -96,6 +96,7 @@ func (s *Store) withFiles(ctx context.Context, maps []map[string]any) (context.C
 var libraryFetchWording = files.FetchWording{
 	Hosts:    "the hosts given to WithFileFetch",
 	Timeout:  "the WithFileFetch timeout",
+	Allow:    "add the host to WithFileFetch",
 	Fallback: "read the file yourself and pass a dolmen.FileUpload",
 }
 
