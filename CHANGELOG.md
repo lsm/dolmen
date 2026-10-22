@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- On PostgreSQL and lakehouse, an `update` whose filter matches no row now checks its file values
+  as SQLite does, so an oversized file or a `copy_from` naming no readable file is refused instead
+  of answering `updated: 0`.
+
 ## v0.7.0
 
 ### Added

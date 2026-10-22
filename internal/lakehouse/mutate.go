@@ -143,6 +143,17 @@ func (s *Store) checkSet(ctx context.Context, ns string, state tableState, set m
 	return values, cleared, nil
 }
 
+func (s *Store) checkFiles(ctx context.Context, ns string, state tableState, set map[string]any) error {
+	for _, f := range state.schema.Fields {
+		if v, ok := set[f.Name]; ok && v != nil && f.Type == schema.File {
+			if err := store.CheckFile(context.WithValue(ctx, namespaceHeldKey{}, ns), s, ns, f, v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Store) prepareSet(ctx context.Context, ns string, state tableState, set map[string]any, emb store.Embedder) (map[string]any, []string, error) {
 	sc := state.schema
 	values, cleared, err := s.checkSet(ctx, ns, state, set, false)
@@ -492,7 +503,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 		space, dim := state.schema.EmbedSpace, state.schema.EmbedDim
 		if len(ids) == 0 {
 			if !allowInsert {
-				return nil
+				return s.checkFiles(ctx, ns, state, set)
 			}
 			rows, err := s.prepareRows(ctx, ns, state, []map[string]any{set}, emb, stamp, opts.Owner)
 			if err != nil {

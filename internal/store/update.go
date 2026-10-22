@@ -145,7 +145,7 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 			return UpsertResult{}, true, invalidf("field %q is required and cannot be set to null", f.Name)
 		}
 		if f.Type == schema.File && v != nil && preMatched == 0 && !allowInsert {
-			if err := checkFile(ctx, s, nsName, f, v); err != nil {
+			if err := CheckFile(ctx, s, nsName, f, v); err != nil {
 				return UpsertResult{}, true, err
 			}
 			filesUnplaced = true

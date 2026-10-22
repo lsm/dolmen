@@ -191,6 +191,13 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			return store.InsertResult{}, err
 		}
 		if !matched && !allowInsert {
+			for _, f := range state.schema.Fields {
+				if v, ok := set[f.Name]; ok && v != nil && f.Type == schema.File {
+					if err := store.CheckFile(ctx, s, ns, f, v); err != nil {
+						return store.InsertResult{}, err
+					}
+				}
+			}
 			return store.InsertResult{}, nil
 		}
 		if !matched {
