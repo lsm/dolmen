@@ -155,7 +155,7 @@ func (s *Store) upsertByKeyRows(ctx context.Context, ns, table string, keys []st
 			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
+			if err := checkSameTable(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
 			if err := scopeUsable(scope, current.schema); err != nil {
@@ -252,6 +252,9 @@ func (s *Store) upsertByKeyRows(ctx context.Context, ns, table string, keys []st
 		}
 		if !retry {
 			return result, nil
+		}
+		if inBatch(ctx) {
+			return store.InsertResult{}, errBatchRetry
 		}
 	}
 	return store.InsertResult{}, fmt.Errorf("%w: table schema changed concurrently; retry the upsert", store.ErrInvalid)

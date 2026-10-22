@@ -247,6 +247,12 @@ The server adds an `owner` column and stamps it on every insert; callers never s
 caller sees depends on their verbs: `read` sees every row, any of `create`, `update` or `delete`
 without `read` sees only the rows that caller wrote, and `schema` or `admin` alone sees none.
 
+Two things it does not hide, by design: row ids come from one sequence shared by every owner, so an
+owner can tell from gaps in its ids that others wrote rows in between; and on a table **without**
+`row_access`, a principal holding only `create`, `update` or `delete` still sees the table's total
+`row_count` in `describe_table`, though not the rows. If that count must stay private, use
+`row_access: "own"`, where `row_count` counts only the caller's own rows.
+
 A table can adopt `row_access` later with the `migrate` change `{"op":"set_row_access","value":true}`,
 but only while it is empty, because no operation can assign existing rows to their owners. Turning
 it off keeps the `owner` values and needs `admin` as well as `schema` and `read`, because it widens
@@ -333,12 +339,14 @@ locked-out server.
   and replays the original row instead of diverging on a client-regenerated timestamp.
 - `describe_server` reports the embedding provider status without attempting a write: `provider`
   (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and —
-  for the `local` provider — `model_cached`, whether the model weights are complete on the server so
-  no first-use download is needed (`false` means the first vectorized write or `text` search
-  downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently —
-  retry, or pre-seed; with
-  `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no
-  download repairs it). `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries
+  for the `local` provider — `model_state`, which says what the next vectorized write or `text`
+  search will meet: `cached` (the weights are complete on the server, so no download is needed),
+  `download_on_first_use` (an ordinary first run — that first operation downloads a Hugging Face
+  model from the Hub, so it can take ten seconds or more and can fail transiently — retry, or
+  pre-seed), or
+  `incomplete` (with
+  `DOLMEN_EMBED_MODEL` naming a directory, that directory is not complete and no download repairs
+  it — an operator has to fix or replace it). `vectorize` in `create_table`/`migrate` and `search_vector` `text` queries
   fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from
   `identity` was embedded by a different provider/model and rejects inserts and text searches until
   it is re-embedded (`migrate` with `set_vectorize` off, then on).
@@ -348,8 +356,8 @@ locked-out server.
   `DOLMEN_EMBED_MODEL` at an absolute model-directory path — both forms skip the Hugging Face Hub
   entirely. Both the English default and the multilingual model (`intfloat/multilingual-e5-small`)
   ship as release tarballs. `describe_server`'s `usable` is
-  configuration-only — it does not load the model — but `model_cached` checks the model cache on
-  disk, so a pre-seed is confirmed by `model_cached` reporting true; an actual embedding round-trip
+  configuration-only — it does not load the model — but `model_state` checks the model cache on
+  disk, so a pre-seed is confirmed by `model_state` reporting `cached`; an actual embedding round-trip
   (insert + `search_vector` with `text`) remains the end-to-end check.
 - `create_namespace` is only for reserving a name up front (or failing loudly if it is taken) —
   namespaces are otherwise created implicitly on first use by the **write** ops (`create_table`,
@@ -387,6 +395,15 @@ locked-out server.
   standard functions is accepted; the error names anything refused. Per-day counts over the last two
   weeks: `SELECT date_trunc('day', started_at::timestamptz AT TIME ZONE 'UTC') AS day, count(*) FROM
   meetings WHERE started_at::timestamptz > now() - interval '14 days' GROUP BY 1 ORDER BY 1`.
+- **`json` fields are stored as text, so cast with `::jsonb` to use JSON operators and functions** in
+  `query` or a `filter`: `prefs::jsonb->>'lang'`, `ingredients::jsonb->0->>'item'`,
+  `jsonb_array_length(tags::jsonb)`, and containment as `tags::jsonb @> ?::jsonb` (bind the operand as
+  a JSON string, e.g. `["vegan"]`). The jsonb key-exists operator `?` cannot be used — it collides
+  with the `?` parameter placeholder, and shows up as `SQL has 1 placeholders but received 0
+  arguments` — so test membership with `@>` instead. Without the cast, `->>` on a json field fails
+  with a bare SQLSTATE 42883. An error that carries only a SQLSTATE in class 42 (42703 unknown
+  column, 42883 no such operator or function) means a name or type in your SQL is wrong: check it
+  against `describe_table`.
 {{ end }}
 - `changes_since` replays a namespace's durable change log instead of polling tables: each call returns the changes committed after the cursor plus `next_cursor`. Omit `cursor` to start at the current head (nothing replays; keep the returned `next_cursor` and later calls deliver only new commits), or pass `"begin"` to replay retained history. An optional `table` filters to that table. Changes carry `cursor`/`table`/`row_id`/`kind` only — re-read row content by id with `query` (`SELECT * FROM <table> WHERE id = ?`). A cursor older than the change-log retention window (default 7d) is rejected with an error telling you to restart from the head (omit `cursor`) or `"begin"`; cursors are per-feed, so a cursor from a `table`-filtered call only works on that same feed. Cursor tokens are minted per emission: a change re-read later carries a fresh token for the same commit, so the same commit yields different tokens on different reads — while a read that emits nothing returns the cursor you passed unchanged (the `wait_for` idle contract). Treat a token as a resume handle, never as an event id — and no frame field is one either: the same row updated twice yields two changes with identical `table`/`row_id`/`kind`. No stable per-event identifier is exposed; make processing idempotent and persist the cursor atomically with your side effects instead of deduplicating on frame content.
 - `wait_for` REPLACES polling: one call blocks server-side until a change commits after the cursor (or `timeout_ms` elapses, default 30000, max 60000), then returns exactly a `changes_since` page. A timeout is an **empty page plus the unchanged `next_cursor` — never an error**: pass `next_cursor` straight back into the next `wait_for` and loop. `timeout_ms: 0` is a cheap conditional poll (returns immediately). Same feed semantics as `changes_since` (`cursor` resume, `"begin"`, optional `table` filter); never re-derive the head between waits — always resume from the returned cursor. Like every read, a wait never creates its namespace — a missing one is `not_found` (create it first, then wait).
@@ -418,6 +435,19 @@ locked-out server.
   `idempotency_key` also returns `replayed` (`true` when the original ids were returned instead of
   inserting again).
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
+- `batch` applies several writes to one namespace in **one transaction**: either every write commits
+  or none does, and the results come back in the order the writes were given. Each entry in `writes`
+  is one of `insert`, `update`, `delete`, `upsert` or `upsert_by_key` with that operation's own
+  fields, plus a `kind` naming which (it is `kind`, not `op`). `namespace`, `idempotency_key`, `limit`
+  and `confirm` are set once at the top level and are **refused inside a write**, and so is `dry_run`
+  — a batch cannot mix a preview with writes that commit. An error names the failing write as
+  `writes[i]` and keeps that write's own error class; nothing is written when any write fails. One
+  `idempotency_key` covers the whole batch (a replay returns the stored results and says
+  `replayed: true`). At most 100 writes and 1,000 rows touched per batch (records inserted plus rows
+  matched by `update`/`upsert`/`delete`); run a larger delete as its own `delete`. With authentication
+  off, a batch into a namespace that does not exist creates it before its writes run, so it remains
+  even when the batch fails. Example:
+  `{"namespace":"crm","writes":[{"kind":"insert","table":"contacts","records":[{"email":"a@x.com"}]},{"kind":"update","table":"contacts","filter":"email = ?","args":["a@x.com"],"set":{"name":"Ada"}}]}`.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself. Its body takes
   `records` as a list, like `insert`: `{"namespace":"crm","table":"contacts","on":["email"],"records":[{"email":"ada@example.com","name":"Ada"}]}`.
 - Results honor declared field types in every read (`query`, `read_rows`, `search_fulltext`, `search_vector`):
@@ -463,13 +493,20 @@ locked-out server.
 {{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
 
 This server indexes `fulltext` fields with PostgreSQL's `english` text-search configuration
-(stemming, stop words and accent handling are PostgreSQL's) and ranks with `ts_rank_cd`, highest
+(stemming and stop words are PostgreSQL's) and ranks with `ts_rank_cd`, highest
 first, ties by id. Ranking is PostgreSQL's own and differs from a SQLite-backed server's BM25.
+
+Two tokenizer limits to know: **accents are not folded** (`cafe` does not match `café`; search and
+store the same form, or normalize before writing), and **CJK and emoji are not word-segmented** — a
+run of CJK with no spaces indexes as one token, so `豆腐` will not match inside `麻婆豆腐`, and emoji
+do not match at all. `tokenize` shows exactly how a given string is indexed; use it when a match is
+missing.
 
 Supported in `query`:
 
 - `payment refund` — both terms (implicit AND); `AND`, `OR` and binary `NOT` (`payment NOT refund`)
-  work as written, uppercase only.
+  work as written, uppercase only. `NOT` needs a term on its left, so a query cannot start with it,
+  and `AND`/`OR` need a term on each side.
 - `"refund processed"` — an exact phrase; also double-quote terms containing punctuation.
 - `pay*` — a prefix term.
 - Parentheses group expressions.
@@ -652,7 +689,9 @@ itself is shared — so copy the exact shape per op:
 
 - `set_fulltext` / `set_vectorize` — `name` + an explicit `value`, `true` to enable or `false` to
   disable (an omitted `value` is rejected, so a feature is never disabled by accident). Enabling is
-  only allowed on `string`/`text` fields, and `vectorize` on a second field is rejected. Re-asserting
+  only allowed on `string`/`text` fields, and `vectorize` on a second field is rejected. Under heavy
+  concurrent writes, enabling `vectorize` can answer `409 conflict` after losing to those writes;
+  the embeddings it finished are kept, so re-issue the same change. Re-asserting
   `set_fulltext` with `value: true` on an already-indexed field rebuilds the FTS index under the
   current tokenizer — the one-time reindex for tables created before stemming became the default
   (exact-token indexes keep working until reindexed; BM25 rank ordering shifts after):
@@ -721,18 +760,21 @@ A complete call, previewed first:
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |
+| NUL character (`\u0000`) | not allowed anywhere in a request: a name, value, json value, key, cursor or argument | rejected with `invalid_request` naming the field |
 | Ids per `read_rows` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII; omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
 | `search_vector` query vector | at most 4096 numbers | rejected before the request is decoded |
-| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls); every search response reports the `limit` it applied |
+| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default, on `/v1` and MCP alike); every search response reports the `limit` it applied |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
-| Time per `migrate` | unbounded by default; the operator can set a limit | `timeout` (504): the migration is stopped; check the table's version with `describe_table` before retrying |
+{{ if eq .Dialect "postgresql" }}| Database connections | the database's own connection limit, shared by every request and open subscription | `timeout` (504) saying the database is at its connection limit: nothing was started, so retry shortly |
+{{ end }}| Time per `migrate` | unbounded by default; the operator can set a limit | `timeout` (504): the migration is stopped; check the table's version with `describe_table` before retrying |
 | `query` / search filter `args` | 100 | rejected |
 | `infer_schema` samples | 1–50 | rejected |
 
@@ -775,7 +817,7 @@ Validation notes:
   provider is enabled by default; `describe_server` reports the active provider, its identity, and
   whether server-side embedding is usable.
 - `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same
-  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes. Never
+  key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key or one over 256 bytes, so other characters are accepted but not recommended. Never
   regenerate a timestamp in a retried record — the body must be byte-identical to replay; a timestamp
   column a retry would stamp (e.g. `updated_at`) should be declared `default: "now()"` at
   `create_table` and omitted from records.

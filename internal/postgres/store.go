@@ -96,9 +96,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"invalid connection string", errors.Join(store.ErrInvalid, err)}
 	}
-	if cfg.MaxConns > 0 {
-		pc.MaxConns = cfg.MaxConns
-	}
+	pc.MaxConns = poolSize(cfg.MaxConns, cfg.DSN, pc.MaxConns)
 	if pc.ConnConfig.ConnectTimeout == 0 {
 		pc.ConnConfig.ConnectTimeout = 10 * time.Second
 	}
@@ -110,6 +108,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, &connectionError{"open pool", err}
 	}
+	startSQLParser()
 	s := &Store{pool: pool, catalog: cfg.Catalog, queryRole: cfg.QueryRole, done: make(chan struct{}), changeRetention: retention, now: time.Now, sharedFilter: cfg.SharedFilter, secrets: cfg.Secrets, tr: newTracer(cfg.TracerProvider, pool)}
 	if err = pool.Ping(ctx); err == nil {
 		err = s.bootstrap(ctx)

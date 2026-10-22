@@ -64,7 +64,7 @@ func (s *Store) compileMutationFilter(ctx context.Context, tx pgx.Tx, n namespac
 	prefix, source, lead := scopedSource(ident(state.incarnation.Table), scope)
 	query := prefix + "SELECT id FROM " + source + " WHERE " + filter + " ORDER BY id"
 	bound := append(append([]any{}, lead...), args...)
-	compiled, _, err := compileFilterSQL(query, len(bound), n.physical, map[string]tableState{state.incarnation.Table: state})
+	compiled, _, err := compileFilterSQL(ctx, query, len(bound), n.physical, map[string]tableState{state.incarnation.Table: state})
 	if err != nil {
 		return "", nil, filterSyntaxError(filter, err)
 	}
@@ -207,7 +207,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 			if err := s.guardScope(ctx, tx, n, table, current, expected); err != nil {
 				return err
 			}
-			if err := checkIncarnation(ns, current.incarnation, state.incarnation); err != nil {
+			if err := checkSameTable(ns, current.incarnation, state.incarnation); err != nil {
 				return err
 			}
 			now, _ := json.Marshal(current.schema)
@@ -272,6 +272,9 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 		}
 		if !retry {
 			return result, nil
+		}
+		if inBatch(ctx) {
+			return store.InsertResult{}, errBatchRetry
 		}
 	}
 	return store.InsertResult{}, fmt.Errorf("%w: table schema changed concurrently; retry the mutation", store.ErrInvalid)
@@ -352,7 +355,11 @@ func (s *Store) deleteRows(ctx context.Context, ns, table, filter string, args [
 			limit = int64(opts.Limit)
 		}
 		if result.Matched > limit && !opts.Confirm {
-			return fmt.Errorf("%w: filter matched %d rows, exceeding the delete limit of %d; pass confirm: true to proceed or dry_run: true to preview", store.ErrInvalid, result.Matched, limit)
+			advice := "pass confirm: true to proceed or dry_run: true to preview"
+			if opts.NoDryRunAdvice {
+				advice = "pass confirm: true to proceed"
+			}
+			return fmt.Errorf("%w: filter matched %d rows, exceeding the delete limit of %d; %s", store.ErrInvalid, result.Matched, limit, advice)
 		}
 		if len(ids) == 0 {
 			return nil

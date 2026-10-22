@@ -246,32 +246,42 @@ func (c *ftsCompiler) param(v any) string {
 }
 
 func (c *ftsCompiler) emit(node tsNode) string {
+	var b strings.Builder
+	c.write(&b, node)
+	return b.String()
+}
+
+func (c *ftsCompiler) write(b *strings.Builder, node tsNode) {
 	switch n := node.(type) {
 	case tsTerm:
 		if !n.prefix {
-			return "plainto_tsquery('" + ftsConfig + "'," + c.param(n.text) + ")"
+			b.WriteString("plainto_tsquery('" + ftsConfig + "'," + c.param(n.text) + ")")
+			return
 		}
 		if !simpleLexeme(n.text) {
 			if c.err == nil {
 				c.err = invalidf("query %q: prefix search needs a plain word before %q; double-quote %q to search it as a phrase instead", c.match, "*", n.text)
 			}
-			return "plainto_tsquery('" + ftsConfig + "'," + c.param(n.text) + ")"
+			b.WriteString("plainto_tsquery('" + ftsConfig + "'," + c.param(n.text) + ")")
+			return
 		}
-		return "to_tsquery('" + ftsConfig + "'," + c.param("'"+n.text+"':*") + ")"
+		b.WriteString("to_tsquery('" + ftsConfig + "'," + c.param("'"+n.text+"':*") + ")")
 	case tsPhrase:
-		return "phraseto_tsquery('" + ftsConfig + "'," + c.param(n.text) + ")"
+		b.WriteString("phraseto_tsquery('" + ftsConfig + "'," + c.param(n.text) + ")")
 	case tsBinary:
-		left := c.emit(n.left)
-		right := c.emit(n.right)
+		b.WriteString("(")
+		c.write(b, n.left)
 		switch n.op {
 		case '|':
-			return "(" + left + " || " + right + ")"
+			b.WriteString(" || ")
 		case '!':
-			return "(" + left + " && !! " + right + ")"
+			b.WriteString(" && !! ")
+		default:
+			b.WriteString(" && ")
 		}
-		return "(" + left + " && " + right + ")"
+		c.write(b, n.right)
+		b.WriteString(")")
 	}
-	return ""
 }
 
 func compileFTSQuery(match string, offset int) (string, []any, error) {

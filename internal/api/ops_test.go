@@ -509,8 +509,15 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for",
 		[]byte(fmt.Sprintf(`{"namespace":"rt","cursor":%q,"timeout_ms":0}`, head)))
-	if err == nil {
-		t.Fatalf("starved first read returned a page (%v) — an unvalidated feed must not be answered with a timeout page", res)
+	if err != nil {
+		t.Fatalf("starved first read behind the caller's own cursor must answer the empty page, not %v", err)
+	}
+	page = res.(map[string]any)
+	if changes, _ := page["changes"].([]any); len(changes) != 0 {
+		t.Fatalf("starved first read = %v changes, want an empty page", len(changes))
+	}
+	if got, _ := page["next_cursor"].(string); got != string(head) {
+		t.Fatalf("starved first read handed back %q, want the caller's own cursor %q so the next wait resumes from the same token", got, head)
 	}
 	if held := time.Since(start); held > 1200*time.Millisecond {
 		t.Fatalf("starved first read held %v — the tick floor must bound it, not the stall", held)
@@ -519,7 +526,7 @@ func TestWaitForReadsBoundedByDeadline(t *testing.T) {
 	start = time.Now()
 	res, err = unvalidated.Dispatch(context.Background(), "wait_for", []byte(`{"namespace":"rt","timeout_ms":0}`))
 	if err == nil {
-		t.Fatalf("starved bare start returned a page (%v) — an unestablished boundary must not be answered with a timeout page", res)
+		t.Fatalf("starved bare start returned a page (%v) — a caller that passed no cursor has no boundary to be handed back, and an empty next_cursor cannot be resumed from", res)
 	}
 	if held := time.Since(start); held > 1200*time.Millisecond {
 		t.Fatalf("starved bare start held %v — the budget must bound it, not the stall", held)
@@ -2524,25 +2531,25 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 			},
 		},
 		{
-			name: "local with an uncached model stays usable and reports model_cached false",
+			name: "local with an uncached model names the first-run download rather than a fault",
 			emb:  &embed.Local{Model: "sentence-transformers/all-MiniLM-L6-v2"},
 			want: map[string]any{
-				"provider":     "local",
-				"model":        "sentence-transformers/all-MiniLM-L6-v2",
-				"identity":     "local/sentence-transformers/all-MiniLM-L6-v2",
-				"usable":       true,
-				"model_cached": false,
+				"provider":    "local",
+				"model":       "sentence-transformers/all-MiniLM-L6-v2",
+				"identity":    "local/sentence-transformers/all-MiniLM-L6-v2",
+				"usable":      true,
+				"model_state": embed.ModelStateDownloadOnFirstUse,
 			},
 		},
 		{
-			name: "local with a cached model reports model_cached true",
+			name: "local with a cached model reports the cached state",
 			emb:  localStub("sentence-transformers/all-MiniLM-L6-v2", 4),
 			want: map[string]any{
-				"provider":     "local",
-				"model":        "sentence-transformers/all-MiniLM-L6-v2",
-				"identity":     "local/sentence-transformers/all-MiniLM-L6-v2",
-				"usable":       true,
-				"model_cached": true,
+				"provider":    "local",
+				"model":       "sentence-transformers/all-MiniLM-L6-v2",
+				"identity":    "local/sentence-transformers/all-MiniLM-L6-v2",
+				"usable":      true,
+				"model_state": embed.ModelStateCached,
 			},
 		},
 		{
@@ -2557,14 +2564,14 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 		emb  embed.Provider
 		want map[string]any
 	}{
-		name: "local with an incomplete absolute model directory reports model_cached false",
+		name: "an incomplete absolute model directory reports the state that will not repair itself",
 		emb:  &embed.Local{Model: absModel},
 		want: map[string]any{
-			"provider":     "local",
-			"model":        absModel,
-			"identity":     "local/" + absModel,
-			"usable":       true,
-			"model_cached": false,
+			"provider":    "local",
+			"model":       absModel,
+			"identity":    "local/" + absModel,
+			"usable":      true,
+			"model_state": embed.ModelStateIncomplete,
 		},
 	})
 	for _, tc := range cases {
@@ -2588,6 +2595,61 @@ func TestDescribeServerEmbeddingStatus(t *testing.T) {
 				t.Fatalf("describe_server must never expose the provider API key: %v", res)
 			}
 		})
+	}
+}
+
+func TestDescribeServerSeparatesAFirstRunFromABrokenModel(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	state := func(t *testing.T, emb embed.Provider) string {
+		t.Helper()
+		srv := httptest.NewServer(New(st, emb).Handler())
+		t.Cleanup(srv.Close)
+		code, res := post(t, srv.URL, "describe_server", map[string]any{})
+		if code != 200 {
+			t.Fatalf("describe_server failed: %d %v", code, res)
+		}
+		block, _ := res["data"].(map[string]any)["embedding"].(map[string]any)
+		got, _ := block["model_state"].(string)
+		return got
+	}
+
+	firstRun := state(t, &embed.Local{Model: "sentence-transformers/all-MiniLM-L6-v2"})
+	broken := state(t, &embed.Local{Model: t.TempDir()})
+
+	if firstRun != embed.ModelStateDownloadOnFirstUse {
+		t.Fatalf("a Hugging Face model that is not on disk yet = %q, want %q: that is a first run, and a caller has to be able to tell it from a fault without reading prose", firstRun, embed.ModelStateDownloadOnFirstUse)
+	}
+	if broken != embed.ModelStateIncomplete {
+		t.Fatalf("an incomplete model directory = %q, want %q: no download repairs that, so it must not read as an ordinary first run", broken, embed.ModelStateIncomplete)
+	}
+	if firstRun == broken {
+		t.Fatalf("both states report %q, so a caller cannot tell a first run from a model that will not repair itself", firstRun)
+	}
+}
+
+func TestDescribeServerAdvertisesTheModelStateValues(t *testing.T) {
+	def := Ops["describe_server"]
+	emb, _ := def.OutputSchema["properties"].(map[string]any)["embedding"].(map[string]any)
+	props, _ := emb["properties"].(map[string]any)
+	state, ok := props["model_state"].(map[string]any)
+	if !ok {
+		t.Fatalf("describe_server must advertise model_state, got %v", props)
+	}
+	if _, retired := props["model_cached"]; retired {
+		t.Fatalf("model_cached reads as a fault on a first run and must be gone, got %v", props)
+	}
+	want := []string{embed.ModelStateCached, embed.ModelStateDownloadOnFirstUse, embed.ModelStateIncomplete}
+	got, _ := state["enum"].([]string)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("model_state enum = %v, want %v: a caller reading the schema has to see the three states", got, want)
+	}
+	if state["type"] != "string" {
+		t.Fatalf("model_state type = %v, want string", state["type"])
 	}
 }
 

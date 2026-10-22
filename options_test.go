@@ -17,3 +17,22 @@ func TestWithVectorCacheBytesRefusesANegativeSize(t *testing.T) {
 	}
 	st.Close()
 }
+
+func TestWithEngineRefusesAnUnimplementedEngine(t *testing.T) {
+	for _, name := range []string{"postgres", "lakehouse"} {
+		st, err := Open(t.TempDir(), WithEngine(name))
+		if st != nil {
+			st.Close()
+			t.Fatalf("WithEngine(%q) opened a store, want a refusal", name)
+		}
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("WithEngine(%q) = %v, want invalid_request", name, err)
+		}
+		if !strings.Contains(err.Error(), "WithEngine") {
+			t.Fatalf("WithEngine(%q) refusal %q does not name the option", name, err)
+		}
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("WithEngine(%q) refusal %q does not name the engine", name, err)
+		}
+	}
+}

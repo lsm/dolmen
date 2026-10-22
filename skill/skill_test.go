@@ -613,7 +613,7 @@ func TestAPostgreSQLServerServesPostgreSQLGuidance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"This server is PostgreSQL-backed", "Full-text search syntax (PostgreSQL)", "::timestamptz", "`field:term` column filter"} {
+		for _, want := range []string{"This server is PostgreSQL-backed", "Full-text search syntax (PostgreSQL)", "::timestamptz", "`field:term` column filter", "| Database connections |"} {
 			if !strings.Contains(string(pg), want) {
 				t.Fatalf("%s on a PostgreSQL server must say %q", name, want)
 			}
@@ -631,7 +631,7 @@ func TestAPostgreSQLServerServesPostgreSQLGuidance(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(sq), "PostgreSQL-backed") || !strings.Contains(string(sq), "### Full-text (FTS5) search syntax") {
+			if strings.Contains(string(sq), "PostgreSQL-backed") || strings.Contains(string(sq), "| Database connections |") || !strings.Contains(string(sq), "### Full-text (FTS5) search syntax") {
 				t.Fatalf("%s on a %q server must keep the SQLite guidance", name, dialect)
 			}
 		}

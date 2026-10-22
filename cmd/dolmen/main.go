@@ -258,12 +258,11 @@ func newEmbedProvider(cfg *config) (embed.Provider, error) {
 	}
 	if l, ok := emb.(*embed.Local); ok {
 		slog.Info("local embedding provider", "model", l.Model, "cache", "under the data directory (first use loads from the cache; downloads from the Hugging Face Hub only if the model is not pre-seeded)")
-		if !l.Cached() {
-			if l.HubModel() {
-				slog.Warn("local embedding model is not cached; the first vectorized write will download it from the Hugging Face Hub", "model", l.Model)
-			} else {
-				slog.Warn("configured local model directory is incomplete; no download repairs it — fix or replace the directory (DOLMEN_EMBED_MODEL)", "model", l.Model)
-			}
+		switch l.ModelState() {
+		case embed.ModelStateDownloadOnFirstUse:
+			slog.Warn("local embedding model is not cached; the first vectorized write will download it from the Hugging Face Hub", "model", l.Model)
+		case embed.ModelStateIncomplete:
+			slog.Warn("configured local model directory is incomplete; no download repairs it — fix or replace the directory (DOLMEN_EMBED_MODEL)", "model", l.Model)
 		}
 	}
 	return emb, nil
@@ -376,7 +375,7 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 
 	addr := fs.String("addr", envOr("DOLMEN_ADDR", "127.0.0.1:8790", getenv), "listen address")
 	dataDir := fs.String("data", envOr("DOLMEN_DATA", "data", getenv), "data directory (one SQLite file per namespace)")
-	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine: sqlite (default) or postgres")
+	engine := fs.String("engine", getenv("DOLMEN_ENGINE"), "storage engine: sqlite (default) or postgres; lakehouse is designed but not implemented and is refused")
 	pgDSN := fs.String("pg-dsn", getenv("DOLMEN_PG_DSN"), "PostgreSQL connection string; required when -engine postgres")
 	pgCatalog := fs.String("pg-catalog", getenv("DOLMEN_PG_CATALOG"), "PostgreSQL catalog schema (default dolmen_catalog)")
 	pgQueryRole := fs.String("pg-query-role", getenv("DOLMEN_PG_QUERY_ROLE"), "pre-provisioned restricted role that caller SQL runs as; required for the query op")
@@ -454,6 +453,12 @@ func loadConfig(args []string, getenv func(string) string, lookupEnv func(string
 	}
 	if *engine == store.EnginePostgres && *pgDSN == "" {
 		err := fmt.Errorf("engine %q needs a connection; pass -pg-dsn or set DOLMEN_PG_DSN", store.EnginePostgres)
+		fmt.Fprintf(out, "config: %v\n", err)
+		fs.Usage()
+		return nil, &printedError{err}
+	}
+	if *engine == store.EngineLakehouse {
+		err := fmt.Errorf("engine %q is not implemented yet; it is designed in docs/design/lakehouse-plan.md, and until it lands use -engine sqlite (the default) or -engine postgres", store.EngineLakehouse)
 		fmt.Fprintf(out, "config: %v\n", err)
 		fs.Usage()
 		return nil, &printedError{err}
@@ -759,7 +764,7 @@ func printEnvHelp(out io.Writer) {
 	help := []envHelp{
 		{"DOLMEN_ADDR", "listen address (default 127.0.0.1:8790)"},
 		{"DOLMEN_DATA", "data directory (default data)"},
-		{"DOLMEN_ENGINE", "storage engine: sqlite (default) or postgres"},
+		{"DOLMEN_ENGINE", "storage engine: sqlite (default) or postgres; lakehouse is refused until it is implemented"},
 		{"DOLMEN_PG_DSN", "PostgreSQL connection string, required with the postgres engine"},
 		{"DOLMEN_PG_CATALOG", "PostgreSQL catalog schema (default dolmen_catalog)"},
 		{"DOLMEN_PG_QUERY_ROLE", "pre-provisioned NOLOGIN role that caller SQL runs as"},

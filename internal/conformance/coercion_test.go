@@ -158,7 +158,7 @@ func TestTypedReadAliasesAndFallbacks(t *testing.T) {
 	assertJSONEqual(t, "undeclared expression label", row["doubled"], float64(14))
 
 	t.Run("sqlite cast to blob under an undeclared label reads as base64", func(t *testing.T) {
-		sqliteOnly(t)
+		sqliteDialectOnly(t)
 		row := h.mustHTTP("query", map[string]any{
 			"namespace": "alias", "sql": "SELECT CAST('hello' AS BLOB) AS blobby FROM a",
 		})["rows"].([]any)[0].(map[string]any)
@@ -169,7 +169,7 @@ func TestTypedReadAliasesAndFallbacks(t *testing.T) {
 	})
 
 	t.Run("sqlite unions a boolean and a string under one label", func(t *testing.T) {
-		sqliteOnly(t)
+		sqliteDialectOnly(t)
 		rows := h.mustHTTP("query", map[string]any{
 			"namespace": "alias", "sql": "SELECT flag FROM a UNION ALL SELECT flag FROM b",
 		})["rows"].([]any)

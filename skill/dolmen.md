@@ -122,6 +122,12 @@ up in a result, a count, or an error. Never send an `owner` field; the server st
 supplying it is refused like any unknown field. Idempotency keys are yours alone, so the same
 string used by someone else is a different key.
 
+Two things `row_access` does not hide: row ids are shared by every owner, so gaps in the ids you
+see mean other owners wrote rows in between; and on a table **without** `row_access`, a caller
+holding only `create`, `update` or `delete` still sees the table's total `row_count` in
+`describe_table`, though not the rows. Use `row_access: "own"` when even that count must stay
+private — there, `row_count` counts only your own rows.
+
 With authentication off, a `filter` is a plain SQL WHERE expression in the server's dialect
 (`filter_dialect` in `capabilities`). **Filters under authentication** are checked against a fixed allowlist, in SQLite's semantics on every engine: comparison, arithmetic,
 `||` and boolean operators, `LIKE`, `IN`, `BETWEEN`, `IS`, `CASE`, and the functions `abs`,
@@ -242,6 +248,9 @@ every `/v1` call):
   the parameter for the namespace-wide feed. A table-filtered feed has its own cursors.
 - `cursor` (optional) — an opaque resume token or the literal `begin`. Omitted = start at the
   current head (future commits only). An explicitly empty value is rejected.
+- `Last-Event-ID` request header (optional) — a resume token, as a browser `EventSource` sends on
+  reconnect. When present it takes precedence over `cursor`, so a reconnecting `EventSource` resumes
+  where it left off instead of starting over.
 
 Request-shape failures (wrong method, an omitted `namespace` parameter, an empty `table` or
 `cursor` value) are ordinary HTTP errors — the standard envelope — before any stream bytes go
@@ -251,7 +260,9 @@ the stream discovers afterwards arrives as an in-stream `error` event, because a
 
 ### Frames
 
-Each frame is a named event (`event: <name>`) whose `data` is one compact JSON line:
+Each frame is a named event (`event: <name>`) whose `data` is one compact JSON line. `change`,
+`ready` and `close` frames also carry their cursor as the SSE `id:`, so an `EventSource` tracks the
+resume point for you:
 
 | Event | `data` | Meaning |
 |---|---|---|
@@ -259,6 +270,11 @@ Each frame is a named event (`event: <name>`) whose `data` is one compact JSON l
 | `change` | `{"cursor":"...","table":"...","row_id":N,"kind":"insert\|update\|delete"}` | One changed row per frame — a batch write (multi-record `insert`, filter-matched `update`/`delete`) mints one change-log record per affected row — delivered in commit order; the same four-field identity projection as `changes_since` changes. Re-read the row by id (`read_rows`, or `query` with a `WHERE id = ?`); a `delete` change names a row that is already gone. |
 | `close` | `{"cursor":"..."}` | Sent before every server-initiated terminal, carrying the last-delivered cursor — the reconnect token. |
 | `error` | `{"ok":false,"error":{"code","message","request_id"}}` | The terminal frame: the standard error envelope as the event data. Nothing follows it. |
+
+When the database is at its connection limit, a stream can send `ready` and then `close` followed
+by a `timeout` error; reconnect from the `close` cursor. A client that stops reading is cut off once
+a frame cannot be written within 10 seconds, and cannot be sent a terminal frame; reconnect with the
+last `id` you received.
 
 An idle stream is not silent: between change deliveries the server sends a `: keepalive`
 comment frame every 20 seconds (the 15–30 s heartbeat band's chosen point). It is an SSE
@@ -285,7 +301,7 @@ send only the `error` event, since nothing was delivered. The messages are the r
 - Target ended: `the subscription's target ended (a dropped table, or a dropped or replaced
   namespace); reconnect against the current target — a same-named successor is a different feed`
 - Authorization revoked (code `forbidden`): `subscription authorization was revoked; reconnect once authorization is
-  restored`. The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
+  restored, or with another credential if this one was revoked`. The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
   so a revoked caller's stream ends within about 20 seconds even when nothing is being written.
 - Own-row feed over unlabelled history: `this feed still retains changes recorded before rows
   carried an owner, and a caller restricted to their own rows cannot be shown them or told they
@@ -320,17 +336,18 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 
 ## Quick reference
 
-- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`.
+- Core tools: `describe_server`, `list_namespaces`, `list_tables`, `describe_table`, `insert`, `query`, `search_fulltext`, `tokenize` (takes `namespace`, `table` and `text`), `search_vector`, `changes_since`, `wait_for`, `delete`, `batch` (several writes in one transaction — see below).
 - Schema types: `string`, `text` (long, searchable), `number`, `boolean`, `timestamp`, `json`, `vector` (caller-supplied embeddings; requires a separate `"dim": N` property on the field), and `secret` (a string encrypted at rest; see below).
 - `secret` fields read back as the fixed mask `"••••"` (or `null` when unset) in every read: `read_rows`, both searches, and `query`. To get the plaintext, name the field in `reveal` on `read_rows`, `search_fulltext` or `search_vector` (`"reveal": ["api_token"]`); `query` never reveals. `query` reads the mask in place of the stored bytes, whatever alias or expression you wrap it in, and search `filter`s evaluate against the ciphertext, so never filter or join on a secret field. Under `-auth on` reveal needs the `reveal` verb (a `forbidden` error names it; `admin` does not imply it), and every reveal is audit-logged without the value. Writing a secret needs the server's secret key; without it the write is refused. Never write a masked value back: `"••••"` is refused as a secret value, because storing it would destroy the real one — pass the real value, `reveal` it first, or omit the field to leave it alone.
 - Field annotations: `fulltext: true` (FTS5 search), `vectorize: true` (server embeds this field — enables `search_vector` with `text`; the built-in `local` provider is enabled by default; set `DOLMEN_EMBED_PROVIDER=openai` for an external endpoint, or `none` to disable server-side embeddings), `required: true`, `enum: [values]` (closed vocabulary for a string field — writes with any other value are rejected naming the field, the value, and the allowed list; exact match, no case folding; a declared `default` must be a member), `shape` on a `json` field (`object`, `array`, `array<string>`, `array<number>`, `array<boolean>` or `array<object>` — writes of any other shape are rejected naming the field, the expected shape and what arrived, so send tags as `["db","sqlite"]`, never `"db,sqlite"`; omit it for free-form JSON).
-- `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_cached`, whether the model weights are complete on the server so no first-use download is needed (`false` means the first vectorized write or `text` search downloads a Hugging Face model, so it can take ten seconds or more and can fail transiently — retry, or pre-seed; with `DOLMEN_EMBED_MODEL` naming a directory, `false` means the directory is incomplete and no download repairs it). `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
+- `describe_server` reports the embedding provider status without attempting a write: `provider` (`none` / `local` / `openai`), `model`, the `identity` that pins vectorized tables, `usable`, and — for the `local` provider — `model_state`, which says what the next vectorized write or `text` search will meet: `cached` (the weights are complete on the server, so nothing is downloaded), `download_on_first_use` (an ordinary first run — that first operation downloads a Hugging Face model from the Hub, which can take ten seconds or more and can fail transiently, so retry or pre-seed the cache), or `incomplete` (`DOLMEN_EMBED_MODEL` names a model directory that is not complete, which no download repairs — an operator has to fix or replace it). Read the state before deciding whether semantic search is safe: `download_on_first_use` is a normal cold start, not a broken feature. `vectorize` fields and `search_vector` `text` queries fail while `usable` is false; a table whose `embed_space` (see `describe_table`) differs from `identity` was embedded by a different provider/model and rejects inserts and text searches until it is re-embedded.
 - `query` parameters: use `?` placeholders and pass `args` — never interpolate values into SQL.
 - `truncated: true` means the response left results out. On `query`, `search_fulltext` and `search_vector`, more exist beyond the page, cut either by `limit` (1,000 rows by default and at most on `query`; 10 by default and 200 at most on the searches) or by the 32 MiB response budget, so fetch the next page with `offset`. On `read_rows` only the budget cuts, so retry with fewer ids.
 - Paging a result set you are reading uses `offset`, as above. Walking a **whole table** to export or copy it uses a keyset on `id` instead — see "Export a table by keyset paging" for the loop and for the two things such an export cannot carry.
 - Both searches score every hit as `_score`, higher being more relevant, and return results in that order. The two scales are different and engine-specific — full-text relevance is the engine's own ({{ if eq .Dialect "postgresql" }}PostgreSQL `ts_rank_cd`{{ else }}FTS5 BM25, negated so higher wins{{ end }}), vector `_score` is cosine similarity — so compare scores only within one query's results, never across queries, tables or servers, and never threshold full-text `_score` against a fixed number.
 - `search_fulltext` and `search_vector` accept an optional `filter` — a SQL WHERE expression over the table's columns with `?`-bound `args` (same quoting rules as `query`) — applied before ranking.
 - `delete` requires a `filter` (SQL WHERE expression); use `"1=1"` only when you truly mean everything. A `delete` matching more than 1,000 rows is refused unless you raise `limit` above the match count or pass `confirm: true`; `dry_run: true` reports `matched` without deleting.
+- `batch` applies several writes to one namespace in **one transaction**: either every write commits or none does, and the results come back in the order you sent the writes. Each entry in `writes` is one of `insert`, `update`, `delete`, `upsert` or `upsert_by_key` with that operation's own fields, plus a `kind` naming which. `namespace` and `idempotency_key` are set once at the top level and are **refused inside a write**, and so is `dry_run` — a batch cannot mix a preview with writes that commit. An error names the failing write as `writes[i]` and keeps that write's own error class, and nothing is written when any write fails. One `idempotency_key` covers the whole batch: re-sending the identical body returns the stored results and writes nothing, and the response says `replayed: true`. Use one batch when the writes belong together, and several smaller batches rather than one large one when they do not — a batch holds the server's single writer for its whole duration, provider round trips for `vectorize` fields included. With authentication off, a batch into a namespace that does not exist creates the namespace before its writes run, so the namespace remains even when the batch fails.
 {{ if eq .Dialect "postgresql" }}- **This server is PostgreSQL-backed.** `query`, and `filter` when authentication is off, are
   PostgreSQL SQL (`capabilities` reports `query_dialect`/`filter_dialect` as `postgresql`). SQLite
   functions such as `date()`, `strftime()`, `julianday()`, `iif()`, `instr()` and `ifnull()` do
@@ -340,8 +357,17 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
   standard functions is accepted; the error names anything refused. Per-day counts over the last two
   weeks: `SELECT date_trunc('day', started_at::timestamptz AT TIME ZONE 'UTC') AS day, count(*) FROM
   meetings WHERE started_at::timestamptz > now() - interval '14 days' GROUP BY 1 ORDER BY 1`.
+- **`json` fields are stored as text, so cast with `::jsonb` to use JSON operators and functions** in
+  `query` or a `filter`: `prefs::jsonb->>'lang'`, `ingredients::jsonb->0->>'item'`,
+  `jsonb_array_length(tags::jsonb)`, and containment as `tags::jsonb @> ?::jsonb` (bind the operand as
+  a JSON string, e.g. `["vegan"]`). The jsonb key-exists operator `?` cannot be used — it collides
+  with the `?` parameter placeholder, and shows up as `SQL has 1 placeholders but received 0
+  arguments` — so test membership with `@>` instead. Without the cast, `->>` on a json field fails
+  with a bare SQLSTATE 42883. An error that carries only a SQLSTATE in class 42 (42703 unknown
+  column, 42883 no such operator or function) means a name or type in your SQL is wrong: check it
+  against `describe_table`.
 {{ end }}- `drop_table` / `drop_namespace` are irreversible deletions and are **not** part of this skill; do not use them. Ask the user to use `dolmen-admin` if a table or namespace must go.
-- `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes.
+- `insert` with an `idempotency_key` (any unique string) makes retries replay the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key or one over 256 bytes, so other characters are accepted but not recommended.
 - Every table has implicit `id` and `created_at` columns; `SELECT *` includes them.
 - Results honor declared field types in every read (`query`, `search_fulltext`, `search_vector`): `boolean` → `true`/`false`, `json` → the decoded value, `vector` → a number array, `secret` → the mask `"••••"` unless revealed, SQL `NULL` → `null`. In `query`, coercion is by result-column label (aliases count as their label); labels that match no declared field fall back to raw values (blobs as base64).
 - The hidden `_embedding` column (from `vectorize`) is excluded from `SELECT *` and search results; pass `include_hidden: true` to a search when you really need it. Naming it in `query` SQL (outside string literals and comments) also works where the backend exposes it to caller SQL, but that is backend-dependent — `include_hidden: true` is the portable way to reach it.
@@ -365,13 +391,20 @@ stream is catching up — and `cursor=begin` will be refused again, so reconnect
 {{ if eq .Dialect "postgresql" }}### Full-text search syntax (PostgreSQL)
 
 This server indexes `fulltext` fields with PostgreSQL's `english` text-search configuration
-(stemming, stop words and accent handling are PostgreSQL's) and ranks with `ts_rank_cd`, highest
+(stemming and stop words are PostgreSQL's) and ranks with `ts_rank_cd`, highest
 first, ties by id. Ranking is PostgreSQL's own and differs from a SQLite-backed server's BM25.
+
+Two tokenizer limits to know: **accents are not folded** (`cafe` does not match `café`; search and
+store the same form, or normalize before writing), and **CJK and emoji are not word-segmented** — a
+run of CJK with no spaces indexes as one token, so `豆腐` will not match inside `麻婆豆腐`, and emoji
+do not match at all. `tokenize` shows exactly how a given string is indexed; use it when a match is
+missing.
 
 Supported in `query`:
 
 - `payment refund` — both terms (implicit AND); `AND`, `OR` and binary `NOT` (`payment NOT refund`)
-  work as written, uppercase only.
+  work as written, uppercase only. `NOT` needs a term on its left, so a query cannot start with it,
+  and `AND`/`OR` need a term on each side.
 - `"refund processed"` — an exact phrase; also double-quote terms containing punctuation.
 - `pay*` — a prefix term.
 - Parentheses group expressions.
@@ -453,18 +486,23 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |
+| NUL character (`\u0000`) | not allowed anywhere in a request: a name, value, json value, key, cursor or argument | rejected with `invalid_request` naming the field |
+| Writes per `batch` | 100 | rejected |
+| Rows touched per `batch` | 1,000, summed over every write (records, plus rows matched by `update`, `delete` and the update branch of `upsert`) | rejected, naming the write that carried the batch past it |
 | Ids per `read_rows` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII; omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |
 | Vector dimension (declared `vector` fields) | 1–4096 | rejected |
 | `search_vector` query vector | at most 4096 numbers | rejected before the request is decoded |
-| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default on direct `/v1` calls); every search response reports the `limit` it applied |
+| Search `limit` | default 10, max 200 | omit `limit` for the default of 10; the tool schema enforces 1–200 for schema-validating clients, and the server clamps values above 200 to 200 (0 or negative selects the default, on `/v1` and MCP alike); every search response reports the `limit` it applied |
 | `query` result rows | 1,000 | truncated with `truncated: true` |
 | `query` / search result size | 32 MiB | first row over budget errors; later rows truncate; a single BLOB value over 32 MiB always errors |
 | A single value built by SQL (in `query` or a search `filter`), SQLite engine | 64 MiB | `query_error` before the value is built |
 | Request body | 32 MiB, sent within the server's read limit (2 minutes by default) | over 32 MiB is rejected; a body that arrives too slowly is `timeout` (408) |
 | Time per operation | set by the server, 2 minutes by default; `wait_for` gets its `timeout_ms` on top | `timeout` (504): narrow a read (a filter, a smaller limit) and retry it; a write may or may not have committed, so check with a query before retrying it |
-| `query` / search filter `args` | 100 | rejected |
+{{ if eq .Dialect "postgresql" }}| Database connections | the database's own connection limit, shared by every request and open subscription | `timeout` (504) saying the database is at its connection limit: nothing was started, so retry shortly |
+{{ end }}| `query` / search filter `args` | 100 | rejected |
 
 Vector search is exact: it scores every row. With the server's vector cache warm (SQLite engine), a search takes about 1 ms per 20,000 rows at 384 dimensions and 3 ms at 1,536, including on `row_access: own` tables. A `filter` adds the time SQLite takes to read the table and evaluate it, roughly 3 ms per 1,000 rows at 384 dimensions, unless it only touches `id`. A table too large for the cache reads vectors from disk, about a tenth of a second per 50,000 rows at 384 dimensions.
 
@@ -480,7 +518,7 @@ Validation notes:
 - Namespace paths and table names are trimmed and lowercased before validation on direct `/v1` requests — a namespace per segment, so `"namespace":" Production / EU "` operates on `production/eu`. The MCP tool schemas require already-canonical names — always send trimmed lowercase names.
 - `query` accepts only `SELECT`/`WITH`, rejects embedded semicolons (trailing semicolons are accepted), and binds at most 100 `args`.
 - `search_vector` with `text` requires a provider and searches only the server-managed `_embedding` column produced by a `vectorize: true` field — the provider identity must match the one that embedded the table, and a `text` query naming a declared `vector` column is rejected. Searches with a caller-supplied `vector` need no provider and are not checked against any embedding space — only you know which model produced the stored and query vectors. The built-in `local` provider is enabled by default; `describe_server` reports the active provider, its identity, and whether server-side embedding is usable.
-- `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes. Never regenerate a timestamp in a retried record — the body must be byte-identical to replay. A timestamp column a retry would stamp (e.g. `updated_at`) belongs in the table as `default: "now()"` (declared at `create_table` via the `dolmen-admin` skill) and omitted from records, so the server stamps it and the retry replays.
+- `insert` with an `idempotency_key`: the same key + same records replays the original ids; the same key with different records is rejected. Use printable ASCII keys (`[ -~]`) up to 256 bytes; the server counts bytes and refuses only an empty key or one over 256 bytes, so other characters are accepted but not recommended. Never regenerate a timestamp in a retried record — the body must be byte-identical to replay. A timestamp column a retry would stamp (e.g. `updated_at`) belongs in the table as `default: "now()"` (declared at `create_table` via the `dolmen-admin` skill) and omitted from records, so the server stamps it and the retry replays.
 
 ## Typical flows
 

@@ -271,7 +271,7 @@ func TestWriteOpsStillCreateNamespacesImplicitly(t *testing.T) {
 		"fields": []any{map[string]any{"name": "body", "type": "text"}},
 	})
 	t.Run("sqlite namespace file appears on write", func(t *testing.T) {
-		sqliteOnly(t)
+		sqliteStorageInternalsOnly(t)
 		if _, err := os.Stat(filepath.Join(h.dir, "born01.db")); err != nil {
 			t.Fatalf("create_table must create its namespace implicitly: %v", err)
 		}

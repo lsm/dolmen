@@ -8,16 +8,17 @@ import (
 )
 
 const (
-	EngineSQLite   = "sqlite"
-	EnginePostgres = "postgres"
+	EngineSQLite    = "sqlite"
+	EnginePostgres  = "postgres"
+	EngineLakehouse = "lakehouse"
 )
 
 func ValidateEngine(name string) error {
 	switch name {
-	case "", EngineSQLite, EnginePostgres:
+	case "", EngineSQLite, EnginePostgres, EngineLakehouse:
 		return nil
 	default:
-		return fmt.Errorf("unknown engine %q (available engines are %q and %q)", name, EnginePostgres, EngineSQLite)
+		return fmt.Errorf("unknown engine %q (available engines are %q, %q and %q)", name, EngineLakehouse, EnginePostgres, EngineSQLite)
 	}
 }
 
@@ -64,6 +65,8 @@ type Engine interface {
 	Update(ctx context.Context, ns, table string, filter string, args []any, set map[string]any, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (UpdateResult, error)
 
 	Delete(ctx context.Context, ns, table string, filter string, args []any, opts DeleteOpts, scope *RowScope, scopeIncarnation Incarnation) (DeleteResult, error)
+
+	Batch(ctx context.Context, ns string, writes []BatchWrite, opts BatchOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (BatchResult, error)
 
 	ChangesSince(ctx context.Context, ns, table string, from Cursor, nsGen [16]byte, scope *RowScope, scopeIncarnation Incarnation, page Page) ([]ChangeRecord, Cursor, error)
 

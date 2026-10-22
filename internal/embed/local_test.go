@@ -113,7 +113,7 @@ func TestNewProviderLocalCacheEnv(t *testing.T) {
 	}
 }
 
-func TestLocalCached(t *testing.T) {
+func TestLocalModelState(t *testing.T) {
 	old, had := os.LookupEnv("REMBED_CACHE")
 	t.Cleanup(func() {
 		if had {
@@ -130,8 +130,8 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("NewProvider: %v", err)
 	}
 	l := p.(*Local)
-	if l.Cached() {
-		t.Fatalf("empty cache must report not cached")
+	if l.ModelState() != ModelStateDownloadOnFirstUse {
+		t.Fatalf("an empty cache must report a download on first use, got %q", l.ModelState())
 	}
 
 	cacheDir := filepath.Join(dataDir, localModelDir, "sentence-transformers--all-MiniLM-L6-v2")
@@ -153,8 +153,8 @@ func TestLocalCached(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cacheDir, "model.safetensors"), []byte("weights"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if !l.Cached() {
-		t.Fatalf("a complete cache must report cached")
+	if l.ModelState() != ModelStateCached {
+		t.Fatalf("a complete cache must report cached, got %q", l.ModelState())
 	}
 
 	shardDir := filepath.Join(dataDir, localModelDir, "org--sharded")
@@ -180,7 +180,7 @@ func TestLocalCached(t *testing.T) {
 		t.Fatalf("write shard: %v", err)
 	}
 	lSharded := &Local{Model: "org/sharded", CacheRoot: filepath.Join(dataDir, localModelDir)}
-	if !lSharded.Cached() {
+	if lSharded.ModelState() != ModelStateCached {
 		t.Fatalf("complete sharded cache must report cached")
 	}
 
@@ -200,7 +200,7 @@ func TestLocalCached(t *testing.T) {
 		}
 	}
 	lEmptyIdx := &Local{Model: "org/emptyidx", CacheRoot: filepath.Join(dataDir, localModelDir)}
-	if lEmptyIdx.Cached() {
+	if lEmptyIdx.ModelState() == ModelStateCached {
 		t.Fatalf("an index whose weight_map names no shards must not report cached")
 	}
 
@@ -272,17 +272,21 @@ func TestLocalCached(t *testing.T) {
 	}
 	for _, tc := range family {
 		seedModelDir(tc.slug, tc.files)
-		if got := (&Local{Model: "org/" + tc.slug, CacheRoot: filepath.Join(dataDir, localModelDir)}).Cached(); got != tc.want {
-			t.Fatalf("family %s: Cached = %v, want %v", tc.slug, got, tc.want)
+		want := ModelStateDownloadOnFirstUse
+		if tc.want {
+			want = ModelStateCached
+		}
+		if got := (&Local{Model: "org/" + tc.slug, CacheRoot: filepath.Join(dataDir, localModelDir)}).ModelState(); got != want {
+			t.Fatalf("family %s: ModelState = %q, want %q", tc.slug, got, want)
 		}
 	}
 
 	l2 := &Local{Model: cacheDir}
-	if !l2.Cached() {
-		t.Fatalf("complete absolute model directory must report cached")
+	if l2.ModelState() != ModelStateCached {
+		t.Fatalf("complete absolute model directory must report cached, got %q", l2.ModelState())
 	}
-	if (&Local{Model: t.TempDir()}).Cached() {
-		t.Fatalf("incomplete absolute model directory must not report cached")
+	if got := (&Local{Model: t.TempDir()}).ModelState(); got != ModelStateIncomplete {
+		t.Fatalf("an incomplete absolute model directory must report %q, got %q", ModelStateIncomplete, got)
 	}
 }
 
@@ -642,7 +646,7 @@ func writeModelFixture(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
-func TestCachedAcceptsTheDefaultModelLayout(t *testing.T) {
+func TestModelStateAcceptsTheDefaultModelLayout(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sentence-transformers--all-MiniLM-L6-v2")
 	writeModelFixture(t, dir, map[string]string{
@@ -657,12 +661,12 @@ func TestCachedAcceptsTheDefaultModelLayout(t *testing.T) {
 	})
 
 	l := &Local{Model: "sentence-transformers/all-MiniLM-L6-v2", CacheRoot: root}
-	if !l.Cached() {
-		t.Fatal("the default model's own on-disk layout must report cached: modules.json lists 2_Normalize, which carries no config.json and is never materialized, so demanding one reports a complete cache as missing")
+	if l.ModelState() != ModelStateCached {
+		t.Fatalf("the default model's own on-disk layout must report cached: modules.json lists 2_Normalize, which carries no config.json and is never materialized, so demanding one reports a complete cache as missing, got %q", l.ModelState())
 	}
 }
 
-func TestCachedStillRejectsAMissingPoolingModule(t *testing.T) {
+func TestModelStateStillRejectsAMissingPoolingModule(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "sentence-transformers--all-MiniLM-L6-v2")
 	writeModelFixture(t, dir, map[string]string{
@@ -675,7 +679,7 @@ func TestCachedStillRejectsAMissingPoolingModule(t *testing.T) {
 	})
 
 	l := &Local{Model: "sentence-transformers/all-MiniLM-L6-v2", CacheRoot: root}
-	if l.Cached() {
+	if l.ModelState() == ModelStateCached {
 		t.Fatal("a module that does carry artifacts must still be required: an absent 1_Pooling/config.json means the cache is incomplete")
 	}
 }

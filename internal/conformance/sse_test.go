@@ -20,6 +20,7 @@ import (
 type sseFrame struct {
 	event string
 	data  string
+	id    string
 }
 
 type sseReader struct {
@@ -40,6 +41,8 @@ func newSSEReader(res *http.Response) *sseReader {
 				cur.event = strings.TrimPrefix(line, "event: ")
 			case strings.HasPrefix(line, "data: "):
 				cur.data = strings.TrimPrefix(line, "data: ")
+			case strings.HasPrefix(line, "id: "):
+				cur.id = strings.TrimPrefix(line, "id: ")
 			case strings.HasPrefix(line, ":"):
 				select {
 				case r.comments <- line:

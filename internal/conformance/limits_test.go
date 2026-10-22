@@ -527,7 +527,7 @@ func TestLimitsResponseBudgetFirstRowError(t *testing.T) {
 		`query result exceeds the 32 MiB response budget on its first row`)
 
 	t.Run("sqlite oversized blob column errors on every read surface", func(t *testing.T) {
-		sqliteOnly(t)
+		sqliteStorageInternalsOnly(t)
 		h.seedTable("limblob", "t", []map[string]any{
 			{"name": "title", "type": "string", "fulltext": true},
 			{"name": "body", "type": "text", "vectorize": true},
@@ -660,7 +660,7 @@ func shortName(s string) string {
 }
 
 func TestLimitsAValueTooLargeIsRefusedBeforeItIsBuilt(t *testing.T) {
-	sqliteOnly(t)
+	sqliteDialectOnly(t)
 	h := newHarness(t)
 	h.seedTable("toobig", "t", []map[string]any{
 		{"name": "title", "type": "string", "fulltext": true},

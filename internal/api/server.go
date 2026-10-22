@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/dolmen/internal/value"
 	"io"
 	"log/slog"
 	"mime"
@@ -545,6 +546,9 @@ func (s *Server) Dispatch(ctx context.Context, op string, body []byte) (res any,
 			span.End(outcome)
 		}()
 	}
+	if err := refuseNUL(body); err != nil {
+		return nil, err
+	}
 	ctx, cancel, overran := s.withOpDeadline(ctx, op)
 	defer cancel()
 	if err := s.authorizeOp(ctx, op, body); err != nil {
@@ -585,7 +589,7 @@ func OriginGuard(next http.Handler, extraOrigins []string) http.Handler {
 			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id")
 			if r.Method == http.MethodOptions {
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, X-Request-Id")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, X-Request-Id, Last-Event-ID")
 				w.Header().Set("Access-Control-Max-Age", "86400")
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -851,4 +855,23 @@ func (s *Server) PublicContext(r *http.Request) skill.Context {
 
 func (s *Server) UsableHost(r *http.Request) bool {
 	return skill.UsableRequestHost(r, s.baseURL)
+}
+
+const nulRemedy = "no name, value or argument may hold one, because PostgreSQL text and json cannot store it; remove it"
+
+func refuseNUL(body []byte) error {
+	field, inName, found := value.FindJSONNUL(body)
+	if !found {
+		return nil
+	}
+	if inName {
+		return badRequest("a field name in the request contains a NUL character (\\u0000); %s", nulRemedy)
+	}
+	if field == "" {
+		return badRequest("the request contains a NUL character (\\u0000); %s", nulRemedy)
+	}
+	if len(field) > 64 {
+		field = field[:64]
+	}
+	return badRequest("field %q contains a NUL character (\\u0000); %s", field, nulRemedy)
 }

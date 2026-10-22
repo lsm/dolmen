@@ -58,6 +58,7 @@ func decodeTargets() []decodeTarget {
 		{op: "migrate", new: func() any { return new(migrateReq) }},
 		{op: "list_migrations", new: func() any { return new(tableReq) }},
 		{op: "rotate_secret_key", new: func() any { return new(rotateReq) }},
+		{op: "batch", new: func() any { return new(batchBody) }},
 		{op: "whoami", new: noFields},
 		{op: "grant", new: func() any { return new(grantRequest) }},
 		{op: "revoke", new: func() any { return new(grantRequest) }},

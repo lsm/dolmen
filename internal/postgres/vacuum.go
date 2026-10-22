@@ -49,6 +49,9 @@ func (s *Store) vacuumNamespace(ctx context.Context, ns string) (store.VacuumRes
 	defer done()
 	for _, rel := range relations {
 		if _, err := s.pool.Exec(ctx, "VACUUM "+ident(physical, rel)); err != nil {
+			if capped := connCapacity(err); capped != err {
+				return store.VacuumResult{}, capped
+			}
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) || ctx.Err() != nil {
 				return store.VacuumResult{}, err
@@ -63,7 +66,7 @@ func (s *Store) vacuumNamespace(ctx context.Context, ns string) (store.VacuumRes
 		}
 	}
 	if err := s.pool.QueryRow(ctx, namespaceSizeSQL, physical).Scan(&res.BytesAfter); err != nil {
-		return store.VacuumResult{}, err
+		return store.VacuumResult{}, connCapacity(err)
 	}
 	return res, nil
 }

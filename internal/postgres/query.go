@@ -43,6 +43,9 @@ func queryError(ctx context.Context, err error) error {
 	case pgerr.Code == "23505":
 		code = derr.Conflict
 		message = "PostgreSQL uniqueness conflict"
+	case len(pgerr.Code) >= 2 && pgerr.Code[:2] == "54":
+		code = derr.InvalidRequest
+		message = "the query or search is too large or complex for PostgreSQL (too many terms, arguments, or columns); simplify it"
 	case len(pgerr.Code) >= 2 && (pgerr.Code[:2] == "42" || pgerr.Code[:2] == "22" || pgerr.Code[:2] == "23"):
 		code = derr.Query
 		message = "invalid PostgreSQL SQL or value; use describe_table for column names and types and ? for parameters"
@@ -282,7 +285,7 @@ func (s *Store) runQuery(ctx context.Context, ns, input string, args []any, expe
 		if err != nil {
 			return err
 		}
-		sql, names, err := compileSQL(input, len(args), n.physical, tables)
+		sql, names, err := compileSQL(ctx, input, len(args), n.physical, tables)
 		if err != nil {
 			return err
 		}
@@ -297,7 +300,7 @@ func (s *Store) runQuery(ctx context.Context, ns, input string, args []any, expe
 			limit = store.MaxPageLimit
 		}
 		sql, args, err = typeUntypedArguments(ctx, tx, sql, args, func(casts map[int32]string) (string, error) {
-			recompiled, _, err := compileSQLWithCasts(input, len(args), n.physical, tables, casts)
+			recompiled, _, err := compileSQLWithCasts(ctx, input, len(args), n.physical, tables, casts)
 			return recompiled, err
 		})
 		if err != nil {

@@ -291,6 +291,9 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 			return err
 		}
 	}
+	if err := purgeBatchRecordsForTable(ctx, tx, table); err != nil {
+		return err
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO _dolmen_drop_gen(table_name, gen) VALUES(?, 1)

@@ -86,6 +86,7 @@ func init() {
 			Ops[name] = def
 		}
 	}
+	applyBatchSchemas()
 }
 
 var errorCodes = []ErrorCode{

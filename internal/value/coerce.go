@@ -144,6 +144,9 @@ func Coerce(f schema.Field, v any) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("field %q: cannot marshal JSON: %w", f.Name, err)
 		}
+		if _, _, found := FindJSONNUL(b); found {
+			return nil, fmt.Errorf("field %q: the json value contains a NUL character (\\u0000), which PostgreSQL json cannot store; remove it", f.Name)
+		}
 		if err := schema.ShapeViolation(f.Name, f.Shape, b); err != nil {
 			return nil, err
 		}
@@ -162,6 +165,9 @@ func Coerce(f schema.Field, v any) (any, error) {
 		s, ok := StoredString(v)
 		if !ok {
 			return nil, fmt.Errorf("field %q: expected a string", f.Name)
+		}
+		if strings.IndexByte(s, 0) >= 0 {
+			return nil, fmt.Errorf("field %q: value contains a NUL byte (U+0000), which text storage cannot hold; remove it before writing", f.Name)
 		}
 		if !schema.EnumAllows(f.Enum, s) {
 			return nil, fmt.Errorf("field %q: value %q is not one of the allowed enum values (%s)", f.Name, s, strings.Join(f.Enum, ", "))

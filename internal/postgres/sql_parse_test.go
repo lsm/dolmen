@@ -29,7 +29,7 @@ func TestPostgresSQLCompiler(t *testing.T) {
 		{"SELECT '{\"key\":1}'::jsonb ?? 'key'", 0},
 		{"SELECT x FROM generate_series(1,3) AS x", 0},
 	} {
-		out, _, err := compileSQL(test.sql, test.args, "namespace_schema", queryTestTables())
+		out, _, err := compileSQL(t.Context(), test.sql, test.args, "namespace_schema", queryTestTables())
 		if err != nil {
 			t.Errorf("%s: %v", test.sql, err)
 		} else if strings.Contains(out, "FROM notes ") {
@@ -43,7 +43,7 @@ func TestPostgresSQLBoundaryRejectsEscapes(t *testing.T) {
 		"SELECT * FROM pg_catalog.pg_class", "SELECT * FROM information_schema.tables", "SELECT * FROM other_namespace.notes", "SELECT * FROM pg_class",
 		"SELECT current_user", "SELECT session_user", "SELECT current_database()", "SELECT current_setting('data_directory')", "SELECT pg_read_file('/etc/passwd')", "SELECT pg_sleep(10)", "SELECT set_config('role','postgres',false)", "SELECT public.lower('x')", "SELECT 'pg_class'::regclass", "SELECT 1; DELETE FROM notes", "WITH gone AS (DELETE FROM notes RETURNING *) SELECT * FROM gone", "SELECT * INTO copied FROM notes", "SELECT * FROM notes FOR UPDATE", "COPY notes TO STDOUT", "SELECT 1 OPERATOR(public.+) 2", "SELECT 1 OPERATOR(public.+) ANY(SELECT n FROM notes)", "SELECT * FROM notes ORDER BY n USING OPERATOR(public.<)", "WITH q AS (SELECT * FROM pg_class), pg_class AS (SELECT * FROM notes) SELECT * FROM q",
 	} {
-		if out, _, err := compileSQL(sql, 0, "namespace_schema", queryTestTables()); err == nil {
+		if out, _, err := compileSQL(t.Context(), sql, 0, "namespace_schema", queryTestTables()); err == nil {
 			t.Errorf("accepted %s as %s", sql, out)
 		}
 	}
@@ -53,11 +53,11 @@ func TestPostgresSQLLongNamesAndPlaceholders(t *testing.T) {
 	long := strings.Repeat("a", 64)
 	tables := queryTestTables()
 	tables[long] = tableState{physical: "short_table", schema: &schema.TableSchema{Fields: []schema.Field{{Name: long}}}, columns: map[string]string{long: "short_field"}}
-	out, names, err := compileSQL("SELECT "+ident(long)+" FROM "+ident(long)+" WHERE "+ident(long)+"=?", 1, "namespace_schema", tables)
+	out, names, err := compileSQL(t.Context(), "SELECT "+ident(long)+" FROM "+ident(long)+" WHERE "+ident(long)+"=?", 1, "namespace_schema", tables)
 	if err != nil || !strings.Contains(out, "short_table") || !strings.Contains(out, "short_field") || names.original(names.name(long)) != long {
 		t.Fatalf("long mapping: %s %v", out, err)
 	}
-	out, names, err = compileSQL("SELECT "+ident(long)+" AS dolmen_long_0 FROM "+ident(long), 0, "namespace_schema", tables)
+	out, names, err = compileSQL(t.Context(), "SELECT "+ident(long)+" AS dolmen_long_0 FROM "+ident(long), 0, "namespace_schema", tables)
 	if err != nil || names.name(long) == "dolmen_long_0" || names.original("dolmen_long_0") != "dolmen_long_0" {
 		t.Fatalf("reserved-looking caller alias collided: %s %v", out, err)
 	}

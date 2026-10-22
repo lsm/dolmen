@@ -93,6 +93,8 @@ finished server-side — check with a query before retrying a write.
 ran past `-op-timeout` (or `-migrate-timeout`), `408` when the request body arrived too slowly. A
 timed-out read can be narrowed and retried; a timed-out write may or may not have committed, so
 check before retrying it.
+On PostgreSQL, `timeout` (504) also answers a request that found the database at its connection
+limit (SQLSTATE 53300); nothing was started, so it is safe to retry shortly, and its message says so.
 `embedder_unavailable` (503) means the server's embedding provider could not load its model — with
 the `local` provider, typically the first-use Hugging Face download failing — and its message names
 the offline remediations (pre-seed the model cache, or point `DOLMEN_EMBED_MODEL` at a local model
@@ -285,8 +287,8 @@ $env:DOLMEN_EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-
 
 Whichever provider is configured, `describe_server` reports its status read-only over both `/v1`
 and MCP — provider, model, the identity that pins vectorized tables, whether server-side embedding
-is usable, and (local only) whether the model is cached (`model_cached`) — so the active provider
-is visible without attempting a write. `usable` is
+is usable, and (local only) what the next vectorized write will meet (`model_state`) — so the
+active provider is visible without attempting a write. `usable` is
 configuration status only: the provider is not called, so an endpoint that is down or rejects its
 credentials still fails at first use, not here.
 
@@ -392,10 +394,12 @@ curl -s localhost:8790/v1/search_vector -H 'Content-Type: application/json' -d '
 ```
 
 Note that `describe_server`'s `usable` is configuration-only — it is true whether or not the cache
-actually holds the model — while `model_cached` (local provider) does check the cache on disk:
-`true` means the weights are complete and the first vectorized write needs no download; `false`
-means that first operation downloads the model from the Hugging Face Hub (or, with
-`DOLMEN_EMBED_MODEL` naming a directory, fails until the directory is fixed). The round-trip above
+actually holds the model — while `model_state` (local provider) does check the cache on disk, and
+says which of three things the next vectorized write will meet: `cached` means the weights are
+complete and nothing is downloaded; `download_on_first_use` is an ordinary first run, where that
+operation downloads the model from the Hugging Face Hub and can take ten seconds or more; and
+`incomplete` means `DOLMEN_EMBED_MODEL` names a model directory that is not complete, which no
+download repairs and an operator has to fix. The round-trip above
 remains the end-to-end verification: with `huggingface.co` unreachable and the cache correctly
 pre-seeded, the insert and the `search_vector(text=...)` load the model from disk; a missing or
 incomplete cache fails at that first operation with the offline remediations in the error message.
@@ -428,8 +432,8 @@ over stdio instead of HTTP (see [MCP (agents)](#mcp-agents)).
 |---|---|---|---|
 | `-addr` | `DOLMEN_ADDR` | `127.0.0.1:8790` | HTTP listen address (`dolmen mcp` does not listen) |
 | `-data` | `DOLMEN_DATA` | `data` | Data directory (one SQLite file per namespace) |
-| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine: `sqlite` (default) or `postgres`. `postgres` needs `-pg-dsn`; unknown values are rejected with an error |
-| `-pg-dsn` | `DOLMEN_PG_DSN` | — | PostgreSQL connection string; required with `-engine postgres` and rejected without it |
+| `-engine` | `DOLMEN_ENGINE` | `sqlite` | Storage engine: `sqlite` (default) or `postgres`. `postgres` needs `-pg-dsn`; unknown values are rejected with an error. `lakehouse` is recognised but not implemented yet and is refused with a message pointing at its design (`docs/design/lakehouse-plan.md`) |
+| `-pg-dsn` | `DOLMEN_PG_DSN` | — | PostgreSQL connection string; required with `-engine postgres` and rejected without it. The connection pool holds at most 20 connections unless the string sets `pool_max_conns=N`; keep the total across every server sharing the database below its `max_connections` |
 | `-pg-catalog` | `DOLMEN_PG_CATALOG` | `dolmen_catalog` | PostgreSQL catalog schema |
 | `-pg-query-role` | `DOLMEN_PG_QUERY_ROLE` | — | Pre-provisioned restricted role that caller SQL runs as; required for the `query` op |
 | `-auth` | `DOLMEN_AUTH` | `off` | Authentication. `off` is the v0.2.0 behavior: no identity, no credential, bind to loopback. `on` is deny-by-default and refuses to start without an identity source and a reachable root administrator, which on first start means `DOLMEN_ADMIN_KEY` (see [Authentication](#authentication)) |
@@ -918,7 +922,9 @@ defer st.Close()
 
 `Open` never reads environment variables, loads a model, or starts a server; options are validated before touching the filesystem. Embedding is disabled unless a provider is supplied — implement `dolmen.EmbeddingProvider` (`Identity`, `Embed`, `EmbedQuery`); query and document embedding stay distinct for asymmetric models such as E5, and the identity string pins a vectorized table to its embedding space. The application owns the provider (a shared provider is not closed by `Close`).
 
-The surface covers namespace/table lifecycle, `Insert`/`Update`/`Delete`/`UpsertByKey`, `GetRows`/`Query`, and `SearchFulltext`/`SearchVector` — the same semantic validation, embedding orchestration, error classification, and defaults as the HTTP and MCP transports (the conformance suite pins the parity). Records are `map[string]any`; reads return engine-typed values (`int64`/`float64` numbers, `bool`, decoded JSON with `json.Number` precision, `[]float64` vectors) rather than a JSON round trip.
+The surface covers namespace/table lifecycle, `Insert`/`Update`/`Delete`/`UpsertByKey`, `Batch`, `GetRows`/`Query`, and `SearchFulltext`/`SearchVector` — the same semantic validation, embedding orchestration, error classification, and defaults as the HTTP and MCP transports (the conformance suite pins the parity). Records are `map[string]any`; reads return engine-typed values (`int64`/`float64` numbers, `bool`, decoded JSON with `json.Number` precision, `[]float64` vectors) rather than a JSON round trip.
+
+`Batch` takes an ordered `[]dolmen.BatchWrite` and applies them in one transaction — one `ChangeRange` for the whole call, one `idempotency_key` over all of it, and a result per write in the order sent. It is also the only route to the filter-matched upsert, which has no single method here. `BatchOptions` carries `IdempotencyKey`, `Limit` and `Confirm`; `Limit` and `Confirm` are hashed with the writes, so the same key with a different setting conflicts rather than replaying.
 
 Errors are typed: match categories with `errors.Is(err, dolmen.ErrConflict)` (also `ErrNotFound`, `ErrQuery`, `ErrInvalidRequest`, `ErrEmbedderUnavailable`, `ErrCanceled`, `ErrForbidden`, `ErrInternal`) and read `*dolmen.Error` with `errors.As` for the code and message; underlying causes stay wrapped. `Close` is terminal and idempotent — repeated Close returns the first result; operations after close return the local `dolmen.ErrClosed` sentinel — and one process holds at most one live store per data directory (symlinks resolve; opening a server and an embedded store on the same directory is unsupported).
 
@@ -944,7 +950,7 @@ claude mcp add dolmen -- /path/to/dolmen mcp -data /path/to/data
 
 `dolmen mcp` takes the same flags and environment as `dolmen`; the HTTP-only ones (`-addr`, `-max-subscription-age`, `DOLMEN_ALLOWED_ORIGINS`) have no effect. The `initialize` handshake works as over HTTP (its instructions describe the stdio transport; set `-base-url` when an HTTP deployment also exists, and its links appear there). Over stdio there is no `MCP-Protocol-Version` header, so version negotiation happens in `initialize` alone.
 
-The MCP server exposes the same twenty-six operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
+The MCP server exposes the same operations as tools (`tools/list` shows them with input/output schemas and annotations). Successful `tools/call` results carry `structuredContent` — the result as a JSON object matching the tool's `outputSchema` — with no text mirror (`content` stays an empty array: the spec keeps it mandatory); tool errors are reported as text with `isError: true`.
 
 Skill distribution is built into the server. `GET /skills` returns a JSON manifest with links to the layered skill markdown; `GET /skills/dolmen` is the end-user skill and `GET /skills/dolmen-admin` is the developer skill. Agents should fetch the skill from the running binary instead of copying a static file. Over `dolmen mcp` there is no HTTP listener — the skills are served by the HTTP deployment named by `-base-url`, when one exists.
 
@@ -964,13 +970,17 @@ call): `namespace` (required — a namespace that does not exist is an in-stream
 error; the stream never creates one, as no read does), `table` (optional
 filter to one table's feed; an explicitly empty value is rejected), and `cursor` (an opaque
 resume token or the literal `begin`; omitted = start at the current head and receive future
-commits only; an explicitly empty value is rejected). Wrong method, an omitted `namespace`
+commits only; an explicitly empty value is rejected). A `Last-Event-ID` request header, which a
+browser `EventSource` sends on reconnect, is a resume token too and takes precedence over
+`cursor`. Wrong method, an omitted `namespace`
 parameter, and empty `table` / `cursor` values are ordinary HTTP errors (the standard envelope)
 before the stream opens; every
 other failure arrives inside the stream, because an open `text/event-stream` response can no
 longer carry an HTTP status.
 
-The frame protocol — named events whose `data` is one compact JSON line:
+The frame protocol — named events whose `data` is one compact JSON line; `change`, `ready` and
+`close` frames also carry their cursor as the SSE `id:`, so an `EventSource` reconnect resumes
+where the stream left off:
 
 - `event: ready`, `data: {"cursor":"..."}` — the replay→live boundary. Replayed `change` frames
   (when resuming behind the head) arrive first, then `ready`, then live frames. Its cursor is the
@@ -1009,7 +1019,7 @@ a missing table — send only the `error` event, since nothing was delivered. Th
 - Target ended: "the subscription's target ended (a dropped table, or a dropped or replaced
   namespace); reconnect against the current target — a same-named successor is a different feed"
 - Authorization revoked (code `forbidden`): "subscription authorization was revoked; reconnect once authorization
-  is restored". The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
+  is restored, or with another credential if this one was revoked". The server rechecks access on every change it delivers and on every keepalive (every 20 seconds),
   so a revoked caller's stream ends within about 20 seconds even when nothing is being written.
 - Subscription age bound (`-max-subscription-age`, default 30m): "subscription reached the
   maximum subscription age (-max-subscription-age, default 30m); reconnect from the cursor in
@@ -1049,6 +1059,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `shape` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `shape` restricts a json field to one JSON shape such as `array<string>`; `default` is stored by inserts that omit the field — a timestamp field may declare `"now()"`, stamped server-side at write time so idempotent retries can omit the field and replay) |
 | `infer_schema` | Propose fields from sample records (creates nothing). Names are always valid for `create_table`; `warnings` explains every rename or merge, `provenance` maps fields to source keys, and `evidence` counts presence, nulls and observed types per field |
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
+| `batch` | An ordered list of `insert` / `update` / `delete` / `upsert` / `upsert_by_key` writes to one namespace, applied in a single transaction — all commit or none does — with one result per write in order, one change-feed commit, and one `idempotency_key` for the whole batch. At most 100 writes and 1,000 rows touched in total; `namespace` and `idempotency_key` are set once per batch and refused inside a write, and `dry_run`, `limit` and `confirm` are refused inside a write because a batch is all-or-nothing. An error names the failing write as `writes[i]` and keeps that write's own error class |
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
 | `query` | Read-only SQL (SELECT/WITH), parameter binding via `args`, typed results |
 | `search_fulltext` | FTS5 MATCH over `fulltext` fields, relevance-ordered, typed results; optional `filter` + `args` restrict rows before ranking |
@@ -1251,6 +1262,8 @@ Every row has two implicit columns:
 | Table / field name | `^[a-z][a-z0-9_]{0,63}$` (max 64 chars); reserved names (`id`, `created_at`, `_embedding`, `_score`, `_rank`, `rowid`) are rejected, SQL keywords (`key`, `order`, `group`, `from`, `values` and the rest of SQLite's list) are rejected with a suggested replacement, and a field named `rank` is rejected when `fulltext: true` (reserved by the FTS5 index); table also cannot contain `__fts` or start with `sqlite_` | rejected |
 | Table fields | 100 user-defined fields (not counting the implicit `id`, `created_at`, `_embedding` columns) | rejected |
 | Records per `insert` / `upsert_by_key` | 1,000 | rejected |
+| Full-text `query` | 2,048 bytes | rejected before any work, naming the limit; search for the few words that matter and narrow with `filter` |
+| NUL character (`\u0000`) | not allowed anywhere in a request: a name, value, json value, key, cursor or argument | rejected with `invalid_request` naming the field |
 | Ids per `read_rows` | 1,000 | rejected |
 | Natural key fields per `upsert_by_key` | 8 | rejected |
 | Idempotency key length | 1–256 bytes; use printable ASCII (`[ -~]`); omit the field for a non-idempotent insert | empty and over-256-byte keys are rejected; the JSON Schema enforces non-empty printable ASCII for schema-validating clients |

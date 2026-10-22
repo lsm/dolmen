@@ -138,6 +138,9 @@ func (s *Store) SearchFulltext(ctx context.Context, ns, table, match, filter str
 }
 
 func (s *Store) searchFulltextRows(ctx context.Context, ns, table, match, filter string, args []any, includeHidden bool, scope *store.RowScope, scopeIncarnation store.Incarnation, page store.Page) (store.SearchResult, error) {
+	if err := store.ValidateFulltextQuery(match); err != nil {
+		return store.SearchResult{}, err
+	}
 	if page.Offset < 0 {
 		return store.SearchResult{}, invalidf("offset must be non-negative")
 	}

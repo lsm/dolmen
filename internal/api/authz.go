@@ -67,6 +67,7 @@ var authRules = map[string]authRule{
 	"delete":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbDelete}},
 	"upsert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
 	"upsert_by_key":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
+	"batch":           {Scope: scopeNamespace, Verbs: []auth.Verb{auth.VerbAdmin}},
 	"read_rows":       {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
 	"search_fulltext": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
 	"search_vector":   {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbRead}, OwnRows: true, Reveal: true},
@@ -133,6 +134,13 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 	if !s.authn.On() {
 		return nil
 	}
+	if op == "batch" {
+		ns, writes, _, err := parseBatch(body)
+		if err != nil {
+			return err
+		}
+		return s.authorizeBatch(ctx, ns, writes)
+	}
 	if err := s.authorizeVerbs(ctx, op, body); err != nil {
 		return err
 	}
@@ -164,6 +172,10 @@ func (s *Server) authorizeReveal(ctx context.Context, t authTarget) error {
 }
 
 func (s *Server) authorizeVerbs(ctx context.Context, op string, body []byte) error {
+	return s.authorizeVerbsOn(ctx, op, body, parseAuthTarget(body))
+}
+
+func (s *Server) authorizeVerbsOn(ctx context.Context, op string, body []byte, target authTarget) error {
 	id := auth.IdentityFrom(ctx)
 	if id.Principal == auth.AdminPrincipal {
 		return nil
@@ -179,7 +191,6 @@ func (s *Server) authorizeVerbs(ctx context.Context, op string, body []byte) err
 		return fmt.Errorf("auth is on but no grant registry is configured, so authorization cannot be decided")
 	}
 
-	target := parseAuthTarget(body)
 	obj, err := objectFor(rule.Scope, target)
 	if err != nil {
 		return err

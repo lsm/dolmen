@@ -29,6 +29,18 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	for name, vals := range q {
+		for _, v := range vals {
+			if strings.IndexByte(v, 0) >= 0 {
+				writeError(w, r, badRequest("parameter %q contains a NUL character (%%00); %s", name, nulRemedy))
+				return
+			}
+		}
+	}
+	if strings.IndexByte(r.Header.Get("Last-Event-ID"), 0) >= 0 {
+		writeError(w, r, badRequest("the Last-Event-ID header contains a NUL character; %s", nulRemedy))
+		return
+	}
 	if q.Get("namespace") == "" {
 		writeError(w, r, badRequest("namespace query parameter is required"))
 		return
@@ -55,6 +67,9 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		cursor = store.Cursor(c)
+	}
+	if last := strings.TrimSpace(r.Header.Get("Last-Event-ID")); last != "" {
+		cursor = store.Cursor(last)
 	}
 
 	ns := normNS(q.Get("namespace"))
@@ -111,7 +126,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	resume := replay.Resume()
 	write := func(rec store.ChangeRecord) bool {
 		resume = rec.Cursor
-		return sseEvent(w, "change", sseChange{
+		return sseEventID(w, "change", string(rec.Cursor), sseChange{
 			Cursor: string(rec.Cursor),
 			Table:  rec.Table,
 			RowID:  rec.RowID,
@@ -126,7 +141,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			default:
-				sseEvent(w, "close", sseCursor{Cursor: string(resume)})
+				sseEventID(w, "close", string(resume), sseCursor{Cursor: string(resume)})
 				sseErrorEvent(r.Context(), w, apiErr, reqID)
 				return
 			}
@@ -164,7 +179,7 @@ func (s *Server) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 		s.holdReplay()
 	}
 
-	if !sseEvent(w, "ready", sseCursor{Cursor: string(resume)}) {
+	if !sseEventID(w, "ready", string(resume), sseCursor{Cursor: string(resume)}) {
 		return
 	}
 
@@ -234,7 +249,7 @@ func subscribeErr(err error) *Error {
 	case errors.Is(err, store.ErrListenLifetimeEnded):
 		return badRequest("the subscription's target ended (a dropped table, or a dropped or replaced namespace); reconnect against the current target — a same-named successor is a different feed")
 	case errors.Is(err, store.ErrListenRevoked):
-		return forbidden("subscription authorization was revoked; reconnect once authorization is restored")
+		return forbidden("subscription authorization was revoked; reconnect once authorization is restored, or with another credential if this one was revoked")
 	case errors.Is(err, errDraining):
 		return badRequest("the server is shutting down; reconnect from the cursor in the preceding close frame to resume exactly where this stream ended, on a server that is still serving")
 	case errors.Is(err, store.ErrListenAged):
@@ -256,13 +271,21 @@ type sseCursor struct {
 }
 
 func sseEvent(w http.ResponseWriter, event string, data any) bool {
+	return sseEventID(w, event, "", data)
+}
+
+func sseEventID(w http.ResponseWriter, event, id string, data any) bool {
 	payload, err := sseJSON(data)
 	if err != nil {
 		return false
 	}
+	idLine := ""
+	if id != "" && !strings.ContainsAny(id, "\r\n\x00") {
+		idLine = "id: " + id + "\n"
+	}
 	rc := http.NewResponseController(w)
 	rc.SetWriteDeadline(time.Now().Add(sseWriteDeadline))
-	_, werr := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+	_, werr := fmt.Fprintf(w, "event: %s\n%sdata: %s\n\n", event, idLine, payload)
 	ferr := rc.Flush()
 	rc.SetWriteDeadline(time.Time{})
 	return werr == nil && ferr == nil

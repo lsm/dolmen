@@ -289,7 +289,7 @@ func wrapStoreErr(err error) *Error {
 		if code == ErrCodeNotFound {
 			status = http.StatusNotFound
 		}
-		return &Error{Status: status, Code: code, Message: qe.Error(), Cause: qe.Cause()}
+		return &Error{Status: status, Code: code, Message: batchIndexPrefix(err, qe.Error()) + qe.Error(), Cause: qe.Cause()}
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		msg := redactStoreMsg(err.Error())
@@ -316,7 +316,7 @@ func wrapStoreErr(err error) *Error {
 	var shared *derr.Error
 	if errors.As(err, &shared) {
 		status, code := statusFor(shared.Code)
-		msg := shared.Message
+		msg := batchIndexPrefix(err, shared.Message) + shared.Message
 		if status == http.StatusInternalServerError {
 			msg = "internal error"
 		}
@@ -396,4 +396,17 @@ func WrapError(err error) *Error {
 		return &Error{Status: status, Code: code, Message: msg, Cause: err}
 	}
 	return internal(err)
+}
+
+var batchIndexRe = regexp.MustCompile(`^writes\[\d+\]: $`)
+
+func batchIndexPrefix(err error, inner string) string {
+	full := err.Error()
+	if !strings.HasSuffix(full, inner) {
+		return ""
+	}
+	if prefix := strings.TrimSuffix(full, inner); batchIndexRe.MatchString(prefix) {
+		return prefix
+	}
+	return ""
 }

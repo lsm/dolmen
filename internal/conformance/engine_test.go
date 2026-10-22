@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -33,10 +34,20 @@ func openEngineStoreKeyed(t *testing.T, dir string, retention *time.Duration, sh
 	return openEngineStoreTraced(t, dir, retention, sharedFilter, keyring, nil)
 }
 
+func engineNotImplemented(name string) error {
+	if name != store.EngineLakehouse {
+		return nil
+	}
+	return fmt.Errorf("DOLMEN_ENGINE=%s: the lakehouse engine is not implemented yet (docs/design/lakehouse-plan.md, slice 4 onwards), so this suite cannot open a store for it", store.EngineLakehouse)
+}
+
 func openEngineStoreTraced(t *testing.T, dir string, retention *time.Duration, sharedFilter bool, keyring *secret.Keyring, tp trace.TracerProvider) store.Engine {
 	t.Helper()
 	if testEngine(t) == store.EnginePostgres {
 		return openPostgresEngineTraced(t, dir, retention, sharedFilter, keyring, tp)
+	}
+	if err := engineNotImplemented(testEngine(t)); err != nil {
+		t.Fatal(err)
 	}
 	opts := []store.OpenOption{store.WithSecretKey(keyring), store.WithTracerProvider(tp)}
 	if retention != nil {
@@ -172,11 +183,36 @@ func testEngine(t *testing.T) string {
 	return activeEngine
 }
 
-func sqliteOnly(t *testing.T) {
+func sqliteStorageInternalsOnly(t *testing.T) {
 	t.Helper()
 	if name := testEngine(t); name != store.EngineSQLite {
-		t.Skipf("engine %q: this fixture probes SQLite storage internals directly", name)
+		t.Skipf("engine %q: this fixture reaches past the API into SQLite storage internals — an out-of-band write, a direct file handle, or a page it assumes — so it cannot run on another engine", name)
 	}
+}
+
+func sqliteDialectOnly(t *testing.T) {
+	t.Helper()
+	if name := testEngine(t); name != store.EngineSQLite {
+		t.Skipf("engine %q: this fixture pins a SQLite type-affinity or SQL-function result rather than the shared contract, so its expectation is this engine's", name)
+	}
+}
+
+func extendedFTSGrammarOnly(t *testing.T) {
+	t.Helper()
+	name := testEngine(t)
+	if name == store.EngineSQLite {
+		return
+	}
+	t.Skipf("engine %q: extended FTS grammar (field:, {group}, NEAR) is engine-documented under D15 and this engine does not implement it", name)
+}
+
+func skipReasonUnverified(t *testing.T) {
+	t.Helper()
+	name := testEngine(t)
+	if name == store.EngineSQLite {
+		return
+	}
+	t.Skipf("engine %q: this fixture skips here for a reason that was never established — it touches no storage internals and no SQLite dialect, and its sibling secret-field tests lost this skip when PostgreSQL gained secrets. Whether it passes on another engine is untested, so the skip is kept rather than guessed at", name)
 }
 
 func TestEngineKnobResolution(t *testing.T) {
@@ -189,7 +225,8 @@ func TestEngineKnobResolution(t *testing.T) {
 		{env: map[string]string{"DOLMEN_ENGINE": ""}, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": "sqlite"}, want: store.EngineSQLite},
 		{env: map[string]string{"DOLMEN_ENGINE": "postgres"}, want: store.EnginePostgres},
-		{env: map[string]string{"DOLMEN_ENGINE": "banana"}, wantErr: `unknown engine "banana" (available engines are "postgres" and "sqlite")`},
+		{env: map[string]string{"DOLMEN_ENGINE": "lakehouse"}, want: store.EngineLakehouse},
+		{env: map[string]string{"DOLMEN_ENGINE": "banana"}, wantErr: `unknown engine "banana" (available engines are "lakehouse", "postgres" and "sqlite")`},
 	}
 	for _, c := range cases {
 		lookup := c.env
@@ -223,5 +260,22 @@ func TestTheServedSkillNamesTheEnginesDialect(t *testing.T) {
 	postgres := strings.Contains(body, "This server is PostgreSQL-backed")
 	if want := testEngine(t) == store.EnginePostgres; postgres != want {
 		t.Fatalf("engine %q: the served skill says PostgreSQL-backed = %v, want %v", testEngine(t), postgres, want)
+	}
+}
+
+func TestLakehouseResolvesButRefusesToOpen(t *testing.T) {
+	if err := engineNotImplemented(store.EngineLakehouse); err == nil {
+		t.Fatal("the lakehouse engine is not refused; the selector is supposed to refuse until it is implemented")
+	} else {
+		for _, want := range []string{store.EngineLakehouse, "not implemented"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("lakehouse refusal %q does not mention %q", err, want)
+			}
+		}
+	}
+	for _, name := range []string{store.EngineSQLite, store.EnginePostgres, ""} {
+		if err := engineNotImplemented(name); err != nil {
+			t.Fatalf("engine %q = %v, want nil: only the lakehouse engine is unimplemented", name, err)
+		}
 	}
 }
