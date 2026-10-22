@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -158,5 +159,19 @@ func TestFileWriteMatchingNoRowStoresNoBlob(t *testing.T) {
 	}
 	if res := h.mustHTTP("vacuum", map[string]any{"namespace": "fil"}); res["files_removed"] != float64(0) {
 		t.Fatalf("vacuum after writes that matched no row = %v, want nothing to remove", res)
+	}
+}
+
+func TestAFileWriteMatchingNoRowIsStillChecked(t *testing.T) {
+	h := newHarness(t)
+	h.seedTable("fil", "docs", fileTableFields())
+	big := make([]byte, 2048)
+	code, out := h.multipartCall("update", `{"namespace":"fil","table":"docs","filter":"id = 999","set":{"doc":{"part":"f"}}}`, map[string][]byte{"f": big})
+	if code != http.StatusRequestEntityTooLarge || !strings.Contains(errMessage(out), "max_bytes") {
+		t.Fatalf("an oversized file must be refused even when no row matches: %d %v", code, out)
+	}
+	code, out = h.httpCall("update", map[string]any{"namespace": "fil", "table": "docs", "filter": "id = 999", "set": map[string]any{"doc": map[string]any{"copy_from": map[string]any{"table": "docs", "id": 5, "field": "doc"}}}})
+	if code == http.StatusOK {
+		t.Fatalf("a copy_from naming no readable file must be refused even when no row matches: %d %v", code, out)
 	}
 }

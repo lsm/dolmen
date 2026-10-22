@@ -244,7 +244,7 @@ func CoerceFile(ctx context.Context, reader FileReader, nsName string, f schema.
 	return coerceFile(ctx, reader, nsName, f, v, true)
 }
 
-func checkFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, v any) error {
+func CheckFile(ctx context.Context, reader FileReader, nsName string, f schema.Field, v any) error {
 	_, err := coerceFile(ctx, reader, nsName, f, v, false)
 	return err
 }
