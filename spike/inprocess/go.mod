@@ -1,6 +1,6 @@
 module github.com/lsm/dolmen/spike/inprocess
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/dolthub/go-mysql-server v0.20.0

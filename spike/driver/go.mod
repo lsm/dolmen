@@ -1,6 +1,6 @@
 module github.com/lsm/dolmen/spike/driver
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/apache/arrow-go/v18 v18.6.0

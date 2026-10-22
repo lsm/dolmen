@@ -1,6 +1,6 @@
 module github.com/lsm/dolmen/examples/basic
 
-go 1.26.9
+go 1.26.10
 
 require github.com/lsm/dolmen v0.0.0
 
