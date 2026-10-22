@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Builds with Go 1.26.10, which fixes GO-2026-6809 in `crypto/x509`.
+
 ## v0.7.0
 
 ### Added
