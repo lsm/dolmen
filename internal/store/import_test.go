@@ -289,3 +289,55 @@ func TestImportOversizedExistingRowHasImportRemediation(t *testing.T) {
 		})
 	}
 }
+
+func TestImportRetainsFieldRemediation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		field  schema.Field
+		values map[string]any
+	}{
+		{"missing file", schema.Field{Name: "payload", Type: schema.File}, map[string]any{"payload": map[string]any{"part": "upload"}}},
+		{"NUL", schema.Field{Name: "payload", Type: schema.Text}, map[string]any{"payload": "a\x00b"}},
+		{"enum", schema.Field{Name: "payload", Type: schema.String, Enum: []string{"stone", "wood"}}, map[string]any{"payload": "metal"}},
+		{"vector", schema.Field{Name: "payload", Type: schema.Vector, Dim: 3}, map[string]any{"payload": []any{1, 2}}},
+		{"unknown", schema.Field{Name: "payload", Type: schema.Text}, map[string]any{"bogus": true}},
+		{"required", schema.Field{Name: "payload", Type: schema.Text, Required: true}, map[string]any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, ctx := importFixture(t), context.Background()
+			if _, err := st.CreateTable(ctx, "test", "invalid_rows", []schema.Field{tc.field}, TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			_, ordinary := st.Insert(ctx, "test", "invalid_rows", []map[string]any{tc.values}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+			if !errors.Is(ordinary, ErrInvalid) {
+				t.Fatalf("fixture: %v", ordinary)
+			}
+			row := map[string]any{"id": 42, "created_at": "2026-01-02T03:04:05.123Z"}
+			for k, v := range tc.values {
+				row[k] = v
+			}
+			_, err := st.ImportRecords(ctx, "test", "invalid_rows", []map[string]any{row}, WriteOpts{IdempotencyKey: "bad-field"}, Embedder{}, Incarnation{})
+			want := strings.TrimPrefix(ordinary.Error(), "invalid request: ")
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "import record 0") || !strings.Contains(err.Error(), want) {
+				t.Fatalf("lost ordinary remediation %q: %v", want, err)
+			}
+		})
+	}
+}
+
+type importRejectedFileSource struct {
+	*fakeFiles
+	cause error
+}
+
+func (s *importRejectedFileSource) Describe(string) (FileBlob, error) { return FileBlob{}, s.cause }
+
+func TestImportPreservesCoercionErrorChain(t *testing.T) {
+	st, ctx := fileTable(t)
+	cause := invalidf("synthetic file unavailable; supply the upload in this request")
+	ctx = WithFileSource(ctx, &importRejectedFileSource{fakeFiles: &fakeFiles{}, cause: cause})
+	_, err := st.ImportRecords(ctx, "app", "docs", []map[string]any{{"id": 42, "created_at": "2026-01-02T03:04:05.123Z", "doc": map[string]any{"part": "upload"}}}, WriteOpts{IdempotencyKey: "bad-file"}, Embedder{}, Incarnation{})
+	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "import record 0") {
+		t.Fatalf("coercion chain lost: %v", err)
+	}
+}
