@@ -4,7 +4,8 @@ Proposed for #704; implementation tracked by #705 under #698. Human approval is
 required before implementation. This proposes a narrow exception to D20 in
 [identity-and-engines.md](identity-and-engines.md): importing application rows now
 has a demander. General export, replication, and backup/restore remain unchanged;
-the first implementation PR updates that older portability decision.
+Pending-approval pointers in the D20 decision index and implementation plan link
+to this proposal; no older decision changes before human approval.
 
 ## Import contract
 

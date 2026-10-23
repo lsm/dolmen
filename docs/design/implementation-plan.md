@@ -1430,6 +1430,9 @@ Acceptance: docs review; no behavior change.
 
 ## Not filed — demander-gated (D20/D25)
 
+Pending approval: [identity-preserving import and SQLite/Postgres migration](import-and-source-migration.md)
+is proposed under #704/#705; implementation remains held for human approval.
+
 The Postgres adapter (engine-2) was authorized on 2026-09-19 and is tracked in
 [postgresql.md](postgresql.md). The lakehouse adapter (engine-3, append-dominated tier),
 webhooks (§9 layer 4), user-facing export/import, and job-queue/claim semantics

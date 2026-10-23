@@ -1918,6 +1918,9 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 
 ## Decision index
 
+Pending approval: [identity-preserving import and SQLite/Postgres migration](import-and-source-migration.md)
+(#704/#705) proposes a limited D20 exception; D20 is unchanged until human approval.
+
 | # | Decision | Where |
 |---|---|---|
 | D1 | `X-Dolmen-Principal` / `X-Dolmen-Groups`; groups cap configurable via `-max-groups`/`DOLMEN_MAX_GROUPS` — default 128, range 1–1024, startup-rejected outside; over-limit stays 401 | §1.1–1.2 |
