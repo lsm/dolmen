@@ -1,27 +1,27 @@
 # Graph support: the graph is an API
 
-**Proposal; implementation requires human approval.** Agents manage organisational knowledge through entities and relations, independently of storage. Keep the existing [identity, engine and transaction contract](identity-and-engines.md#06-consistency-contract). Recommend indexed adjacency in the existing SQLite engine first, bounded Go traversal behind an internal adapter, and equivalent operations over the PostgreSQL engine. Storage selection stays internal; unsupported engines declare the graph capability unavailable.
+**Proposal; implementation requires human approval.** The graph is a separate module inside Dolmen. Its graph-index interface supports interchangeable SQLite adjacency (initial default), PostgreSQL, Badger and later backends, selected by deployment configuration. Every backend shares the graph API and conformance tests. Keep the existing [identity, engine and transaction contract](identity-and-engines.md#06-consistency-contract).
 
-## Agent operations and ontology
+## Generic graph model and operations
 
-Expose these proposed operations through HTTP, MCP and the Go facade with shared conformance cases:
+Use existing table writes; expose graph operations through HTTP, MCP and the Go facade:
 
 | Operation | Contract |
 | --- | --- |
-| `add_entity(type, properties)` | Insert through existing table writes; return a stable entity reference. |
-| `relate(type, source, target, properties)` | Insert a directed, typed relation; support existing write idempotency. |
-| `neighbors(entity, direction, relation_types)` | Return visible incident relations and endpoints. |
+| `insert` / `upsert` (existing) | Add rows to any table; these rows are graph nodes. |
+| `relate(relation_table, source, target, type, properties)` | Insert a directed edge row; support existing write idempotency. |
+| `neighbors(node, direction, relation_types)` | Return visible incident relations and endpoints. |
 | `find_path(source, target, relation_types, max_hops)` | Return a shortest unweighted path within the requested bounds. |
-| `subgraph(seeds, direction, relation_types, max_hops)` | Return deduplicated entities and relations reached from seeds. |
-| `search_graph(query, entity_types, top_k, expansion)` | Existing semantic search supplies visible seeds; bounded graph expansion returns connections and seed scores separately. |
+| `subgraph(seeds, direction, relation_types, max_hops)` | Return deduplicated nodes and edges reached from seeds. |
+| `search_graph(query, tables, top_k, expansion)` | Existing semantic search supplies visible seeds; bounded graph expansion returns connections and seed scores separately. |
 
-Entity types (person, project, document, decision) are ordinary typed tables. Relation types (member_of, authored, depends_on) are edge tables with declared source/target entity types and typed properties. Extend existing `create_table`/`migrate` schema management for these declarations; no separate ontology language or implicit inference. References include namespace/table incarnations and row id, preventing name/id reuse from reconnecting old edges. Validate endpoints and restrict deletion of referenced entities in the same transaction, including writes through ordinary CRUD/batch; explicit edge deletion removes the relationship. Schema evolution must preserve or explicitly validate existing endpoints.
+Any table row is a node; no kind registration is required. Each edge is a relation-table row with source/target row references, a user-defined type and typed properties, declared through existing `create_table`/`migrate`. References include namespace/table incarnations and row id, preventing old edges reconnecting after name/id reuse. Validate endpoints and restrict referenced-row deletion atomically, including ordinary CRUD/batch; delete edges explicitly. Schema evolution preserves or validates endpoints. No domain vocabulary is built in.
 
 Every traversal stays within one namespace, applies table permissions and RowScope to **each edge and endpoint before expansion**, and uses one consistent read snapshot. Hidden nodes cannot connect visible results. Bound hops, visited nodes, edges and elapsed work; return `truncated` and the stopping reason. A bounded miss is not proof that no path exists. Use stable reference ordering for ties; exhausted traversal budgets never become successful complete results. Semantic seeds retain the existing engine's declared exact/ANN behavior.
 
 ## Storage decision and research
 
-**Tables are the source of truth; graph adjacency is rebuildable.** Start with forward/reverse indexes over relation rows and Go BFS; recursive SQL is a correctness fallback. SQLite [documents graph CTEs](https://www.sqlite.org/lang_with.html#queries_against_a_graph); PostgreSQL [supports recursion and cycle tracking](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-CYCLE). This avoids a second commit boundary and keeps `CGO_ENABLED=0` with the current SQLite driver. Do not expose SQL, Cypher or an engine's query language as the graph API.
+**Tables are the source of truth; every index backend is rebuildable from them.** The graph module owns traversal and an index interface for committed updates, adjacency reads, snapshot/checkpoint tracking and rebuild. SQLite adjacency uses forward/reverse indexes over relation rows with Go BFS; recursive SQL is a correctness fallback. Backend selection is independent of the authoritative table engine. SQLite [documents graph CTEs](https://www.sqlite.org/lang_with.html#queries_against_a_graph); PostgreSQL [supports recursion and cycle tracking](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-CYCLE). The SQLite driver preserves `CGO_ENABLED=0`. Do not expose SQL, Cypher or an engine's query language as the graph API.
 
 Native Go candidates researched on 2026-10-23:
 
@@ -29,7 +29,7 @@ Native Go candidates researched on 2026-10-23:
 | --- | --- |
 | [Cayley](https://github.com/cayleygraph/cayley) | Embeddable quads; backend-dependent durability, Apache-2.0. Default-branch commit 2024-07; last release 2019. Upstream's rough 134M-quad / ~150ms intersection claim is dated 2014 hardware, not an organisation-data comparison. |
 | [Dgraph](https://github.com/dgraph-io/dgraph) | Active, Apache-2.0, distributed ACID server; its Dockerfile builds CGO-free, but not a supported embedded library. Operational mismatch. |
-| [Badger](https://github.com/dgraph-io/badger) | Active, Apache-2.0, embedded transactional KV. Preferred alternate **adjacency index**, if measured benefits justify cross-store recovery; it supplies no graph API itself. |
+| [Badger](https://github.com/dgraph-io/badger) | Active, Apache-2.0, embedded transactional KV. Pluggable **adjacency index** backend; cross-store recovery remains required. It supplies no graph API itself. |
 | [EliasDB](https://github.com/krotik/eliasdb) | Embedded disk graph and transactions, MPL-2.0; latest release 2022, dependency update 2026. Needs crash/durability evaluation. |
 | [Gonum graph](https://pkg.go.dev/gonum.org/v1/gonum/graph) / [dominikbraun/graph](https://github.com/dominikbraun/graph) | BSD-3-Clause / Apache-2.0 algorithm libraries; no default durable store. Gonum remains active; latter's latest commit is 2024. |
 | [Cayley fork](https://github.com/aperturerobotics/cayley) / [newer GraphDB](https://github.com/dd0wney/graphdb) | Active Go alternatives, Apache-2.0 / MIT. Fork updates Badger; GraphDB claims WAL persistence but requires Go 1.27, above the current 1.26.10 floor. Its throughput/latency figures lack execution context for comparison; rerun before relying on them. |
@@ -38,8 +38,12 @@ Go 1.26.10/CGO-free import builds on darwin/arm64 passed for Cayley+Badger, Badg
 
 ## Transactions, backup and validation
 
-Table writes, adjacency changes, idempotency and change records commit together under the current engine contract. A future separate Badger index must consume a durable transaction log, replay idempotently and track an incarnation-scoped checkpoint; queries catch up or fall back to table traversal, never silently serve stale acknowledged writes. Crash recovery and snapshot reads must be proved before enabling it. Graph-as-source-of-truth would require replacing the full table transaction/authorization/backup contract; reject that duplicate authority.
+Canonical table writes, idempotency and change/outbox records commit together. An index sharing that transaction may update atomically; otherwise it replays committed changes idempotently with an incarnation-scoped checkpoint. Every backend must supply the query's consistent read view or catch up/fall back to authoritative table traversal, preserving read-your-writes. Prove crash recovery and snapshot coordination; never acknowledge an uncoordinated dual write. Graph-as-source-of-truth would replace the full table transaction/authorization/backup contract; reject that duplicate authority.
 
 Back up authoritative rows, schemas and existing engine metadata using the engine's supported procedure; adjacency needs no independent backup. Rebuild from a consistent snapshot, replay intervening committed changes, then atomically publish the matching generation; retain table fallback during rebuild and invalidate dropped incarnations. No independent table/graph snapshots masquerading as one consistent backup.
 
-After approval, first pin contracts/ontology, then implement transactional adjacency and bounded traversal, then semantic expansion; evaluate alternative indexes only after a benchmark. Use synthetic 10K/100K entities and 100K/1M relations, with hubs, cycles and permission partitions: neighbors, 1–4-hop expansion/path, semantic seeds plus expansion, 95:5 reads/writes. Compare indexed Go traversal, SQLite/PostgreSQL CTEs and Badger on the same seeds, machine, durability and cache budget; record p50/p95/p99, RSS, disk, write cost, crash recovery and rebuild time. Test hidden-intermediate-node isolation, CRUD bypasses, concurrent endpoint deletion, restart and restore. Proposed targets: p95 neighbors <50ms and bounded 3-hop expansion <250ms on a specified 4-core/16GB host; these are hypotheses, not measured claims. No implementation or benchmark harness is included here.
+After design approval and merge, **benchmark SQLite adjacency plus Go traversal versus Badger in the first implementation PR**. Report results before the human chooses a default; pluggability remains required. Contracts, adapters and semantic expansion follow. Use synthetic 10K/100K nodes and 100K/1M edges, with hubs, cycles and permission partitions: neighbors, 1–4-hop expansion/path, semantic seeds plus expansion, 95:5 reads/writes. Compare indexed Go traversal, SQLite/PostgreSQL CTEs and Badger on the same seeds, machine, durability and cache budget; record p50/p95/p99, RSS, disk, write cost, crash recovery and rebuild time. Test hidden-intermediate-node isolation, CRUD bypasses, concurrent endpoint deletion, restart and restore. Proposed targets: p95 neighbors <50ms and bounded 3-hop expansion <250ms on a specified 4-core/16GB host; these are hypotheses, not measured claims. No implementation or benchmark harness is included here.
+
+## Example use: an organisation knowledge base
+
+Users may model people, projects, documents and decisions in tables with application-chosen edge types. Any ontology over this graph belongs to the application.
