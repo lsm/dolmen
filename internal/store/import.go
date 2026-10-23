@@ -144,7 +144,7 @@ func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []m
 		expected := map[string]any{"id": identities[i].ID, "created_at": identities[i].CreatedAt}
 		for name := range prepared {
 			if sc.Field(name) == nil {
-				return ImportResult{}, invalidf("import record %d has an unknown field; see describe_table", i)
+				return ImportResult{}, invalidf("import record %d: unknown field %q on table %s (see describe_table)", i, name, table)
 			}
 		}
 		for _, f := range sc.Fields {
@@ -154,14 +154,11 @@ func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []m
 				prepared[f.Name] = v
 			}
 			if v == nil && f.Required {
-				return ImportResult{}, invalidf("import record %d is missing a required field", i)
+				return ImportResult{}, invalidf("import record %d: field %q is required", i, f.Name)
 			}
 			cv, e := s.coerceWrite(ctx, ns, f, v)
 			if e != nil {
-				if errors.Is(e, ErrInvalid) {
-					return ImportResult{}, invalidf("import record %d field %s is invalid; check its declared type", i, f.Name)
-				}
-				return ImportResult{}, e
+				return ImportResult{}, fmt.Errorf("import record %d: %w", i, e)
 			}
 			if f.Type == schema.Secret && cv != nil {
 				cv, e = s.secrets.Open(cv.([]byte))
