@@ -7,6 +7,45 @@ A dolmen is an ancient stone *table*: durable, zero-maintenance, still standing 
 built it moved on. That's the operating model — one static Go binary, SQLite files on a volume,
 no database server to babysit.
 
+![Clients reach one dolmen binary over MCP, HTTP, or the Go API; dolmen keeps tables, full-text, and vectors in SQLite (default), PostgreSQL, or Iceberg files](docs/dolmen-overview.svg)
+
+## Who it's for
+
+Builders of agents and AI skills whose data has outgrown one process — shared memory, telemetry,
+user metrics, files — and who want it searchable and governed without taking on database
+operations. One server, three ways in:
+
+- **MCP clients** — Claude, Cursor, anything that speaks MCP, over HTTP or stdio.
+- **HTTP clients** — a plain JSON API, one operation per `POST /v1/{op}`.
+- **Go programs** — in-process, as a library; no server at all.
+
+## Try it
+
+With [Go 1.26.10+](#prerequisites) (Windows PowerShell variant in the
+[Quickstart](#quickstart); a released container below needs only Docker):
+
+```bash
+git clone https://github.com/lsm/dolmen.git && cd dolmen
+CGO_ENABLED=0 go build -o dolmen ./cmd/dolmen
+./dolmen -addr 127.0.0.1:8790 -data ./data
+```
+
+Or run the released container, which needs nothing but Docker:
+
+```bash
+docker run --rm -it -p 127.0.0.1:8790:8790 -v dolmen-data:/data ghcr.io/lsm/dolmen:v0.7.0
+```
+
+It is up when the health check answers:
+
+```bash
+curl -s http://127.0.0.1:8790/healthz
+# {"status":"ok"}
+```
+
+From there, [First API calls](#first-api-calls) create a table and search it, and
+[MCP (agents)](#mcp-agents) connects an agent host.
+
 ## Why
 
 Building an AI skill or agent is fast now; holding its data is not. Any agent can spin up a local
