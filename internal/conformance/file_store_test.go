@@ -180,8 +180,9 @@ func TestAnUnreachableFileStoreIsStorageUnavailableOnEveryTransport(t *testing.T
 
 func TestARemoteUploadGetsTheFetchTimeoutOnTopOfTheOperationLimit(t *testing.T) {
 	blobs := &switchableBlobs{BlobStore: files.NewLocal(t.TempDir()), delay: 600 * time.Millisecond}
-	h := newHarnessBlobs(t, blobs, &api.Timeouts{Op: 200 * time.Millisecond})
+	h := newHarnessBlobs(t, blobs, nil)
 	h.seedTable("fil", "docs", fileTableFields())
+	h.retime(api.Timeouts{Op: 200 * time.Millisecond})
 	code, body := h.multipartCall("insert", `{"namespace":"fil","table":"docs","records":[{"title":"a","doc":{"part":"notes"}}]}`, map[string][]byte{"notes": []byte("slow upload")})
 	if code != http.StatusOK {
 		t.Fatalf("an upload slower than -op-timeout to a remote store must still finish within -files-fetch-timeout: %d %v", code, body)

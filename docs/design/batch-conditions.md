@@ -1,6 +1,6 @@
 # Conditional Batch writes
 
-**Status: proposed; human approval required before implementation (#702).**
+**Status: approved (#702); implementation tracked in #703.**
 This extends [Batch writes](batch-writes.md); its atomicity, ordering, limits,
 authorization and result shapes remain the contract unless noted below.
 

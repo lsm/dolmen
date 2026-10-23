@@ -30,15 +30,16 @@ const (
 )
 
 type BatchWrite struct {
-	Kind        BatchWriteKind
-	Table       string
-	Records     []map[string]any
-	On          []string
-	Filter      string
-	Args        []any
-	Set         map[string]any
-	Scope       *RowScope
-	Incarnation Incarnation
+	ExpectedRows *int64 `json:",omitempty"`
+	Kind         BatchWriteKind
+	Table        string
+	Records      []map[string]any
+	On           []string
+	Filter       string
+	Args         []any
+	Set          map[string]any
+	Scope        *RowScope
+	Incarnation  Incarnation
 }
 
 type BatchOpts struct {
@@ -172,7 +173,7 @@ func BatchPayloadHash(ctx context.Context, keys *secret.Keyring, schemas map[str
 	sum := func(k *secret.Keyring) (string, error) {
 		sealed := make([]BatchWrite, 0, len(writes))
 		for _, w := range writes {
-			c := BatchWrite{Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
+			c := BatchWrite{ExpectedRows: w.ExpectedRows, Kind: w.Kind, Table: w.Table, On: w.On, Filter: w.Filter, Records: w.Records, Args: w.Args, Set: w.Set}
 			if secrets {
 				sc := schemas[w.Table]
 				c.Records = FingerprintSecrets(k, sc, lowerRecordKeys(w.Records))
@@ -328,6 +329,14 @@ func ValidateBatchWrites(writes []BatchWrite) error {
 	for i, w := range writes {
 		if w.Table == "" {
 			return fmt.Errorf("writes[%d]: %w", i, invalidf("table is required"))
+		}
+		if w.ExpectedRows != nil {
+			if w.Kind != BatchWriteUpdate && w.Kind != BatchWriteDelete {
+				return fmt.Errorf("writes[%d]: %w", i, invalidf("expected_rows is only available on batch update and delete writes; omit it for this write kind"))
+			}
+			if *w.ExpectedRows < 0 || *w.ExpectedRows > MaxRowsTouchedPerBatch {
+				return fmt.Errorf("writes[%d]: %w", i, invalidf("expected_rows must be an integer from 0 to %d; omit it to accept any match count", MaxRowsTouchedPerBatch))
+			}
 		}
 		switch w.Kind {
 		case BatchWriteInsert, BatchWriteUpsertByKey:
@@ -492,6 +501,9 @@ func (s *Store) batchAttempt(ctx context.Context, n *nsDB, nsName string, writes
 		if touched > MaxRowsTouchedPerBatch {
 			return BatchResult{}, true, fmt.Errorf("writes[%d]: %w", i,
 				invalidf("this batch would touch more than %d rows, the per-batch budget (records inserted plus rows matched by update, upsert and delete); split it into smaller batches, or run a large delete as its own delete call, which the batch budget does not bound", MaxRowsTouchedPerBatch))
+		}
+		if err := CheckBatchExpectedRows(w, out); err != nil {
+			return BatchResult{}, true, fmt.Errorf("writes[%d]: %w", i, err)
 		}
 		results = append(results, out)
 		changes = MergeChangeRanges(changes, out.Changes)
