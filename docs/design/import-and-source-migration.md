@@ -27,13 +27,17 @@ Example after explicitly creating an `events` table with a text `body` field:
  "records":[{"id":42,"created_at":"2026-01-02T03:04:05.123Z","body":"sample"}]}
 ```
 
-Import is insert-only: an occupied ID is `conflict`, even with identical contents;
-never replace, merge or delete existing rows. One chunk is one atomic transaction,
-including IDs, timestamps, user fields, indexes, change-feed records and replay
-receipt. Identical key/payload retries return the original IDs without another
-change event; a changed payload with that key conflicts. Reuse existing table
-incarnation and idempotency machinery, with an import-specific receipt domain.
-Return `ids`, `inserted`, `replayed` and `changes` using existing write shapes.
+Import never overwrites: an existing ID with identical content is a no-op, counted
+as `skipped`; only different content at that ID is `conflict`. Compare canonical
+`created_at` and all validated, typed user fields (including nulls/defaults), not
+JSON key order or derived indexes/embeddings. Compare and insert under the same
+transaction, so retries also work without the original chunk boundaries or key.
+One chunk is atomic, including rows, indexes, change-feed records and replay receipt;
+any conflict rolls back its new rows. Skips emit no change events. Identical
+key/payload retries return the original receipt with `replayed: true`; a changed
+payload with that key conflicts. Reuse existing table incarnation and idempotency
+machinery, with an import-specific receipt domain. Return ordered `ids`, `inserted`,
+`skipped`, `replayed` and `changes`; a replay receipt retains its original counts.
 
 SQLite, Postgres and lakehouse targets share this contract. Reserve the allocator
 above both its previous high-water mark and the greatest imported ID before
@@ -60,22 +64,25 @@ Recipes emit one mapped record per line, ordered by source ID. Native JSON build
 preserve integer tokens, nulls and escaped text; the client decodes with UseNumber.
 Require a positive integral source key; UUID/composite/nonpositive keys need an
 explicit external mapping retaining the original key in a user field. Canonical
-creation strings pass through unchanged; other timestamps require an explicit
-timezone/conversion to UTC milliseconds that preserves the instant exactly. Keep
-the original representation in a user field when needed. Sub-millisecond instants
-are refused rather than rounded or truncated; the error names the millisecond
-limit and suggests retaining the source timestamp in a user field and explicitly
-preparing a representable creation time outside this importer. Missing or ambiguous
-times, unsupported types and lossy numeric conversions fail with row/field location,
+creation strings pass through unchanged. Export recipes explicitly convert other
+timestamps to UTC and truncate fractional seconds to milliseconds (never round),
+so Postgres microseconds migrate rather than fail. The export report counts rows
+whose instant lost sub-millisecond precision, per table and in total; e.g.
+`.123456Z` becomes `.123Z` and increments the count, while `.123000Z` does not.
+Retain the original timestamp in an explicitly mapped user field when exact source
+precision is needed. Dolmen still accepts only canonical milliseconds and never
+truncates on import. Missing or ambiguous times, unsupported types and lossy numeric
+conversions fail with row/field location,
 without echoing values or connection strings. Map binary/file data through
 existing file uploads, not source paths; rebuild embeddings with the target model.
 Do not silently infer schema, truncate decimals, or transfer SQL constraints/triggers.
 
 The client bounds chunks by rows and encoded request bytes, reports committed chunk
 numbers and stops on the first error. Stable snapshot name/table/chunk keys allow
-restart from the same immutable export; changed exports require new keys and a fresh
-target. Earlier chunks remain committed; there is no cross-table transaction.
-Validate source/target counts, ordered IDs, timestamps, mapped values and references
+restart from the same immutable export; regrouped or changed payloads require new
+keys. Identical existing rows are skipped; changed existing rows conflict. Earlier
+chunks remain committed; there is no cross-table transaction.
+Validate counts, ordered IDs, explicitly truncated timestamps, mapped values and references
 before switching readers. Keep source/export intact; failed migrations never clean
 up tables or overwrite a previously populated target automatically.
 
@@ -87,7 +94,9 @@ JSONL client and SQLite/Postgres recipes with end-to-end verification. Each stag
 is about 100–200 production lines; split further by working boundary if needed.
 No changes to Batch CAS, constraints or benchmarking owned by parallel threads.
 Conformance pins transport/facade parity, authorization, rollback, replay, large IDs,
-canonical timestamp ordering, precision refusals, search and subsequent normal writes.
-Synthetic SQLite and Postgres snapshots must migrate into fresh targets and compare mapped rows, then retry an
-acknowledged chunk and an interrupted stream. Document exact commands/results;
+canonical timestamp ordering, counted truncation, search and subsequent normal writes.
+Synthetic SQLite and microsecond-bearing Postgres snapshots must migrate and compare
+mapped rows. Retry acknowledged chunks and interrupted streams with both original
+and new chunk keys; assert skipped counts, no duplicate events, differing-content
+conflicts and rollback of new rows in a conflicting chunk. Document commands/results;
 no private source data or credentials in examples, fixtures or logs.
