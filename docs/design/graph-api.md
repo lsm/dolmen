@@ -23,6 +23,8 @@ Every traversal stays within one namespace, applies table permissions and RowSco
 
 **Tables are the source of truth; every index backend is rebuildable from them.** The graph module owns traversal and an index interface for committed updates, adjacency reads, snapshot/checkpoint tracking and rebuild. SQLite adjacency uses forward/reverse indexes over relation rows with Go BFS; recursive SQL is a correctness fallback. Backend selection is independent of the authoritative table engine. SQLite [documents graph CTEs](https://www.sqlite.org/lang_with.html#queries_against_a_graph); PostgreSQL [supports recursion and cycle tracking](https://www.postgresql.org/docs/18/queries-with.html#QUERIES-WITH-CYCLE). The SQLite driver preserves `CGO_ENABLED=0`. Do not expose SQL, Cypher or an engine's query language as the graph API.
 
+`Module` means a subsystem within the existing Go module. PostgreSQL and Badger adapters live in separate opt-in subpackages following the [backend option pattern](postgresql.md#selecting-postgresql). The graph core imports neither; the CLI registers adapters for configuration, while embedded consumers import only chosen adapters.
+
 Native Go candidates researched on 2026-10-23:
 
 | Candidate | Fit and evidence |
