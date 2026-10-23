@@ -50,14 +50,16 @@ type Field struct {
 }
 
 type TableSchema struct {
-	Namespace  string  `json:"namespace"`
-	Name       string  `json:"name"`
-	Version    int     `json:"version"`
-	Fields     []Field `json:"fields"`
-	EmbedSpace string  `json:"embed_space,omitempty"`
-	EmbedDim   int     `json:"embed_dim,omitempty"`
-	RowAccess  string  `json:"row_access,omitempty"`
-	HasOwner   bool    `json:"has_owner,omitempty"`
+	Namespace        string       `json:"namespace"`
+	Name             string       `json:"name"`
+	Version          int          `json:"version"`
+	Fields           []Field      `json:"fields"`
+	EmbedSpace       string       `json:"embed_space,omitempty"`
+	EmbedDim         int          `json:"embed_dim,omitempty"`
+	RowAccess        string       `json:"row_access,omitempty"`
+	HasOwner         bool         `json:"has_owner,omitempty"`
+	Constraints      []Constraint `json:"constraints,omitempty"`
+	AcceptReferences bool         `json:"accept_references,omitempty"`
 }
 
 const (

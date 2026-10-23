@@ -114,7 +114,9 @@ type WriteOpts struct {
 }
 
 type TableOpts struct {
-	RowAccess string
+	RowAccess        string
+	Constraints      []schema.Constraint
+	AcceptReferences bool
 }
 
 type DeleteOpts = DeleteOptions

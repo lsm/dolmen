@@ -46,6 +46,9 @@ func decodeTableState(result *tableState, n namespace, table, raw, columns strin
 	if result.schema == nil {
 		return fmt.Errorf("postgres: missing table schema")
 	}
+	if err := store.RefuseUnenforcedConstraints(result.schema); err != nil {
+		return err
+	}
 	if err := json.Unmarshal([]byte(columns), &result.columns); err != nil {
 		return fmt.Errorf("postgres: corrupt column mapping: %w", err)
 	}
@@ -130,6 +133,9 @@ func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn fun
 func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts store.TableOpts, expected [16]byte) (_ *schema.TableSchema, err error) {
 	ctx, end := s.span(ctx, "CREATE", ns, table)
 	defer func() { end(err) }()
+	if err := store.RefuseConstraintOptions(opts); err != nil {
+		return nil, err
+	}
 	fields, err = store.ValidateTableDefinition(table, fields)
 	if err != nil {
 		return nil, err
