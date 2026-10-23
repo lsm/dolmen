@@ -149,6 +149,9 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 	if err := store.ValidateBatchWrites(writes); err != nil {
 		return store.BatchResult{}, err
 	}
+	if err := store.RejectBatchExpectedRows(writes, "postgres"); err != nil {
+		return store.BatchResult{}, err
+	}
 
 	for attempt := 0; ; attempt++ {
 		res, retry, err := s.batchAttempt(ctx, ns, writes, opts, emb, scope, expected)
