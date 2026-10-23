@@ -176,12 +176,13 @@ func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []m
 				prepared[f.Name] = expected[f.Name]
 			}
 		}
-		existing, complete, e := fetchByIDsScoped(ctx, tx, table, []int64{identities[i].ID}, proj, nil)
+		existing, _, e := fetchByIDsScoped(ctx, tx, table, []int64{identities[i].ID}, proj, nil)
+		var budget *responseBudgetError
+		if errors.As(e, &budget) {
+			return ImportResult{}, invalidf("existing import row exceeds the read budget; reduce its size before importing")
+		}
 		if e != nil {
 			return ImportResult{}, e
-		}
-		if !complete {
-			return ImportResult{}, invalidf("existing import row exceeds the read budget; reduce its size before importing")
 		}
 		if len(existing) > 0 {
 			actual := map[string]any{"id": existing[0]["id"], "created_at": existing[0]["created_at"]}

@@ -269,7 +269,11 @@ func TestImportOversizedExistingRowHasImportRemediation(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, readErr := st.GetRows(ctx, "test", "large", []int64{inserted.Ids[0]}, nil, Incarnation{})
-			if !errors.Is(readErr, ErrInvalid) || !strings.Contains(readErr.Error(), "response budget") {
+			wantRead := "invalid request: search result exceeds the 32 MiB response budget on its first row"
+			if kind == "secret" {
+				wantRead = "invalid request: column \"payload_a\" exceeds the 32 MiB response budget; select fewer or smaller columns"
+			}
+			if !errors.Is(readErr, ErrInvalid) || readErr.Error() != wantRead {
 				t.Fatalf("read classification/message: %v", readErr)
 			}
 			rec["id"] = inserted.Ids[0]

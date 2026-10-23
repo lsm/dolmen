@@ -287,6 +287,10 @@ const (
 
 const MaxQueryBytes = 32 << 20
 
+type responseBudgetError struct{ error }
+
+func (e *responseBudgetError) Unwrap() error { return e.error }
+
 func queryLimit(n int) int {
 	if n <= 0 {
 		return DefaultPageLimit
@@ -385,7 +389,7 @@ func checkRowValue(col string, v any) error {
 	switch t := v.(type) {
 	case []byte:
 		if len(t) > MaxQueryBytes {
-			return invalidf("column %q exceeds the %d MiB response budget; select fewer or smaller columns", col, MaxQueryBytes>>20)
+			return &responseBudgetError{invalidf("column %q exceeds the %d MiB response budget; select fewer or smaller columns", col, MaxQueryBytes>>20)}
 		}
 	case float64:
 		if math.IsInf(t, 0) || math.IsNaN(t) {
