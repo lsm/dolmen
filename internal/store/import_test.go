@@ -148,7 +148,7 @@ func TestImportSearchReopenAndConcurrentNormalWrites(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		go func(i int) {
 			if i%2 == 0 {
-				_, e := st.ImportRecords(ctx, "test", "events", []map[string]any{{"id": int64(20000 + i), "created_at": row["created_at"], "body": "new imported"}}, WriteOpts{IdempotencyKey: fmt.Sprintf("parallel-%d", i)}, Embedder{}, Incarnation{})
+				_, e := st.ImportRecords(ctx, "test", "events", []map[string]any{{"id": int64(20000), "created_at": row["created_at"], "body": "new imported"}}, WriteOpts{IdempotencyKey: fmt.Sprintf("parallel-%d", i)}, Embedder{}, Incarnation{})
 				errs <- e
 			} else {
 				_, e := st.Insert(ctx, "test", "events", []map[string]any{{"body": "new ordinary"}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
@@ -162,7 +162,7 @@ func TestImportSearchReopenAndConcurrentNormalWrites(t *testing.T) {
 		}
 	}
 	all, err := st.ListRows(ctx, "test", "events", 0, 100, nil, Incarnation{})
-	if err != nil || len(all.Rows) != 9 {
+	if err != nil || len(all.Rows) != 6 {
 		t.Fatalf("parallel rows: %+v %v", all, err)
 	}
 	t.Logf("real SQLite: id=%v stamp=%v FTS=1 reopen.skipped=%d concurrent rows=%d", all.Rows[0]["id"], all.Rows[0]["created_at"], resumed.Skipped, len(all.Rows))

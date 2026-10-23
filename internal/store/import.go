@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -100,7 +101,12 @@ func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []m
 	if err != nil {
 		return ImportResult{}, err
 	}
-	hash, err := RequestHash(ctx, s.secrets, sc, records)
+	normalized := make([]map[string]any, len(clean))
+	for i, row := range clean {
+		normalized[i] = maps.Clone(row)
+		normalized[i]["id"], normalized[i]["created_at"] = identities[i].ID, identities[i].CreatedAt
+	}
+	hash, err := RequestHash(ctx, s.secrets, sc, normalized)
 	if err != nil {
 		return ImportResult{}, err
 	}
