@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="420" viewBox="0 0 940 420" role="img" aria-label="Clients reach one dolmen binary over MCP, HTTP, or the Go API; dolmen stores tables, full-text, and vectors in SQLite (default), PostgreSQL, or Iceberg lakehouse files">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 8 5 L 0 8 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .box { fill: #f6f8fa; stroke: #d0d7de; stroke-width: 1; }
+    .label { font-size: 10px; fill: #57606a; letter-spacing: 0.08em; }
+    .bt { font-size: 14px; font-weight: 600; fill: #24292f; }
+    .bs { font-size: 11.5px; fill: #57606a; }
+    .feat { font-size: 12.5px; fill: #24292f; }
+    .arrow { stroke: #8b949e; stroke-width: 1.5; fill: none; }
+  </style>
+
+  <rect x="0" y="0" width="940" height="420" fill="#ffffff"/>
+
+  <text class="label" x="20" y="32">CLIENTS</text>
+  <text class="label" x="710" y="32">STORAGE ENGINES</text>
+
+  <!-- MCP clients -->
+  <rect class="box" x="20" y="48" width="210" height="64" rx="8"/>
+  <text class="bt" x="36" y="76">MCP clients</text>
+  <text class="bs" x="36" y="96">Claude, Cursor &#183; /mcp, stdio</text>
+
+  <!-- HTTP clients -->
+  <rect class="box" x="20" y="158" width="210" height="64" rx="8"/>
+  <text class="bt" x="36" y="186">HTTP clients</text>
+  <text class="bs" x="36" y="206">curl, apps &#183; POST /v1/{op}</text>
+
+  <!-- Go programs -->
+  <rect class="box" x="20" y="268" width="210" height="64" rx="8"/>
+  <text class="bt" x="36" y="296">Go programs</text>
+  <text class="bs" x="36" y="316">dolmen.Open &#183; in-process</text>
+
+  <!-- dolmen -->
+  <rect x="300" y="40" width="320" height="270" rx="10" fill="#eef6f3" stroke="#0e7c6b" stroke-width="1.5"/>
+  <text x="320" y="72" font-size="17" font-weight="700" fill="#0b3b35">dolmen</text>
+  <text x="320" y="92" font-size="12" fill="#57606a">one static Go binary</text>
+
+  <rect x="320" y="104" width="68" height="24" rx="12" fill="#ffffff" stroke="#0e7c6b" stroke-width="0.75"/>
+  <text x="354" y="120" font-size="11" fill="#0b3b35" text-anchor="middle">JSON API</text>
+  <rect x="396" y="104" width="44" height="24" rx="12" fill="#ffffff" stroke="#0e7c6b" stroke-width="0.75"/>
+  <text x="418" y="120" font-size="11" fill="#0b3b35" text-anchor="middle">MCP</text>
+  <rect x="448" y="104" width="88" height="24" rx="12" fill="#ffffff" stroke="#0e7c6b" stroke-width="0.75"/>
+  <text x="492" y="120" font-size="11" fill="#0b3b35" text-anchor="middle">Go library</text>
+
+  <line x1="320" y1="146" x2="600" y2="146" stroke="#b8d8d0" stroke-width="1"/>
+
+  <text class="feat" x="320" y="172">tables &#183; full-text (FTS5) &#183; vector search</text>
+  <text class="feat" x="320" y="194">schema migration &#183; idempotent writes</text>
+  <text class="feat" x="320" y="216">file storage: local directory or S3</text>
+  <text class="feat" x="320" y="238">backup / restore, built in</text>
+  <text class="feat" x="320" y="260">embeddings: local or OpenAI-compatible</text>
+  <text class="feat" x="320" y="282">optional auth: API keys, OIDC, grants</text>
+
+  <!-- SQLite -->
+  <rect class="box" x="710" y="48" width="210" height="64" rx="8"/>
+  <text class="bt" x="726" y="76">SQLite (default)</text>
+  <text class="bs" x="726" y="96">one file per namespace</text>
+
+  <!-- PostgreSQL -->
+  <rect class="box" x="710" y="158" width="210" height="64" rx="8"/>
+  <text class="bt" x="726" y="186">PostgreSQL</text>
+  <text class="bs" x="726" y="206">-engine postgres</text>
+
+  <!-- Lakehouse -->
+  <rect class="box" x="710" y="268" width="210" height="64" rx="8"/>
+  <text class="bt" x="726" y="296">Lakehouse</text>
+  <text class="bs" x="726" y="316">Iceberg/Parquet &#183; DuckDB SQL</text>
+
+  <!-- arrows -->
+  <line class="arrow" x1="230" y1="80" x2="292" y2="80" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="230" y1="190" x2="292" y2="190" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="230" y1="300" x2="292" y2="300" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="626" y1="80" x2="702" y2="80" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="626" y1="190" x2="702" y2="190" marker-end="url(#arrow)"/>
+  <line class="arrow" x1="626" y1="300" x2="702" y2="300" marker-end="url(#arrow)"/>
+</svg>
