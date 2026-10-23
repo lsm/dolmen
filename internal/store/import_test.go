@@ -224,3 +224,22 @@ func TestImportSecretsVectorsAndFilesSkipByContent(t *testing.T) {
 		}
 	}
 }
+
+func TestImportHashesNormalizedSecretFields(t *testing.T) {
+	ctx := context.Background()
+	legacy := openSecretStore(t, t.TempDir(), testKeyring(t, 8))
+	mustNS(t, legacy, "test")
+	st := legacy.Store
+	if _, err := st.CreateTable(ctx, "test", "vault", secretFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	row := map[string]any{"ID": 42, "CREATED_AT": "2026-01-02T03:04:05.123Z", "TOKEN": "synthetic-case-value"}
+	if _, err := st.ImportRecords(ctx, "test", "vault", []map[string]any{row}, WriteOpts{IdempotencyKey: "canonical"}, Embedder{}, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	canonical := map[string]any{"id": int64(42), "created_at": row["CREATED_AT"], "token": row["TOKEN"]}
+	result, err := st.ImportRecords(ctx, "test", "vault", []map[string]any{canonical}, WriteOpts{IdempotencyKey: "canonical"}, Embedder{}, Incarnation{})
+	if err != nil || !result.Replayed {
+		t.Fatalf("normalized receipt: %+v %v", result, err)
+	}
+}
