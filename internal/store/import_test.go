@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 )
 
@@ -66,7 +69,7 @@ func TestImportConflictRollsBackChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := st.ImportRecords(ctx, "test", "events", []map[string]any{sourceRow(43, "new"), sourceRow(42, "different")}, WriteOpts{IdempotencyKey: "two"}, Embedder{}, Incarnation{})
-	if !errors.Is(err, ErrConflict) {
+	if !errors.Is(err, derr.ErrConflict) {
 		t.Fatalf("conflict: %v", err)
 	}
 	read, err := st.GetRows(ctx, "test", "events", []int64{42, 43}, nil, Incarnation{})
@@ -74,7 +77,7 @@ func TestImportConflictRollsBackChunk(t *testing.T) {
 		t.Fatalf("partial write: %+v %v", read, err)
 	}
 	_, err = st.ImportRecords(ctx, "test", "events", []map[string]any{sourceRow(44, "changed")}, WriteOpts{IdempotencyKey: "one"}, Embedder{}, Incarnation{})
-	if !errors.Is(err, ErrConflict) {
+	if !errors.Is(err, derr.ErrConflict) {
 		t.Fatalf("key reuse: %v", err)
 	}
 }
@@ -104,5 +107,120 @@ func TestImportRejectsInvalidMetadataAtomically(t *testing.T) {
 				t.Fatalf("partial validation: %+v %v", read, err)
 			}
 		})
+	}
+}
+
+func TestImportSearchReopenAndConcurrentNormalWrites(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { st.Close() }()
+	if err = st.CreateNamespace(ctx, "test", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.CreateTable(ctx, "test", "events", []schema.Field{{Name: "body", Type: schema.Text, Fulltext: true}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	const key = "snapshot"
+	row := map[string]any{"id": int64(10000), "created_at": "2026-01-02T03:04:05.123Z", "body": "granite archive"}
+	if _, err = st.ImportRecords(ctx, "test", "events", []map[string]any{row}, WriteOpts{IdempotencyKey: key}, Embedder{}, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	found, err := st.SearchFulltext(ctx, "test", "events", "granite", "", nil, false, nil, Incarnation{}, Page{Limit: 10})
+	if err != nil || len(found.Rows) != 1 || found.Rows[0]["id"] != int64(10000) {
+		t.Fatalf("FTS: %+v %v", found, err)
+	}
+	if err = st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := st.ImportRecords(ctx, "test", "events", []map[string]any{row}, WriteOpts{IdempotencyKey: "new-key"}, Embedder{}, Incarnation{})
+	if err != nil || resumed.Skipped != 1 {
+		t.Fatalf("reopen: %+v %v", resumed, err)
+	}
+	errs := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		go func(i int) {
+			if i%2 == 0 {
+				_, e := st.ImportRecords(ctx, "test", "events", []map[string]any{{"id": int64(20000 + i), "created_at": row["created_at"], "body": "new imported"}}, WriteOpts{IdempotencyKey: fmt.Sprintf("parallel-%d", i)}, Embedder{}, Incarnation{})
+				errs <- e
+			} else {
+				_, e := st.Insert(ctx, "test", "events", []map[string]any{{"body": "new ordinary"}}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+				errs <- e
+			}
+		}(i)
+	}
+	for range 8 {
+		if err = <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := st.ListRows(ctx, "test", "events", 0, 100, nil, Incarnation{})
+	if err != nil || len(all.Rows) != 9 {
+		t.Fatalf("parallel rows: %+v %v", all, err)
+	}
+	t.Logf("real SQLite: id=%v stamp=%v FTS=1 reopen.skipped=%d concurrent rows=%d", all.Rows[0]["id"], all.Rows[0]["created_at"], resumed.Skipped, len(all.Rows))
+}
+
+func TestImportBoundariesAndDefaults(t *testing.T) {
+	st, ctx := importFixture(t), context.Background()
+	for name, records := range map[string][]map[string]any{"empty": nil, "duplicate": {sourceRow(42, "one"), sourceRow(42, "one")}, "limit": make([]map[string]any, 1001)} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := st.ImportRecords(ctx, "test", "events", records, WriteOpts{IdempotencyKey: name}, Embedder{}, Incarnation{}); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("bounds: %v", err)
+			}
+		})
+	}
+	for _, key := range []string{"", "\x00", "é", strings.Repeat("a", 257)} {
+		if _, err := st.ImportRecords(ctx, "test", "events", []map[string]any{sourceRow(42, "one")}, WriteOpts{IdempotencyKey: key}, Embedder{}, Incarnation{}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("key: %v", err)
+		}
+	}
+	if _, err := st.CreateTable(ctx, "test", "defaults", []schema.Field{{Name: "stamp", Type: schema.Timestamp, Default: schema.NowDefault}, {Name: "flag", Type: schema.Boolean, Default: true}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	row := map[string]any{"id": 42, "created_at": "2026-01-02T03:04:05.123Z"}
+	for _, key := range []string{"first", "second"} {
+		got, err := st.ImportRecords(ctx, "test", "defaults", []map[string]any{row}, WriteOpts{IdempotencyKey: key}, Embedder{}, Incarnation{})
+		if err != nil || (key == "second" && got.Skipped != 1) {
+			t.Fatalf("defaults: %+v %v", got, err)
+		}
+	}
+}
+
+func TestImportSecretsVectorsAndFilesSkipByContent(t *testing.T) {
+	ctx := context.Background()
+	legacy := openSecretStore(t, t.TempDir(), testKeyring(t, 7))
+	mustNS(t, legacy, "test")
+	st := legacy.Store
+	if _, err := st.CreateTable(ctx, "test", "vault", secretFields(), TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	row := map[string]any{"id": 42, "created_at": "2026-01-02T03:04:05.123Z", "name": "synthetic", "token": "synthetic-value", "emb": []any{1, 0, 0}}
+	for _, key := range []string{"one", "two"} {
+		got, err := st.ImportRecords(ctx, "test", "vault", []map[string]any{row}, WriteOpts{IdempotencyKey: key}, Embedder{}, Incarnation{})
+		if err != nil || (key == "two" && got.Skipped != 1) {
+			t.Fatalf("secret/vector: %+v %v", got, err)
+		}
+	}
+	row["token"] = "different-synthetic-value"
+	if _, err := st.ImportRecords(ctx, "test", "vault", []map[string]any{row}, WriteOpts{IdempotencyKey: "three"}, Embedder{}, Incarnation{}); !errors.Is(err, derr.ErrConflict) {
+		t.Fatalf("secret conflict: %v", err)
+	}
+	files, fctx := fileTable(t)
+	src := &fakeFiles{parts: map[string]FileBlob{"f": blob("a", 5)}}
+	fctx = WithFileSource(fctx, src)
+	fileRow := map[string]any{"id": 42, "created_at": row["created_at"], "doc": map[string]any{"part": "f"}}
+	for _, key := range []string{"one", "two"} {
+		got, err := files.ImportRecords(fctx, "app", "docs", []map[string]any{fileRow}, WriteOpts{IdempotencyKey: key}, Embedder{}, Incarnation{})
+		if err != nil || (key == "two" && got.Skipped != 1) {
+			t.Fatalf("file: %+v %v", got, err)
+		}
 	}
 }
