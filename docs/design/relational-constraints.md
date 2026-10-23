@@ -20,7 +20,12 @@ within a table; allow at most 32 constraints per table. Proposed wire declaratio
 `Constraint`, `UniqueConstraint`, `ForeignKeyConstraint`, and `CreateTableOptions`
 values through additive `CreateTableWithOptions`; existing `CreateTable` is unchanged.
 `TableSchema.Constraints` and migration descriptions round-trip the declarations on
-Go, HTTP and MCP. This is a managed invariant, not an `UpsertByKey` matching hint.
+Go, HTTP and MCP. Parent tables must opt in with `accept_references: true`
+(`CreateTableOptions.AcceptReferences`, default false), also reported by describe.
+Under `auth: on`, enabling at creation or changing this policy requires `schema`
+and namespace-wide `read`, even when no references exist. Changes use
+`set_accept_references` with `expected_version`; disabling fails while references
+remain. This is a managed invariant, not an `UpsertByKey` matching hint.
 
 ## Meaning
 
@@ -28,16 +33,22 @@ Go, HTTP and MCP. This is a managed invariant, not an `UpsertByKey` matching hin
   `number`, `boolean`, `timestamp`); composite secondary uniqueness is supported.
   Rows participate only when `where` evaluates TRUE; FALSE/NULL do not participate.
   If any key component is NULL, duplicates are allowed. Compare coerced values:
-  bytewise case-sensitive text, normalized timestamps and exact numeric equality
+  bytewise case-sensitive text/timestamp strings and exact numeric equality
   (1 equals 1.0; comparing integers must not round them through float64). Reject
-  non-finite constrained numbers. JSON, vector, secret and file keys are excluded.
+  non-finite constrained numbers. Timestamp equality and predicate ordering compare
+  the strings returned by `CanonicalTimestamp`, not instants: it preserves offsets,
+  fractional precision and accepted date-only forms. Thus `2026-10-23T12:00:00Z`
+  and `2026-10-23T08:00:00-04:00` are distinct keys. Timestamp predicate literals
+  pass the same coercion before bytewise comparison; do not cast to a backend
+  temporal type. JSON, vector, secret and file keys are excluded.
 - **Predicate:** a bounded subset of the shared filter AST: scalar column/literal
   comparisons, `IS [NOT] NULL`, parentheses and AND/OR/NOT. No parameters, functions,
   SQL, subqueries, hidden columns or other tables. Predicate fields use the same
   scalar types as keys. Existing filter length/depth limits apply. Parse once and
   evaluate with shared typed semantics; never interpret backend-specific SQL.
 - **Foreign key:** one declared `number` field references another table's system
-  `id` in the same namespace, including a self-reference. Non-NULL values must be
+  `id` in the same namespace, including a self-reference; the parent must have
+  `accept_references: true`. Non-NULL values must be
   exact positive int64 IDs; NULL is allowed unless the field is required. No
   natural-key targets, composite references, cross-namespace links or cascade actions
   in this increment. Delete is RESTRICT; system IDs cannot be updated.
@@ -54,17 +65,32 @@ On `row_access: own` tables, uniqueness includes the row's stored owner implicit
 regardless of the caller's current grants. Foreign keys require both endpoints to
 be plain tables or both to be own-row tables; mixed declarations are refused. On
 own-row tables, a child may reference only a parent with the same stored owner.
-An absent parent and another owner's parent produce the same failure.
+An absent parent and another owner's parent produce the same failure. A NULL owner
+is a distinct unowned domain, never an empty principal string: NULL matches NULL for
+owner-domain equality, so duplicate non-NULL unique keys conflict within that domain.
+A NULL-owner child can reference only a NULL-owner parent, even under `auth: off`;
+a principal-owned child can reference only that principal's parent. Auth-mode flips
+do not relabel rows or relax these rules. NULL-owner children therefore cannot block
+a principal-owned parent's deletion; they do block their unowned parent under
+RESTRICT. Adding constraints rejects legacy rows violating these rules atomically.
 
-Plain-table uniqueness and RESTRICT checks could reveal unreadable rows. Require
-`read` in addition to the mutation verb on each plain table whose rows a constraint
-check consults (including referencing tables for parent deletion), checked before
-examining data. Own-row checks require a standing own-row read on every consulted table (`read`
-or a data verb, per the existing own-row rules); a table-wide mutation must also
-be authorized to read every affected domain. Constraint schema changes require
-`schema` and `read` on all affected tables. This amends the permission contract
-only for constrained operations; unconstrained operations are unchanged.
-No error exposes conflicting values, row IDs, owner labels or hidden row counts.
+Under `auth: on`, authorization precedes existence and data checks. Every `delete` and `drop_table`
+on a table with `accept_references: true` requires namespace-wide `read`, whether
+or not it has incoming references, matching rows, or a foreign-key violation. Check
+this stable, caller-targeted schema policy before looking up referencing tables.
+A caller lacking that grant gets the same `forbidden` outcome with zero, readable
+or hidden incoming tables. Do not condition this gate on a reverse-reference count;
+removing the last FK does not remove the gate. Non-opted-in tables cannot acquire
+incoming FKs and retain existing delete permissions. The opt-in deliberately
+reserves parent deletion to namespace readers, including on own-row tables.
+
+Plain-table uniqueness/outgoing-FK checks additionally require table-wide `read` on
+each consulted endpoint. Own-row checks require a standing own-row read on each
+endpoint (`read` or a data verb); a table-wide mutation requires read of all affected
+domains, including unowned rows. Constraint schema changes require `schema` and
+`read` on all affected tables. These amend only the stated constrained/opted-in
+operations. No error exposes conflicting values, row IDs, owner labels, hidden
+names or counts; neither its message nor outcome may reveal hidden references.
 
 ## Atomic enforcement and lifecycle
 
@@ -91,7 +117,8 @@ open-time version checks alone do not fence processes already serving requests.
 Invalid declarations return `invalid_request`; valid requests violating data
 constraints return `conflict`, naming the constraint and a safe repair action.
 All engines and surfaces must pass conformance for NULL/predicate transitions,
-composite uniqueness, int64 boundaries, owner isolation and permission gates,
+composite uniqueness, int64 boundaries, timestamp offsets/precision, NULL-owner
+domains across auth-mode flips, and uniform parent-deletion permission gates,
 parent deletion, intra-write and batch rollback, concurrent duplicate/orphan races,
 constraint migrations, restart persistence and refusal by older writers. Ship #701
 in small slices: shared schema/validation; schema lifecycle/version guards; engine
