@@ -43,7 +43,7 @@ race an ordinary allocator into a collision. Imported IDs cannot reach MaxInt64,
 so a following ordinary insert has representable space. Tests cover concurrent
 normal writes and later imports below the high-water mark. Reuse ordinary field,
 secret, file and embedding validation; rebuild derived search indexes rather than
-copying internal tables. Under auth-on require table `admin` and `insert`, without
+copying internal tables. Under auth-on require table `admin` and `create`, without
 row scope; never import grants, owner identities, secrets keys or internal metadata.
 
 ## SQLite and Postgres migration path
