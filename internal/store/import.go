@@ -74,7 +74,9 @@ func ImportIdentities(records []map[string]any, key string) ([]ImportIdentity, [
 	return ids, clean, nil
 }
 
-func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, inc Incarnation) (ImportResult, error) {
+func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, inc Incarnation) (_ ImportResult, err error) {
+	ctx, span := s.tr.Op(ctx, "IMPORT", ns, table)
+	defer func() { s.tr.End(ctx, span, err) }()
 	identities, clean, err := ImportIdentities(records, opts.IdempotencyKey)
 	if err != nil {
 		return ImportResult{}, err
@@ -110,7 +112,7 @@ func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []m
 	if err != nil {
 		return ImportResult{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS _dolmen_imports(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(table_name,generation,owner,key))`); err != nil {
+	if _, err = tx.ExecContext(ctx, importReceiptsDDL); err != nil {
 		return ImportResult{}, err
 	}
 	var storedHash, raw string
@@ -221,4 +223,14 @@ func (s *Store) ImportRecords(ctx context.Context, ns, table string, records []m
 	}
 	s.notifyCommitted(ns, table, result.Changes)
 	return result, nil
+}
+
+const importReceiptsDDL = `CREATE TABLE IF NOT EXISTS _dolmen_imports(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL, PRIMARY KEY(table_name,generation,owner,key))`
+
+func purgeImportRecordsForTable(ctx context.Context, tx *sql.Tx, table string) error {
+	if _, err := tx.ExecContext(ctx, importReceiptsDDL); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM _dolmen_imports WHERE table_name = ?`, table)
+	return err
 }

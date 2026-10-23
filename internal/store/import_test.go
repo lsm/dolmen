@@ -373,6 +373,19 @@ func TestImportReceiptsFollowExplicitTableDrop(t *testing.T) {
 	if count("events") != 1 {
 		t.Fatal("failed drop removed a receipt")
 	}
+	if _, err = n.rw.ExecContext(ctx, `CREATE TRIGGER reject_drop BEFORE INSERT ON _dolmen_drop_gen BEGIN SELECT RAISE(ABORT, 'synthetic drop failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.DropTable(ctx, "test", "events", Incarnation{}); err == nil {
+		t.Fatal("injected late drop failure succeeded")
+	}
+	rows, err := st.GetRows(ctx, "test", "events", []int64{42}, nil, Incarnation{})
+	if err != nil || len(rows.Rows) != 1 || count("events") != 1 {
+		t.Fatalf("failed drop did not restore table and receipt: %+v %v", rows, err)
+	}
+	if _, err = n.rw.ExecContext(ctx, `DROP TRIGGER reject_drop`); err != nil {
+		t.Fatal(err)
+	}
 	if err = st.DropTable(ctx, "test", "events", Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
