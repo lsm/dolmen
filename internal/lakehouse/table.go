@@ -94,6 +94,9 @@ func loadTable(ctx context.Context, n *namespace, ns, name string) (tableState, 
 	if err != nil || gen < 0 || state.schema == nil || state.schema.Name != name || state.schema.Namespace != ns || state.schema.Version < 1 {
 		return state, fmt.Errorf("%w: invalid lakehouse table registry", store.ErrCatalogCorrupt)
 	}
+	if err := store.RefuseUnenforcedConstraints(state.schema); err != nil {
+		return state, err
+	}
 	state.native = native
 	state.incarnation = store.Incarnation{NsGen: n.generation, Table: name, Version: int64(state.schema.Version), DropGen: gen}
 	return state, nil
@@ -127,6 +130,9 @@ func checkExpected(state tableState, want store.Incarnation, version bool) error
 }
 
 func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schema.Field, opts store.TableOpts, expected [16]byte) (*schema.TableSchema, error) {
+	if err := store.RefuseConstraintOptions(opts); err != nil {
+		return nil, err
+	}
 	fields, err := store.ValidateTableDefinition(name, fields)
 	if err != nil {
 		return nil, err

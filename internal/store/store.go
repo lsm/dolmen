@@ -672,6 +672,9 @@ func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*sche
 	if err := dec.Decode(&sc); err != nil {
 		return nil, fmt.Errorf("corrupt schema for %s.%s: %w", nsName, table, err)
 	}
+	if err := RefuseUnenforcedConstraints(&sc); err != nil {
+		return nil, err
+	}
 	return &sc, nil
 }
 
@@ -828,6 +831,9 @@ const MaxFieldsPerTable = 100
 func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (_ *schema.TableSchema, err error) {
 	ctx, span := s.tr.Op(ctx, "CREATE", nsName, table)
 	defer func() { s.tr.End(ctx, span, err) }()
+	if err := RefuseConstraintOptions(opts); err != nil {
+		return nil, err
+	}
 	fields, err = ValidateTableDefinition(table, fields)
 	if err != nil {
 		return nil, err
