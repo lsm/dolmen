@@ -243,3 +243,45 @@ func TestImportHashesNormalizedSecretFields(t *testing.T) {
 		t.Fatalf("normalized receipt: %+v %v", result, err)
 	}
 }
+
+func TestImportOversizedExistingRowHasImportRemediation(t *testing.T) {
+	for _, kind := range []string{"accumulated", "escaped", "secret"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			legacy := openSecretStore(t, t.TempDir(), testKeyring(t, 9))
+			mustNS(t, legacy, "test")
+			st := legacy.Store
+			fields := []schema.Field{{Name: "payload_a", Type: schema.Text}, {Name: "payload_b", Type: schema.Text}}
+			rec := map[string]any{"payload_a": strings.Repeat("a", MaxQueryBytes/2+1), "payload_b": strings.Repeat("b", MaxQueryBytes/2+1)}
+			if kind == "escaped" {
+				rec["payload_a"] = strings.Repeat("\n", MaxQueryBytes/2)
+				rec["payload_b"] = "x"
+			}
+			if kind == "secret" {
+				fields = []schema.Field{{Name: "payload_a", Type: schema.Secret}}
+				rec = map[string]any{"payload_a": strings.Repeat("s", MaxQueryBytes+1)}
+			}
+			if _, err := st.CreateTable(ctx, "test", "large", fields, TableOpts{}, [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			inserted, err := st.Insert(ctx, "test", "large", []map[string]any{rec}, WriteOpts{}, Embedder{}, nil, Incarnation{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, readErr := st.GetRows(ctx, "test", "large", []int64{inserted.Ids[0]}, nil, Incarnation{})
+			if !errors.Is(readErr, ErrInvalid) || !strings.Contains(readErr.Error(), "response budget") {
+				t.Fatalf("read classification/message: %v", readErr)
+			}
+			rec["id"] = inserted.Ids[0]
+			rec["created_at"] = "2026-01-02T03:04:05.123Z"
+			_, err = st.ImportRecords(ctx, "test", "large", []map[string]any{{"id": int64(42), "created_at": rec["created_at"]}, rec}, WriteOpts{IdempotencyKey: "oversized"}, Embedder{}, Incarnation{})
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "existing import row exceeds the read budget") || strings.Contains(err.Error(), "select fewer") {
+				t.Fatalf("import remediation: %v", err)
+			}
+			rows, err := st.GetRows(ctx, "test", "large", []int64{42}, nil, Incarnation{})
+			if err != nil || len(rows.Rows) != 0 {
+				t.Fatalf("oversized comparison partially wrote: %+v %v", rows, err)
+			}
+		})
+	}
+}
