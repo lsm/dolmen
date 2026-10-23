@@ -12,6 +12,7 @@ import (
 
 	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
+	"go.opentelemetry.io/otel/codes"
 )
 
 func importFixture(t *testing.T) *Store {
@@ -339,5 +340,93 @@ func TestImportPreservesCoercionErrorChain(t *testing.T) {
 	_, err := st.ImportRecords(ctx, "app", "docs", []map[string]any{{"id": 42, "created_at": "2026-01-02T03:04:05.123Z", "doc": map[string]any{"part": "upload"}}}, WriteOpts{IdempotencyKey: "bad-file"}, Embedder{}, Incarnation{})
 	if !errors.Is(err, cause) || !strings.Contains(err.Error(), "import record 0") {
 		t.Fatalf("coercion chain lost: %v", err)
+	}
+}
+
+func TestImportReceiptsFollowExplicitTableDrop(t *testing.T) {
+	st, ctx := importFixture(t), context.Background()
+	if _, err := st.CreateTable(ctx, "test", "other", []schema.Field{{Name: "body", Type: schema.Text}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ImportRecords(ctx, "test", "events", []map[string]any{sourceRow(42, "old")}, WriteOpts{IdempotencyKey: "same-key"}, Embedder{}, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ImportRecords(ctx, "test", "other", []map[string]any{{"id": 42, "created_at": "2026-01-02T03:04:05.123Z", "body": "keep"}}, WriteOpts{IdempotencyKey: "same-key"}, Embedder{}, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := st.ns("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	count := func(table string) int {
+		t.Helper()
+		var rows int
+		if err := n.rw.QueryRowContext(ctx, `SELECT COUNT(*) FROM _dolmen_imports WHERE table_name=?`, table).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	if err = st.DropTable(ctx, "test", "events", Incarnation{Table: "events", DropGen: 999}); err == nil {
+		t.Fatal("stale drop succeeded")
+	}
+	if count("events") != 1 {
+		t.Fatal("failed drop removed a receipt")
+	}
+	if err = st.DropTable(ctx, "test", "events", Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if count("events") != 0 || count("other") != 1 {
+		t.Fatal("drop must remove only its own receipts")
+	}
+	if _, err = st.CreateTable(ctx, "test", "events", []schema.Field{{Name: "body", Type: schema.Text}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := st.ImportRecords(ctx, "test", "events", []map[string]any{{"id": 42, "created_at": "2026-01-02T03:04:05.123Z", "body": "new"}}, WriteOpts{IdempotencyKey: "same-key"}, Embedder{}, Incarnation{})
+	if err != nil || result.Replayed || result.Inserted != 1 {
+		t.Fatalf("recreated table replay: %+v %v", result, err)
+	}
+}
+
+func TestImportDropWithoutAnyPriorImport(t *testing.T) {
+	st := importFixture(t)
+	if err := st.DropTable(context.Background(), "test", "events", Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestImportOperationTracing(t *testing.T) {
+	for _, kind := range []string{"insert", "replay", "invalid"} {
+		t.Run(kind, func(t *testing.T) {
+			tr := openTraced(t)
+			ctx, parent := tr.parent()
+			row := map[string]any{"id": 42, "created_at": "2026-01-02T03:04:05.123Z", "title": "synthetic-import-value"}
+			if kind == "replay" {
+				if _, err := tr.st.ImportRecords(ctx, "test", "notes", []map[string]any{row}, WriteOpts{IdempotencyKey: "trace"}, testEmbed, Incarnation{}); err != nil {
+					t.Fatal(err)
+				}
+				tr.rec.Reset()
+			}
+			if kind == "invalid" {
+				row["id"] = 0
+			}
+			_, err := tr.st.ImportRecords(ctx, "test", "notes", []map[string]any{row}, WriteOpts{IdempotencyKey: "trace"}, testEmbed, Incarnation{})
+			if (err != nil) != (kind == "invalid") {
+				t.Fatalf("operation: %v", err)
+			}
+			parent.End()
+			spans := tr.rec.Ended()
+			span := only(t, spans, "IMPORT notes")
+			underParent(t, span, parent)
+			wantDBAttrs(t, span, "IMPORT")
+			if kind == "invalid" {
+				if span.Status().Code != codes.Error || spanAttrOf(span, "error.type") != "invalid_request" {
+					t.Fatalf("invalid span: %+v", span.Status())
+				}
+			} else if span.Status().Code == codes.Error {
+				t.Fatalf("successful span: %+v", span.Status())
+			}
+			noSpanCarries(t, spans, "synthetic-import-value")
+		})
 	}
 }
