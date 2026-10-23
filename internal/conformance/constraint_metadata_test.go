@@ -31,6 +31,9 @@ func TestUnenforcedConstraintMetadataTeachesAtBothTransports(t *testing.T) {
 				if op == "insert" {
 					body["records"] = []map[string]any{{"slug": "must_not_write"}}
 				}
+				if op == "drop_table" {
+					body["confirm"] = "notes"
+				}
 				status, result := h.httpCall(op, body)
 				errEnv, _ := result["error"].(map[string]any)
 				message, _ := errEnv["message"].(string)

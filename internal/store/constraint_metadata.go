@@ -15,7 +15,7 @@ func RefuseConstraintOptions(opts TableOpts) error {
 
 func RefuseUnenforcedConstraints(sc *schema.TableSchema) error {
 	if len(sc.Constraints) > 0 || sc.AcceptReferences {
-		return fmt.Errorf("%w: this table requires constraint enforcement; upgrade dolmen to a binary that enforces constraints before using this table", ErrCatalogTooNew)
+		return fmt.Errorf("%w: %w: this table requires constraint enforcement; upgrade dolmen to a binary that enforces constraints before using this table", ErrInvalid, ErrCatalogTooNew)
 	}
 	return nil
 }
