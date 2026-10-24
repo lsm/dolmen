@@ -122,7 +122,7 @@ func TestSQLiteConstraintChangesRunInTheirOwnMigration(t *testing.T) {
 	}
 	on := true
 	for _, constraintOp := range []schema.Change{{Op: schema.OpDropConstraint, Name: "slug_key"}, {Op: schema.OpSetAcceptReferences, Value: &on}} {
-		for _, fieldOp := range []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "code", Type: schema.String}}, {Op: schema.OpRenameField, From: "memo", To: "note"}} {
+		for _, fieldOp := range []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "code", Type: schema.String}}, {Op: schema.OpRenameField, From: "memo", To: "note"}, {Op: schema.OpSetRowAccess, Value: &on}} {
 			_, err := s.Migrate(ctx, "ns", "notes", []schema.Change{constraintOp, fieldOp}, Embedder{}, Incarnation{Version: 1})
 			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "its own migrate call") {
 				t.Fatalf("%s with %s: %v", constraintOp.Op, fieldOp.Op, err)
