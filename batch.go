@@ -19,13 +19,14 @@ const (
 )
 
 type BatchWrite struct {
-	Kind    BatchWriteKind
-	Table   string
-	Records []map[string]any
-	On      []string
-	Filter  string
-	Args    []any
-	Set     map[string]any
+	Kind         BatchWriteKind
+	Table        string
+	Records      []map[string]any
+	On           []string
+	Filter       string
+	Args         []any
+	Set          map[string]any
+	ExpectedRows *int64
 }
 
 type BatchOptions struct {

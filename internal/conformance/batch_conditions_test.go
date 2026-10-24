@@ -3,7 +3,6 @@ package conformance
 import (
 	"context"
 	"errors"
-	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -173,26 +172,5 @@ func TestBatchExpectedRowsConcurrentClaimsCommitOneEventEveryEngine(t *testing.T
 	}
 	if wins != 1 || conflicts != 1 || conditionCount(t, h, "events", "1=1") != 1 {
 		t.Fatalf("two version-7 claims: wins=%d conflicts=%d, want exactly one committed event", wins, conflicts)
-	}
-}
-
-func TestBatchExpectedRowsNotYetExposedOnWire(t *testing.T) {
-	h := newHarness(t)
-	batchDocs(t, h)
-	body := map[string]any{"namespace": "acme", "writes": []any{
-		map[string]any{"kind": "insert", "table": "docs", "records": []any{map[string]any{"title": "must-rollback"}}},
-		map[string]any{"kind": "delete", "table": "docs", "filter": "1=1", "expected_rows": 0},
-	}}
-	status, out := h.httpCall("batch", body)
-	if status != http.StatusBadRequest || !strings.Contains(out["error"].(map[string]any)["message"].(string), "expected_rows") {
-		t.Fatalf("wire admitted hidden engine feature: %d %+v", status, out)
-	}
-	result := h.mcpCall("batch", body)
-	if !result.isError() || !strings.Contains(result.toolError()["message"].(string), "expected_rows") {
-		t.Fatalf("MCP admitted hidden engine feature: %+v", result)
-	}
-	rows := h.mustHTTP("query", map[string]any{"namespace": "acme", "sql": "SELECT count(*) AS n FROM docs"})
-	if rows["rows"].([]any)[0].(map[string]any)["n"] != float64(0) {
-		t.Fatalf("rejected wire request wrote rows: %+v", rows)
 	}
 }
