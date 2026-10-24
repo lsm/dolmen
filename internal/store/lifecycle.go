@@ -275,6 +275,13 @@ func (s *Store) DropTable(ctx context.Context, nsName, table string, inc Incarna
 	if err := checkScopeIncarnation(ctx, tx, nsName, table, inc); err != nil {
 		return err
 	}
+	referencing, err := sqliteReferencing(ctx, tx, table)
+	if err != nil {
+		return err
+	}
+	if err := RefuseReferencedDrop(table, referencing); err != nil {
+		return err
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DROP TABLE IF EXISTS %s`, q(ftsTable(table)))); err != nil {
