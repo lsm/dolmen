@@ -46,9 +46,6 @@ func decodeTableState(result *tableState, n namespace, table, raw, columns strin
 	if result.schema == nil {
 		return fmt.Errorf("postgres: missing table schema")
 	}
-	if err := store.RefuseUnenforcedConstraints(result.schema); err != nil {
-		return err
-	}
 	if err := json.Unmarshal([]byte(columns), &result.columns); err != nil {
 		return fmt.Errorf("postgres: corrupt column mapping: %w", err)
 	}
@@ -133,12 +130,12 @@ func (s *Store) readMode(ctx context.Context, name string, readOnly bool, fn fun
 func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []schema.Field, opts store.TableOpts, expected [16]byte) (_ *schema.TableSchema, err error) {
 	ctx, end := s.span(ctx, "CREATE", ns, table)
 	defer func() { end(err) }()
-	if err := store.RefuseConstraintOptions(opts); err != nil {
-		return nil, err
-	}
 	fields, err = store.ValidateTableDefinition(table, fields)
 	if err != nil {
 		return nil, err
+	}
+	if err := schema.ValidateConstraintDeclarations(ctx, fields, opts.Constraints); err != nil {
+		return nil, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
 	if err := store.ValidateEngineNames("postgresql", table, fields); err != nil {
 		return nil, err
@@ -161,8 +158,8 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 		}
 	}
 	sc := &schema.TableSchema{Namespace: ns, Name: table, Version: 1, Fields: fields,
-		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != ""}
-	err = s.write(ctx, ns, expected, func(tx pgx.Tx, n namespace) error {
+		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != "", Constraints: opts.Constraints, AcceptReferences: opts.AcceptReferences}
+	err = s.write(ctx, ns, expected, s.declared(ctx, sc, func(tx pgx.Tx, n namespace) error {
 		if _, err := s.loadTable(ctx, tx, n, table); err == nil {
 			return fmt.Errorf("%w: table %s.%s already exists", store.ErrInvalid, ns, table)
 		} else if !errors.Is(err, store.ErrNotFound) {
@@ -206,7 +203,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 			return err
 		}
 		return s.installRowCount(ctx, tx, ident(n.physical, physical), rowCountKey{namespace: ns, table: table, gen: generation}, sc.HasOwner)
-	})
+	}))
 	if err != nil {
 		return nil, err
 	}
@@ -351,7 +348,11 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 		if err := checkIncarnation(ns, current.incarnation, expected); err != nil {
 			return err
 		}
-		if err := s.refuseReferencedDrop(ctx, tx, n, table); err != nil {
+		referencing, err := s.referencing(ctx, tx, n, table)
+		if err != nil {
+			return err
+		}
+		if err := store.RefuseReferencedDrop(table, referencing); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, "DROP TABLE "+ident(n.physical, current.physical)); err != nil {

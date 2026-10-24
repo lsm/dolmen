@@ -195,26 +195,41 @@ func (s *Store) constraintRows(ctx context.Context, tx pgx.Tx, n namespace, t co
 	return result, rows.Err()
 }
 
-func (s *Store) refuseReferencedDrop(ctx context.Context, tx pgx.Tx, n namespace, table string) error {
-	rows, err := tx.Query(ctx, "SELECT name, schema_json FROM "+s.relation("tables")+" WHERE namespace=$1 AND active AND name <> $2 ORDER BY name", n.name, table)
+func (s *Store) declared(ctx context.Context, sc *schema.TableSchema, fn func(pgx.Tx, namespace) error) func(pgx.Tx, namespace) error {
+	return func(tx pgx.Tx, n namespace) error {
+		if err := fn(tx, n); err != nil {
+			return err
+		}
+		if len(sc.Constraints) == 0 && !sc.AcceptReferences {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = GREATEST(version, $1)", constraintCatalogVersion); err != nil {
+			return err
+		}
+		return s.checkConstraints(ctx, tx, n, sc.Name, false)
+	}
+}
+
+func (s *Store) referencing(ctx context.Context, tx pgx.Tx, n namespace, table string) ([]string, error) {
+	rows, err := tx.Query(ctx, "SELECT schema_json FROM "+s.relation("tables")+" WHERE namespace=$1 AND active", n.name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
+	var schemas []*schema.TableSchema
 	for rows.Next() {
-		var name, raw string
-		if err := rows.Scan(&name, &raw); err != nil {
-			return err
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
 		}
 		sc, err := decodeConstraintSchema(raw)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		for _, c := range sc.Constraints {
-			if c.Kind == schema.ConstraintForeignKey && c.References != nil && c.References.Table == table {
-				return fmt.Errorf("%w: table %s is referenced by a foreign key declared on table %s; drop that constraint first", store.ErrInvalid, table, name)
-			}
-		}
+		schemas = append(schemas, sc)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return schema.ReferencingTables(schemas, table), nil
 }
