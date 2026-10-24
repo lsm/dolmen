@@ -67,6 +67,9 @@ func PlanConstraintChange(ctx context.Context, cur *schema.TableSchema, ch schem
 		if i < 0 {
 			return invalidf("drop_constraint: table %s has no constraint %q; describe_table lists its constraints", cur.Name, ch.Name)
 		}
+		if c := cur.Constraints[i]; c.Kind == schema.ConstraintForeignKey && cur.Relation != nil && (c.Field == cur.Relation.Source || c.Field == cur.Relation.Target) {
+			return invalidf("drop_constraint %s: the table's relation declaration uses this foreign key for its %s endpoint; it stays while the relation does", ch.Name, c.Field)
+		}
 		cur.Constraints = slices.Delete(slices.Clone(cur.Constraints), i, i+1)
 	case schema.OpSetAcceptReferences:
 		if !*ch.Value {
