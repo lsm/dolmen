@@ -194,3 +194,27 @@ func (s *Store) constraintRows(ctx context.Context, tx pgx.Tx, n namespace, t co
 	}
 	return result, rows.Err()
 }
+
+func (s *Store) refuseReferencedDrop(ctx context.Context, tx pgx.Tx, n namespace, table string) error {
+	rows, err := tx.Query(ctx, "SELECT name, schema_json FROM "+s.relation("tables")+" WHERE namespace=$1 AND active AND name <> $2 ORDER BY name", n.name, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, raw string
+		if err := rows.Scan(&name, &raw); err != nil {
+			return err
+		}
+		sc, err := decodeConstraintSchema(raw)
+		if err != nil {
+			return err
+		}
+		for _, c := range sc.Constraints {
+			if c.Kind == schema.ConstraintForeignKey && c.References != nil && c.References.Table == table {
+				return fmt.Errorf("%w: table %s is referenced by a foreign key declared on table %s; drop that constraint first", store.ErrInvalid, table, name)
+			}
+		}
+	}
+	return rows.Err()
+}

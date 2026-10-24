@@ -348,6 +348,9 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 		if err := checkIncarnation(ns, current.incarnation, expected); err != nil {
 			return err
 		}
+		if err := s.refuseReferencedDrop(ctx, tx, n, table); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "DROP TABLE "+ident(n.physical, current.physical)); err != nil {
 			return err
 		}
