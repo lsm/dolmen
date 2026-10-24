@@ -61,6 +61,7 @@ type Engine interface {
 	ListRows(ctx context.Context, ns, table string, afterID int64, limit int, scope *RowScope, scopeIncarnation Incarnation) (QueryResult, error)
 
 	UpsertByKey(ctx context.Context, ns, table string, on []string, records []map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
+	ImportRecords(ctx context.Context, ns, table string, records []map[string]any, opts WriteOpts, emb Embedder, scopeIncarnation Incarnation) (ImportResult, error)
 
 	Upsert(ctx context.Context, ns, table string, filter string, args []any, record map[string]any, opts WriteOpts, emb Embedder, scope *RowScope, scopeIncarnation Incarnation) (InsertResult, error)
 

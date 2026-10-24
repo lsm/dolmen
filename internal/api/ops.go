@@ -1122,6 +1122,62 @@ var Ops = map[string]OpDef{
 			return map[string]any{"ids": res.Ids, "inserted": len(res.Ids)}, nil
 		},
 	},
+	"import_records": {
+		Description: "Import records from another database keeping their source identity: every record carries " +
+			"its own id (a positive integer below 2^63-1, sent as an exact JSON integer) and created_at " +
+			"(YYYY-MM-DDTHH:MM:SS.sssZ, UTC milliseconds), which are stored as given. The table must already " +
+			"exist. Each call is one atomic chunk of up to 1000 records with a required idempotency_key: an " +
+			"existing id with identical content is skipped (no change event), an existing id with different " +
+			"content is a conflict that rolls back the whole chunk, and an exact retry returns the original " +
+			"receipt with replayed=true. Ordinary inserts afterwards get ids above every imported one. " +
+			"Requires admin and create on the table. " + fileWriteHint,
+		InputSchema: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"namespace": nsProp("Namespace of the table"),
+				"table":     existingTableProp("Table name"),
+				"records": map[string]any{
+					"type":        "array",
+					"description": "Records to import, each with id, created_at and the table's fields",
+					"items":       map[string]any{"type": "object", "required": []string{"id", "created_at"}},
+					"minItems":    1,
+					"maxItems":    store.MaxRecordsPerInsert,
+				},
+				"idempotency_key": map[string]any{
+					"type":        "string",
+					"description": fmt.Sprintf("Key naming this chunk, stable across restarts of the same export (for example snapshot/table/chunk). Printable ASCII, 1-%d bytes", store.MaxIdempotencyKeyLen),
+					"minLength":   1,
+					"maxLength":   store.MaxIdempotencyKeyLen,
+					"pattern":     fmt.Sprintf(`^[ -~]{1,%d}$`, store.MaxIdempotencyKeyLen),
+				},
+			},
+			"required": []string{"namespace", "table", "records", "idempotency_key"},
+		},
+		OutputSchema: outSchema(map[string]any{
+			"ids":      map[string]any{"type": "array", "description": "The chunk's ids, in input order", "items": map[string]any{"type": "integer"}},
+			"inserted": prop("integer", "Rows this chunk inserted"),
+			"skipped":  prop("integer", "Records whose id already held identical content"),
+			"replayed": prop("boolean", "True when idempotency_key returned an earlier receipt"),
+			"changes":  prop("integer", "Change events the chunk emitted (one per inserted row)"),
+		}, "ids", "inserted", "skipped", "replayed", "changes"),
+		Func: func(ctx context.Context, s *Server, body []byte) (any, error) {
+			var req importReq
+			if err := decodeExactBody(body, &req); err != nil {
+				return nil, err
+			}
+			ns, table := normNS(req.Namespace), normTable(req.Table)
+			_, inc, err := s.resolveScope(ctx, ns, table)
+			if err != nil {
+				return nil, err
+			}
+			res, err := s.eng.ImportRecords(ctx, ns, table, req.Records, store.WriteOpts{IdempotencyKey: req.IdempotencyKey, Owner: s.writeOwner(ctx)}, s.embedder(), inc)
+			if err != nil {
+				return nil, wrapStoreErr(err)
+			}
+			return map[string]any{"ids": res.Ids, "inserted": res.Inserted, "skipped": res.Skipped, "replayed": res.Replayed, "changes": res.Changes.Count}, nil
+		},
+	},
 	"upsert_by_key": {
 		Description: "Insert or update records by natural key: for each record, when an existing row has the " +
 			"fields named in \"on\" equal to the record's values, that row is updated with the record's other " +
@@ -2309,6 +2365,13 @@ var Ops = map[string]OpDef{
 }
 
 const embedProviderHelp = "an operator must set the server-side DOLMEN_EMBED_* environment variables: DOLMEN_EMBED_PROVIDER=local (in-process embeddings, no external service), or DOLMEN_EMBED_PROVIDER=openai plus DOLMEN_EMBED_API_KEY (or OPENAI_API_KEY), optionally DOLMEN_EMBED_BASE_URL and DOLMEN_EMBED_MODEL"
+
+type importReq struct {
+	Namespace      string           `json:"namespace"`
+	Table          string           `json:"table"`
+	Records        []map[string]any `json:"records"`
+	IdempotencyKey string           `json:"idempotency_key"`
+}
 
 type insertReq struct {
 	Namespace      string           `json:"namespace"`
