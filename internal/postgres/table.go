@@ -143,6 +143,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	if err := store.ValidateEngineNames("postgresql", table, fields); err != nil {
 		return nil, err
 	}
+	if err := store.RefuseRelationOptions(opts); err != nil {
+		return nil, err
+	}
 	if err := store.RequireSecretKey(s.secrets, fields); err != nil {
 		return nil, err
 	}

@@ -2,7 +2,6 @@ package conformance
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen/internal/schema"
@@ -11,6 +10,7 @@ import (
 
 func TestRelationTablesAreSQLiteOnlyForNow(t *testing.T) {
 	h := newHarness(t)
+	h.ensureNS("acme")
 	ctx := t.Context()
 	if _, err := h.st.CreateTable(ctx, "acme", "nodes", []schema.Field{{Name: "label", Type: schema.String}}, store.TableOpts{AcceptReferences: testEngine(t) == store.EngineSQLite}, [16]byte{}); err != nil {
 		t.Fatal(err)
@@ -30,7 +30,10 @@ func TestRelationTablesAreSQLiteOnlyForNow(t *testing.T) {
 		}
 		return
 	}
-	if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "relation") {
-		t.Fatalf("%s accepted or misreported a relation declaration: %v", testEngine(t), err)
+	if !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("%s accepted a relation declaration it does not keep: %v", testEngine(t), err)
+	}
+	if _, _, err := h.st.DescribeTable(ctx, "acme", "links", nil, store.Incarnation{}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("%s left a refused relation table behind: %v", testEngine(t), err)
 	}
 }
