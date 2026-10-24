@@ -138,7 +138,18 @@ func TestBoundedTraversalParity(t *testing.T) {
 			if r := run(q); !r.Truncated || r.Scanned > 1 {
 				t.Fatalf("edge cap: %+v", r)
 			}
+			q.Edges = 1
+			q.Target = 2
+			if r := run(q); !reflect.DeepEqual(r.Path, []uint64{1, 2}) || r.Truncated {
+				t.Fatalf("path at edge budget: %+v", r)
+			}
+			q.Target = 0
 			q.Edges = 50
+			q.Elapsed = time.Nanosecond
+			if r := run(q); !r.Truncated || r.Stop != "elapsed" {
+				t.Fatalf("elapsed cap: %+v", r)
+			}
+			q.Elapsed = time.Second
 			q.Kind = 2
 			if r := run(q); !reflect.DeepEqual(r.Nodes, []uint64{1, 3, 4}) {
 				t.Fatalf("kind filter: %+v", r)
