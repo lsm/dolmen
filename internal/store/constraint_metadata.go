@@ -96,17 +96,17 @@ func stampMigratedConstraints(ctx context.Context, tx *sql.Tx, cur *schema.Table
 }
 
 func RefuseMixedConstraintChanges(changes []schema.Change) error {
-	adds, fieldOp := false, ""
+	constraintOp, fieldOp := "", ""
 	for _, ch := range changes {
 		switch ch.Op {
-		case schema.OpAddConstraint:
-			adds = true
+		case schema.OpAddConstraint, schema.OpDropConstraint, schema.OpSetAcceptReferences:
+			constraintOp = ch.Op
 		case schema.OpAddField, schema.OpRenameField, schema.OpDropField:
 			fieldOp = ch.Op
 		}
 	}
-	if adds && fieldOp != "" {
-		return invalidf("add_constraint cannot share a migration with %s; apply the field change first, then add the constraint in its own migrate call", fieldOp)
+	if constraintOp != "" && fieldOp != "" {
+		return invalidf("%s cannot share a migration with %s; apply the field change first, then run %s in its own migrate call", constraintOp, fieldOp, constraintOp)
 	}
 	return nil
 }
