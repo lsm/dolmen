@@ -1,6 +1,6 @@
 # Measured results: SQLite adjacency vs Badger
 
-Measured on 2026-10-23, Apple M5 Pro / darwin arm64, 48 GiB RAM, 18 logical CPUs, Go 1.26.10, `GOMAXPROCS=4`, CGO disabled. The laptop was not an isolated benchmark host. Each backend/scale ran in a separate process, sequentially; OS caches were not purged. Runtime/adapters/runner were built from `5ee8c3420749c6756208acb8e7f849b30d93ff63`; the comparison script was subsequently made compatible with Python 3.9 (`zip(strict=...)` removed), without changing measured code or data.
+Measured on 2026-10-23, Apple M5 Pro / darwin arm64, 48 GiB RAM, 18 logical CPUs, Go 1.26.10, `GOMAXPROCS=4`, CGO disabled. The laptop was not an isolated benchmark host. Each backend/scale ran in a separate process, sequentially; OS caches were not purged. Runtime/adapters/runner were built from local pre-rebase `5ee8c3420749c6756208acb8e7f849b30d93ff63`, whose module files are byte-identical to published `b2cc85b` after rebasing the disjoint constraints change; the comparison script was subsequently made compatible with Python 3.9 (`zip(strict=...)` removed), without changing measured code or data.
 
 The four [JSON reports](results/) retain every sample summary and work checksum; only their absolute evidence-directory paths are normalized. [README](README.md) records the settings and reproduction commands. All 13 cases at each size matched result checksums, scans, found paths and truncation counts across backends. Both abrupt-exit readback probes and snapshot/rollback contracts passed.
 
