@@ -64,6 +64,11 @@ func PlanConstraintChange(ctx context.Context, cur *schema.TableSchema, ch schem
 			if err != nil {
 				return err
 			}
+			if slices.ContainsFunc(cur.Constraints, func(c schema.Constraint) bool {
+				return c.Kind == schema.ConstraintForeignKey && c.References != nil && c.References.Table == cur.Name
+			}) {
+				tables = append([]string{cur.Name}, tables...)
+			}
 			if len(tables) > 0 {
 				return invalidf("set_accept_references false: table %s is still referenced by a foreign key declared on table %s; drop that constraint first", cur.Name, tables[0])
 			}
