@@ -149,9 +149,6 @@ func (s *Store) Batch(ctx context.Context, ns string, writes []store.BatchWrite,
 	if err := store.ValidateBatchWrites(writes); err != nil {
 		return store.BatchResult{}, err
 	}
-	if err := store.RejectBatchExpectedRows(writes, "postgres"); err != nil {
-		return store.BatchResult{}, err
-	}
 
 	for attempt := 0; ; attempt++ {
 		res, retry, err := s.batchAttempt(ctx, ns, writes, opts, emb, scope, expected)
@@ -244,6 +241,9 @@ func (s *Store) batchAttempt(ctx context.Context, ns string, writes []store.Batc
 			if touched > store.MaxRowsTouchedPerBatch {
 				return fmt.Errorf("writes[%d]: %w", i,
 					fmt.Errorf("%w: this batch would touch more than %d rows, the per-batch budget (records inserted plus rows matched by update, upsert and delete); split it into smaller batches, or run a large delete as its own delete call, which the batch budget does not bound", store.ErrInvalid, store.MaxRowsTouchedPerBatch))
+			}
+			if err := store.CheckBatchExpectedRows(w, out); err != nil {
+				return fmt.Errorf("writes[%d]: %w", i, err)
 			}
 			results = append(results, out)
 			changes = store.MergeChangeRanges(changes, out.Changes)
