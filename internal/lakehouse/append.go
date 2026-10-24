@@ -284,6 +284,9 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		if err != nil {
 			return err
 		}
+		if err := s.checkConstraints(ctx, n, state, stagedRows{rows: rows}, false); err != nil {
+			return err
+		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
