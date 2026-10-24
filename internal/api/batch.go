@@ -87,6 +87,14 @@ func batchWriteSchema(kind store.BatchWriteKind) map[string]any {
 		"enum":        []any{string(kind)},
 		"description": "The write kind, which also fixes the fields accepted here: these are the " + string(kind) + " operation's own fields, minus namespace, idempotency_key, limit and confirm, which are set once for the whole batch, and minus dry_run, which batch does not have.",
 	}
+	if takesExpectedRows(kind) {
+		props["expected_rows"] = map[string]any{
+			"type":        "integer",
+			"minimum":     0,
+			"maximum":     store.MaxRowsTouchedPerBatch,
+			"description": "Batch only: the exact number of rows this write must match (" + map[store.BatchWriteKind]string{store.BatchWriteUpdate: "updated", store.BatchWriteDelete: "matched"}[kind] + "), checked inside the transaction. Any other count fails the whole batch with conflict and writes nothing; re-read and decide again rather than retrying the same values. 0 asserts nothing matches; omit it to accept any count.",
+		}
+	}
 	required = append(required, "kind")
 	return objectSchema(false, props, required)
 }
@@ -241,6 +249,13 @@ func decodeBatchWrites(raw []json.RawMessage) ([]store.BatchWrite, error) {
 		if err := scalarArgs(w.Args); err != nil {
 			return nil, badRequest("writes[%d]: %s", i, err.Error())
 		}
+		if raw, ok := fields["expected_rows"]; ok {
+			n, err := parseExpectedRows(raw)
+			if err != nil {
+				return nil, badRequest("writes[%d]: %s", i, err.Error())
+			}
+			w.ExpectedRows = n
+		}
 		w.Kind = kind
 		w.Table = normTable(w.Table)
 		out = append(out, w)
@@ -248,8 +263,26 @@ func decodeBatchWrites(raw []json.RawMessage) ([]store.BatchWrite, error) {
 	return out, nil
 }
 
+func takesExpectedRows(kind store.BatchWriteKind) bool {
+	return kind == store.BatchWriteUpdate || kind == store.BatchWriteDelete
+}
+
+func parseExpectedRows(raw json.RawMessage) (*int64, error) {
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if dec.Decode(&v) == nil {
+		if n, ok := v.(json.Number); ok {
+			if i, err := n.Int64(); err == nil {
+				return &i, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("expected_rows must be an integer from 0 to %d; omit it, rather than sending null, to accept any match count", store.MaxRowsTouchedPerBatch)
+}
+
 func batchFieldAllowed(kind store.BatchWriteKind, name string) bool {
-	if name == "kind" {
+	if name == "kind" || (name == "expected_rows" && takesExpectedRows(kind)) {
 		return true
 	}
 	def, ok := Ops[string(kind)]

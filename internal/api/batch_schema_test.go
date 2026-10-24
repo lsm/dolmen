@@ -166,7 +166,13 @@ func TestBatchWriteSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 		want = append(want, "kind")
 		sort.Strings(want)
 
-		got := names(batchWriteInput(t, kind))
+		props := batchWriteInput(t, kind)
+		got := make([]string, 0, len(props))
+		for _, name := range names(props) {
+			if name != "expected_rows" {
+				got = append(got, name)
+			}
+		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("batch's %s write advertises %v, want the %s input minus the fields a batch sets itself, plus kind: %v", kind, got, kind, want)
 		}
@@ -177,7 +183,7 @@ func TestBatchWriteSchemasAreDerivedFromTheAdvertisedOnes(t *testing.T) {
 			t.Fatalf("batch's %s write requires %v, want the advertised required list minus the per-batch fields, plus kind: %v", kind, gotRequired, wantRequired)
 		}
 		for name, def := range batchWriteInput(t, kind) {
-			if name == "kind" {
+			if name == "kind" || name == "expected_rows" {
 				continue
 			}
 			if !reflect.DeepEqual(def, advertised[name]) {
@@ -252,5 +258,24 @@ func TestBatchDropsTheResultFieldsTheKindDoesNotReturn(t *testing.T) {
 	}
 	if _, ok := upd["replayed"]; ok {
 		t.Fatalf("a per-write result must not carry replayed; the batch's own result carries it once")
+	}
+}
+
+func TestBatchExpectedRowsIsAdvertisedOnlyOnBatchUpdateAndDelete(t *testing.T) {
+	for _, kind := range []store.BatchWriteKind{
+		store.BatchWriteInsert, store.BatchWriteUpdate, store.BatchWriteDelete,
+		store.BatchWriteUpsert, store.BatchWriteUpsertByKey,
+	} {
+		def, ok := batchWriteInput(t, kind)["expected_rows"].(map[string]any)
+		want := kind == store.BatchWriteUpdate || kind == store.BatchWriteDelete
+		if ok != want {
+			t.Fatalf("batch %s write advertises expected_rows: %v, want %v", kind, ok, want)
+		}
+		if ok && (def["type"] != "integer" || def["minimum"] != 0 || def["maximum"] != store.MaxRowsTouchedPerBatch) {
+			t.Fatalf("batch %s expected_rows schema: %#v", kind, def)
+		}
+		if props, _ := Ops[string(kind)].InputSchema["properties"].(map[string]any); props["expected_rows"] != nil {
+			t.Fatalf("the single %s operation advertises expected_rows", kind)
+		}
 	}
 }

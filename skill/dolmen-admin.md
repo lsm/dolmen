@@ -675,7 +675,9 @@ locked-out server.
   `replayed: true`). At most 100 writes and 1,000 rows touched per batch (records inserted plus rows
   matched by `update`/`upsert`/`delete`); run a larger delete as its own `delete`. With authentication
   off, a batch into a namespace that does not exist creates it before its writes run, so it remains
-  even when the batch fails. Example:
+  even when the batch fails. A batch `update` or `delete` may carry `expected_rows` (0 to 1,000), the
+  exact count it must match, checked inside the transaction; any other count fails the whole batch
+  with `conflict`, so put the values you read in the filter to make a compare-and-set. Example:
   `{"namespace":"crm","writes":[{"kind":"insert","table":"contacts","records":[{"email":"a@x.com"}]},{"kind":"update","table":"contacts","filter":"email = ?","args":["a@x.com"],"set":{"name":"Ada"}}]}`.
 - Retried writes must not duplicate rows: pass `idempotency_key` (any unique string) to `insert`, or use `upsert_by_key` with `"on": [field, ...]` naming the record's natural key (e.g. email, url) when the data identifies itself. Its body takes
   `records` as a list, like `insert`: `{"namespace":"crm","table":"contacts","on":["email"],"records":[{"email":"ada@example.com","name":"Ada"}]}`.
