@@ -3,6 +3,9 @@ package schema
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
+	"strings"
 
 	"github.com/lsm/dolmen/internal/filter"
 )
@@ -156,4 +159,56 @@ func constraintOperand(n filter.Node) bool {
 		return ok && lit.Kind == filter.LiteralNumber && (n.Op == "+" || n.Op == "-")
 	}
 	return false
+}
+
+func ConstraintNamingField(ctx context.Context, fields []Field, constraints []Constraint, field string) string {
+	columns := make([]string, 0, len(fields))
+	for _, f := range fields {
+		columns = append(columns, f.Name)
+	}
+	for _, c := range constraints {
+		if c.Field == field || slices.Contains(c.Fields, field) {
+			return c.Name
+		}
+		if c.Where == "" {
+			continue
+		}
+		if node, err := filter.Parse(c.Where, filter.Options{Context: ctx, Columns: columns}); err == nil && mentionsColumn(node, field) {
+			return c.Name
+		}
+	}
+	return ""
+}
+
+func mentionsColumn(n filter.Node, field string) bool {
+	switch n := n.(type) {
+	case *filter.Column:
+		return strings.EqualFold(n.Name, field)
+	case *filter.Paren:
+		return mentionsColumn(n.Inner, field)
+	case *filter.Unary:
+		return mentionsColumn(n.Operand, field)
+	case *filter.Binary:
+		return mentionsColumn(n.Left, field) || mentionsColumn(n.Right, field)
+	case *filter.Is:
+		return mentionsColumn(n.Left, field) || mentionsColumn(n.Right, field)
+	}
+	return false
+}
+
+func ReferencingTables(schemas []*TableSchema, table string) []string {
+	var out []string
+	for _, sc := range schemas {
+		if sc == nil || sc.Name == table {
+			continue
+		}
+		for _, c := range sc.Constraints {
+			if c.Kind == ConstraintForeignKey && c.References != nil && c.References.Table == table {
+				out = append(out, sc.Name)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
