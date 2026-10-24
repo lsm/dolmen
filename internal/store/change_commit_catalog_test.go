@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"github.com/lsm/dolmen/internal/schema"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -60,8 +61,8 @@ func TestSQLiteCommitCatalogUpgradePreservesLegacyChanges(t *testing.T) {
 	if _, err := s.ListTables(ctx, "app", nil); err != nil {
 		t.Fatal(err)
 	}
-	if format, _ := catalogMeta(t, dir, "app", catalogFormatKey); format != "5" {
-		t.Fatalf("format %q, want 5", format)
+	if format, _ := catalogMeta(t, dir, "app", catalogFormatKey); format != strconv.Itoa(CatalogFormat) {
+		t.Fatalf("format %q, want %d", format, CatalogFormat)
 	}
 	if min, _ := catalogMeta(t, dir, "app", catalogMinReaderKey); min != "3" {
 		t.Fatalf("minimum reader %q, want 3", min)
