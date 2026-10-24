@@ -431,7 +431,7 @@ func (s *Store) activateMigration(ctx context.Context, n *nsDB, nsName, table st
 	if err := saveSchemaTx(ctx, tx, nsName, w.cur, old.Version, changes); err != nil {
 		return nil, false, err
 	}
-	if err := checkMigratedConstraints(ctx, tx, old, w.cur); err != nil {
+	if err := stampMigratedConstraints(ctx, tx, w.cur); err != nil {
 		return nil, false, err
 	}
 	if err := deleteStagedVectors(ctx, tx, table); err != nil {

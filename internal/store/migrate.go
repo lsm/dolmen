@@ -825,6 +825,13 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 
 	w.rebuildFTSNeeded = rebuildFTSNeeded
 	w.vectorizeChanged = vectorizeChanged
+	if slices.ContainsFunc(changes, func(ch schema.Change) bool {
+		return ch.Op == schema.OpAddConstraint || ch.Op == schema.OpDropConstraint || ch.Op == schema.OpSetAcceptReferences
+	}) {
+		if err := checkSQLiteConstraints(ctx, db, cur, true); err != nil {
+			return nil, err
+		}
+	}
 	cur.Version = old.Version + 1
 	return w, nil
 }

@@ -81,23 +81,18 @@ func PlanConstraintChange(ctx context.Context, cur *schema.TableSchema, ch schem
 func DescribeConstraintChange(ch schema.Change) string {
 	switch ch.Op {
 	case schema.OpAddConstraint:
-		return fmt.Sprintf("add_constraint %s (%s; existing rows are checked when applied)", ch.Constraint.Name, ch.Constraint.Kind)
+		return fmt.Sprintf("add_constraint %s (%s)", ch.Constraint.Name, ch.Constraint.Kind)
 	case schema.OpDropConstraint:
 		return "drop_constraint " + ch.Name
 	}
 	return fmt.Sprintf("set_accept_references %v", *ch.Value)
 }
 
-func checkMigratedConstraints(ctx context.Context, tx *sql.Tx, old, cur *schema.TableSchema) error {
-	if len(cur.Constraints) == 0 && !cur.AcceptReferences && !old.AcceptReferences {
+func stampMigratedConstraints(ctx context.Context, tx *sql.Tx, cur *schema.TableSchema) error {
+	if len(cur.Constraints) == 0 && !cur.AcceptReferences {
 		return nil
 	}
-	if len(cur.Constraints) > 0 || cur.AcceptReferences {
-		if err := requireConstraintReader(ctx, tx); err != nil {
-			return err
-		}
-	}
-	return checkSQLiteConstraints(ctx, tx, cur, true)
+	return requireConstraintReader(ctx, tx)
 }
 
 func RefuseMixedConstraintChanges(changes []schema.Change) error {
