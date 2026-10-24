@@ -16,6 +16,8 @@ import (
 
 const catalogVersion = 9
 
+const constraintCatalogVersion = 10
+
 const minimumServerVersion = 160000
 
 func ident(parts ...string) string { return pgx.Identifier(parts).Sanitize() }
@@ -99,7 +101,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	if err := tx.QueryRow(ctx, "SELECT version FROM "+s.relation("version")).Scan(&version); err != nil {
 		return err
 	}
-	if version < 1 || version > catalogVersion {
+	if version < 1 || version > constraintCatalogVersion {
 		return fmt.Errorf("%w: PostgreSQL catalog version %d is unsupported; use a compatible dolmen release", store.ErrCatalogTooNew, version)
 	}
 	_, err = tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+s.relation("namespaces")+` (
@@ -199,7 +201,7 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	if err := s.backfillRowCounts(ctx, tx); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = $1", catalogVersion); err != nil {
+	if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = GREATEST(version, $1)", catalogVersion); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

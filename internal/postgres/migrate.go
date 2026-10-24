@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -131,7 +132,7 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
 	cur := &schema.TableSchema{Namespace: old.Namespace, Name: old.Name, Version: old.Version, Fields: fields, EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim,
-		RowAccess: old.RowAccess, HasOwner: old.HasOwner}
+		RowAccess: old.RowAccess, HasOwner: old.HasOwner, Constraints: slices.Clone(old.Constraints), AcceptReferences: old.AcceptReferences}
 
 	plan := &store.MigrationPlan{FromVersion: old.Version, ToVersion: old.Version + 1, Table: cur, Operations: []string{}}
 	w := &migrationWork{cur: cur, plan: plan}
@@ -312,6 +313,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			if err := schema.ValidateEngineIdent("postgresql", ch.To, "new field name"); err != nil {
 				return nil, invalidf("%s", err)
 			}
+			if err := store.RefuseConstrainedField(ctx, cur, "rename_field", ch.From); err != nil {
+				return nil, err
+			}
 			f, err := findField(ch.From)
 			if err != nil {
 				return nil, err
@@ -352,6 +356,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 		case schema.OpDropField:
 			f, err := findField(ch.Name)
 			if err != nil {
+				return nil, err
+			}
+			if err := store.RefuseConstrainedField(ctx, cur, "drop_field", ch.Name); err != nil {
 				return nil, err
 			}
 			if f.Vectorize {
@@ -546,6 +553,13 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 		case schema.OpSetRowAccess:
 			if ch.Value == nil {
 				return nil, invalidf("set_row_access requires value: true restricts rows to the principal who wrote them, false stops the filtering")
+			}
+			referencing, err := s.referencing(ctx, tx, n, old.Name)
+			if err != nil {
+				return nil, err
+			}
+			if err := store.RefuseConstrainedRowAccess(cur, referencing); err != nil {
+				return nil, err
 			}
 			if *ch.Value {
 				if cur.RowAccess == schema.RowAccessOwn {
