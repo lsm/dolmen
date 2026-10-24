@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"time"
 
@@ -112,14 +113,14 @@ func withRowAccessChange(def OpDef) OpDef {
 		nextOp[k] = v
 	}
 	nextOp["enum"] = append(append([]string(nil), names...), schema.OpSetRowAccess)
-	nextOp["description"] = "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_shape | set_row_access"
+	nextOp["description"] = "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_shape | set_file_constraints | add_constraint | drop_constraint | set_accept_references | set_row_access"
 
 	nextItemProps := make(map[string]any, len(itemProps))
 	for k, v := range itemProps {
 		nextItemProps[k] = v
 	}
 	nextItemProps["op"] = nextOp
-	nextItemProps["value"] = prop("boolean", "Flag value (set_fulltext, set_vectorize, set_row_access)")
+	nextItemProps["value"] = prop("boolean", "Flag value (set_fulltext, set_vectorize, set_accept_references, set_row_access)")
 
 	nextItems := make(map[string]any, len(items))
 	for k, v := range items {
@@ -190,11 +191,11 @@ func widenValueClause(clause map[string]any) map[string]any {
 		return clause
 	}
 	names, ok := not["enum"].([]string)
-	if !ok || len(names) != 2 || names[0] != schema.OpSetFulltext || names[1] != schema.OpSetVectorize {
+	if !ok || !slices.Equal(names, []string{schema.OpSetFulltext, schema.OpSetVectorize, schema.OpSetAcceptReferences}) {
 		return clause
 	}
 
-	nextNot := map[string]any{"enum": []string{schema.OpSetFulltext, schema.OpSetVectorize, schema.OpSetRowAccess}}
+	nextNot := map[string]any{"enum": []string{schema.OpSetFulltext, schema.OpSetVectorize, schema.OpSetAcceptReferences, schema.OpSetRowAccess}}
 	nextOp := make(map[string]any, len(opCond))
 	for k, v := range opCond {
 		nextOp[k] = v

@@ -90,3 +90,42 @@ func TestInvalidConstraintDeclarationsCreateNothing(t *testing.T) {
 		}
 	}
 }
+
+func TestConstraintMigrationsOnBothTransports(t *testing.T) {
+	h := newHarness(t)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
+	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "notes", "fields": []map[string]any{{"name": "slug", "type": "string"}, {"name": "parent_id", "type": "number"}}})
+	h.mustHTTP("insert", map[string]any{"namespace": "app", "table": "notes", "records": []map[string]any{{"slug": "dup"}, {"slug": "dup"}}})
+	unique := map[string]any{"op": "add_constraint", "constraint": map[string]any{"name": "slug_key", "kind": "unique", "fields": []string{"slug"}}}
+	body := map[string]any{"namespace": "app", "table": "notes", "changes": []any{unique}}
+	code, out := h.httpCall("migrate", body)
+	if code != http.StatusBadRequest || errCode(out) != "conflict" || !strings.Contains(errMessage(out), "slug_key") {
+		t.Fatalf("http add_constraint over rows that break it: %d %v", code, out)
+	}
+	if env := h.mcpCall("migrate", body).toolError(); env["code"] != "conflict" {
+		t.Fatalf("mcp add_constraint over rows that break it: %v", env)
+	}
+	h.mustHTTP("delete", map[string]any{"namespace": "app", "table": "notes", "filter": "id = 2"})
+	h.mustMCP("migrate", body)
+	h.mustMCP("migrate", map[string]any{"namespace": "app", "table": "notes", "changes": []any{map[string]any{"op": "set_accept_references", "value": true}}})
+	h.mustHTTP("migrate", map[string]any{"namespace": "app", "table": "notes", "changes": []any{map[string]any{"op": "add_constraint",
+		"constraint": map[string]any{"name": "parent_ref", "kind": "foreign_key", "field": "parent_id", "references": map[string]any{"table": "notes", "field": "id"}}}}})
+	code, out = h.httpCall("insert", map[string]any{"namespace": "app", "table": "notes", "records": []map[string]any{{"slug": "child", "parent_id": 9}}})
+	if code != http.StatusBadRequest || errCode(out) != "conflict" || !strings.Contains(errMessage(out), "parent_ref") {
+		t.Fatalf("a self-reference to a missing row: %d %v", code, out)
+	}
+	h.mustHTTP("insert", map[string]any{"namespace": "app", "table": "notes", "records": []map[string]any{{"slug": "child", "parent_id": 1}}})
+	code, out = h.httpCall("migrate", map[string]any{"namespace": "app", "table": "notes", "changes": []any{map[string]any{"op": "drop_field", "name": "parent_id"}}, "expected_version": 4})
+	if code != http.StatusBadRequest || errCode(out) != "invalid_request" || !strings.Contains(errMessage(out), "parent_ref") {
+		t.Fatalf("dropping a field a constraint names: %d %v", code, out)
+	}
+	h.mustMCP("migrate", map[string]any{"namespace": "app", "table": "notes", "changes": []any{map[string]any{"op": "drop_constraint", "name": "parent_ref"}}})
+	desc := h.mustHTTP("describe_table", map[string]any{"namespace": "app", "table": "notes"})["table"].(map[string]any)
+	if cs, _ := desc["constraints"].([]any); len(cs) != 1 || cs[0].(map[string]any)["name"] != "slug_key" || desc["version"] != float64(5) {
+		t.Fatalf("after drop_constraint: %v", desc)
+	}
+	history := h.mustMCP("list_migrations", map[string]any{"namespace": "app", "table": "notes"})
+	if !strings.Contains(mustJSON(t, history), `"slug_key"`) {
+		t.Fatalf("list_migrations must record the added constraint: %v", history)
+	}
+}
