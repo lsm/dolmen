@@ -11,9 +11,6 @@ import (
 )
 
 func TestConstraintMigrationBackendIsEnforcedOnHTTPAndMCP(t *testing.T) {
-	if testEngine(t) == store.EngineLakehouse {
-		t.Skip("lakehouse activation is a later slice")
-	}
 	h := newHarness(t)
 	h.seedTable("app", "notes", []map[string]any{{"name": "slug", "type": "string"}})
 	args := map[string]any{"namespace": "app", "table": "notes", "records": []map[string]any{{"slug": "original"}}}

@@ -1,0 +1,90 @@
+package lakehouse
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/store"
+)
+
+func TestLakehouseConstraintActivationAndDryRun(t *testing.T) {
+	for _, declaration := range []bool{true, false} {
+		t.Run(map[bool]string{true: "declaration", false: "migration"}[declaration], func(t *testing.T) {
+			s := openStore(t, t.TempDir(), WithSharedFilter(true))
+			ctx := t.Context()
+			if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			unique := schema.Constraint{Name: "active_slug", Kind: schema.ConstraintUnique, Fields: []string{"slug"}, Where: "done = FALSE"}
+			opts := store.TableOpts{}
+			if declaration {
+				opts.Constraints = []schema.Constraint{unique}
+			}
+			if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "slug", Type: schema.String}, {Name: "done", Type: schema.Boolean}}, opts, [16]byte{}); err != nil {
+				t.Fatalf("create constrained table: %v", err)
+			}
+			insert := func(done bool) error {
+				_, err := s.Insert(ctx, "app", "notes", []map[string]any{{"slug": "same", "done": done}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{})
+				return err
+			}
+			if err := insert(false); err != nil {
+				t.Fatal(err)
+			}
+			add := []schema.Change{{Op: schema.OpAddConstraint, Constraint: &unique}}
+			if !declaration {
+				if err := insert(false); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.PlanMigration(ctx, "app", "notes", add, store.Embedder{}, store.Incarnation{}, nil, store.Incarnation{}); !errors.Is(err, derr.ErrConflict) || !strings.Contains(err.Error(), "active_slug") {
+					t.Fatalf("dry run must report duplicate rows: %v", err)
+				}
+				if sc, _, err := s.DescribeTable(ctx, "app", "notes", nil, store.Incarnation{}); err != nil || sc.Version != 1 || len(sc.Constraints) != 0 {
+					t.Fatalf("refused dry run changed schema: %+v %v", sc, err)
+				}
+				if _, err := s.Delete(ctx, "app", "notes", "id = 2", nil, store.DeleteOpts{}, nil, store.Incarnation{}); err != nil {
+					t.Fatal(err)
+				}
+				plan, err := s.PlanMigration(ctx, "app", "notes", add, store.Embedder{}, store.Incarnation{}, nil, store.Incarnation{})
+				if err != nil || !plan.DryRun || len(plan.Table.Constraints) != 1 {
+					t.Fatalf("feasible dry run: %+v %v", plan, err)
+				}
+				if sc, _, err := s.DescribeTable(ctx, "app", "notes", nil, store.Incarnation{}); err != nil || len(sc.Constraints) != 0 || sc.Version != 1 {
+					t.Fatalf("feasible dry run changed schema: %+v %v", sc, err)
+				}
+				if err := insert(false); err != nil {
+					t.Fatalf("dry run enforced a constraint: %v", err)
+				}
+				if _, err := s.Migrate(ctx, "app", "notes", add, store.Embedder{}, store.Incarnation{}); !errors.Is(err, derr.ErrConflict) {
+					t.Fatalf("execution did not recheck rows: %v", err)
+				}
+				if _, err := s.Delete(ctx, "app", "notes", "id > 1", nil, store.DeleteOpts{}, nil, store.Incarnation{}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Migrate(ctx, "app", "notes", add, store.Embedder{}, store.Incarnation{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := insert(false); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("duplicate must conflict: %v", err)
+			}
+			if err := insert(true); err != nil {
+				t.Fatalf("row outside predicate: %v", err)
+			}
+			if err := s.evict("app"); err != nil {
+				t.Fatal(err)
+			}
+			if err := insert(false); !errors.Is(err, derr.ErrConflict) {
+				t.Fatalf("reopen lost constraint: %v", err)
+			}
+			var format int
+			if err := s.withNamespace(ctx, "app", func(n *namespace) error {
+				return n.db.QueryRowContext(ctx, `SELECT format FROM _dolmen_lakehouse_meta WHERE singleton=1`).Scan(&format)
+			}); err != nil || format != 4 {
+				t.Fatalf("reader guard after reopen: format=%d err=%v", format, err)
+			}
+		})
+	}
+}
