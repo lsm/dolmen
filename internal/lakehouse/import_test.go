@@ -82,7 +82,7 @@ func TestImportConflictRollsBackChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := s.ImportRecords(ctx, "app", "events", []map[string]any{importRow(43, "new"), importRow(42, "different")}, importKey("two"), store.Embedder{}, store.Incarnation{})
-	if !errors.Is(err, derr.ErrConflict) || err.Error() != "conflict: import record 1 differs from the existing id; use a fresh target or correct the source" {
+	if !errors.Is(err, derr.ErrConflict) || err.Error() != "import record 1 differs from the existing id; use a fresh target or correct the source" {
 		t.Fatalf("conflict: %v", err)
 	}
 	read, err := s.GetRows(ctx, "app", "events", []int64{42, 43}, nil, store.Incarnation{})
