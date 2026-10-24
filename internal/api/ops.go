@@ -292,9 +292,6 @@ func validateMigrateChanges(changes []map[string]any, authOn bool) error {
 			return badRequest("changes[%d]: op must be a non-empty string naming the change (%s)", i, valid)
 		}
 		keys, known := migrateChangeKeys[op]
-		if authOn && (op == schema.OpAddConstraint || op == schema.OpDropConstraint || op == schema.OpSetAcceptReferences) {
-			return badRequest("changes[%d]: %s is not available with -auth on yet", i, op)
-		}
 		if !known && authOn {
 			keys, known = migrateAuthChangeKeys[op]
 		}
@@ -918,9 +915,6 @@ var Ops = map[string]OpDef{
 				}
 				req = createTableReq{Namespace: ext.Namespace, Table: ext.Table, Fields: ext.Fields, Constraints: ext.Constraints, AcceptReferences: ext.AcceptReferences}
 				rowAccess = ext.RowAccess
-				if len(req.Constraints) > 0 || req.AcceptReferences {
-					return nil, badRequest("constraints and accept_references are not available with -auth on yet; create the table without them")
-				}
 			} else if err := decode(body, &req); err != nil {
 				return nil, err
 			}

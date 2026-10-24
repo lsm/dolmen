@@ -145,6 +145,9 @@ func (s *Server) authorizeOp(ctx context.Context, op string, body []byte) error 
 	if err := s.authorizeVerbs(ctx, op, body); err != nil {
 		return err
 	}
+	if err := s.authorizeConstraints(ctx, op, body, parseAuthTarget(body)); err != nil {
+		return err
+	}
 	if rule := authRules[op]; rule.Reveal {
 		return s.authorizeReveal(ctx, parseAuthTarget(body))
 	}
