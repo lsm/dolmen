@@ -150,20 +150,22 @@ func (s *Store) insertImported(ctx context.Context, tx pgx.Tx, relation string, 
 }
 
 func (s *Store) skipIdentical(ctx context.Context, tx pgx.Tx, n namespace, state tableState, ids []int64, rows []preparedRow) ([]int, error) {
-	reveal := map[string]bool{}
-	for _, f := range state.schema.SecretFields() {
-		reveal[f.Name] = true
-	}
-	existing, truncated, err := s.selectRows(ctx, tx, n, state, rowSelection{ids: ids}, nil, reveal)
-	if truncated || errors.Is(err, store.ErrInvalid) {
-		return nil, fmt.Errorf("%w: existing import row exceeds the read budget; reduce its size before importing", store.ErrInvalid)
-	}
+	present := map[int64]bool{}
+	found, err := tx.Query(ctx, "SELECT id FROM "+ident(n.physical, state.physical)+" WHERE id = ANY($1::bigint[])", ids)
 	if err != nil {
 		return nil, err
 	}
-	present := map[int64]bool{}
-	for _, row := range existing {
-		present[row["id"].(int64)] = true
+	for found.Next() {
+		var id int64
+		if err := found.Scan(&id); err != nil {
+			found.Close()
+			return nil, err
+		}
+		present[id] = true
+	}
+	found.Close()
+	if err := found.Err(); err != nil {
+		return nil, err
 	}
 	var pending, overlap []int
 	for i, id := range ids {
@@ -180,29 +182,32 @@ func (s *Store) skipIdentical(ctx context.Context, tx pgx.Tx, n namespace, state
 	if _, err := tx.Exec(ctx, "CREATE TEMP TABLE "+scratch+" (LIKE "+ident(n.physical, state.physical)+") ON COMMIT DROP"); err != nil {
 		return nil, err
 	}
+	reveal := map[string]bool{}
+	for _, f := range state.schema.SecretFields() {
+		reveal[f.Name] = true
+	}
+	copied := tableState{schema: state.schema, columns: state.columns, physical: scratch}
 	for _, i := range overlap {
 		if err := s.insertImported(ctx, tx, scratch, rows[i]); err != nil {
 			return nil, err
 		}
-	}
-	candidates, truncated, err := s.selectRows(ctx, tx, namespace{physical: "pg_temp"}, tableState{schema: state.schema, columns: state.columns, physical: scratch}, rowSelection{ids: ids}, nil, reveal)
-	if truncated || errors.Is(err, store.ErrInvalid) {
-		return nil, fmt.Errorf("%w: existing import row exceeds the read budget; reduce its size before importing", store.ErrInvalid)
-	}
-	if err != nil {
-		return nil, err
+		existing, _, err := s.selectRows(ctx, tx, n, state, rowSelection{ids: ids[i : i+1]}, nil, reveal)
+		if err == nil {
+			var candidate []map[string]any
+			candidate, _, err = s.selectRows(ctx, tx, namespace{physical: "pg_temp"}, copied, rowSelection{ids: ids[i : i+1]}, nil, reveal)
+			if err == nil && comparable(state, candidate[0]) != comparable(state, existing[0]) {
+				return nil, derr.New(derr.Conflict, "import record %d differs from the existing id; use a fresh target or correct the source", i)
+			}
+		}
+		if errors.Is(err, store.ErrInvalid) {
+			return nil, fmt.Errorf("%w: existing import row exceeds the read budget; reduce its size before importing", store.ErrInvalid)
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	if _, err := tx.Exec(ctx, "DROP TABLE "+scratch); err != nil {
 		return nil, err
-	}
-	index := map[int64]int{}
-	for i, id := range ids {
-		index[id] = i
-	}
-	for k, row := range candidates {
-		if comparable(state, row) != comparable(state, existing[k]) {
-			return nil, derr.New(derr.Conflict, "import record %d differs from the existing id; use a fresh target or correct the source", index[row["id"].(int64)])
-		}
 	}
 	return pending, nil
 }
