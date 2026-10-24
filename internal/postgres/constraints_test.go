@@ -145,3 +145,45 @@ func TestPostgresConstraintsSkipTablesThatCannotViolateOne(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPostgresConstraintsSkipWritesThatChangeNoRow(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := s.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "slug", Type: schema.String}}, store.TableOpts{}, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "other", []schema.Field{{Name: "slug", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	notes.Constraints = []schema.Constraint{{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}}
+	raw, _ := json.Marshal(notes)
+	for _, stmt := range []string{
+		"UPDATE " + s.relation("tables") + " SET schema_json=$1 WHERE namespace='ns' AND name='notes' AND active",
+		"UPDATE " + s.relation("tables") + " SET columns_json='{' WHERE namespace='ns' AND name='other' AND $1::text IS NOT NULL AND active",
+	} {
+		if _, err := s.pool.Exec(ctx, stmt, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err = s.write(ctx, "ns", [16]byte{}, func(tx pgx.Tx, n namespace) error {
+		noop := s.constrained(ctx, "notes", true, func(pgx.Tx, namespace) error { return nil })
+		if err := noop(tx, n); err != nil {
+			t.Fatalf("a write that changed no row must not read the namespace snapshot: %v", err)
+		}
+		wrote := s.constrained(ctx, "notes", false, func(tx pgx.Tx, n namespace) error {
+			_, err := s.reserveChanges(ctx, tx, n, 1)
+			return err
+		})
+		if err := wrote(tx, n); err == nil {
+			t.Fatal("a write that changed rows must read the snapshot")
+		}
+		return errRollback
+	})
+	if !errors.Is(err, errRollback) {
+		t.Fatal(err)
+	}
+}
