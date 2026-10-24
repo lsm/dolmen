@@ -187,3 +187,29 @@ func TestPostgresConstraintsSkipWritesThatChangeNoRow(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPostgresDropTableRefusesATableAForeignKeyNames(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "parents", []schema.Field{{Name: "slug", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	children, err := s.CreateTable(ctx, "ns", "children", []schema.Field{{Name: "parent_id", Type: schema.Number}}, store.TableOpts{}, [16]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children.Constraints = []schema.Constraint{{Name: "parent_ref", Kind: schema.ConstraintForeignKey, Field: "parent_id", References: &schema.ConstraintReference{Table: "parents", Field: "id"}}}
+	raw, _ := json.Marshal(children)
+	if _, err := s.pool.Exec(ctx, "UPDATE "+s.relation("tables")+" SET schema_json=$1 WHERE namespace='ns' AND name='children' AND active", string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropTable(ctx, "ns", "parents", store.Incarnation{}); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "children") {
+		t.Fatalf("dropping a table a foreign key names must be refused naming the referencing table: %v", err)
+	}
+	if _, _, err := s.TableState(ctx, "ns", "parents", nil); err != nil {
+		t.Fatalf("a refused drop must keep the table: %v", err)
+	}
+}
