@@ -672,9 +672,6 @@ func loadSchema(ctx context.Context, db rowQuerier, nsName, table string) (*sche
 	if err := dec.Decode(&sc); err != nil {
 		return nil, fmt.Errorf("corrupt schema for %s.%s: %w", nsName, table, err)
 	}
-	if err := RefuseUnenforcedConstraints(&sc); err != nil {
-		return nil, err
-	}
 	return &sc, nil
 }
 
@@ -831,12 +828,12 @@ const MaxFieldsPerTable = 100
 func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []schema.Field, opts TableOpts, nsGen [16]byte) (_ *schema.TableSchema, err error) {
 	ctx, span := s.tr.Op(ctx, "CREATE", nsName, table)
 	defer func() { s.tr.End(ctx, span, err) }()
-	if err := RefuseConstraintOptions(opts); err != nil {
-		return nil, err
-	}
 	fields, err = ValidateTableDefinition(table, fields)
 	if err != nil {
 		return nil, err
+	}
+	if err := schema.ValidateConstraintDeclarations(ctx, fields, opts.Constraints); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	if err := schema.ValidateRowAccess(opts.RowAccess); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
@@ -877,12 +874,20 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		return nil, err
 	}
 	sc := &schema.TableSchema{Namespace: nsName, Name: table, Version: 1, Fields: fields,
-		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != ""}
+		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != "", Constraints: opts.Constraints, AcceptReferences: opts.AcceptReferences}
 	raw, _ := json.Marshal(sc)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,
 		table, 1, string(raw)); err != nil {
 		return nil, err
+	}
+	if len(sc.Constraints) > 0 || sc.AcceptReferences {
+		if err := requireConstraintReader(ctx, tx); err != nil {
+			return nil, err
+		}
+		if err := checkSQLiteConstraints(ctx, tx, sc, false); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

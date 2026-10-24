@@ -13,31 +13,49 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func sqliteConstraintSnapshot(ctx context.Context, tx *sql.Tx, changed string, incoming bool) (map[string]constraints.Table, error) {
+func sqliteSchemas(ctx context.Context, tx querier) (map[string]*schema.TableSchema, error) {
 	registry, err := tx.QueryContext(ctx, `SELECT name,schema_json FROM _dolmen_tables ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
-	tables := make(map[string]constraints.Table)
+	defer registry.Close()
+	out := make(map[string]*schema.TableSchema)
 	for registry.Next() {
 		var name, raw string
 		if err := registry.Scan(&name, &raw); err != nil {
-			registry.Close()
 			return nil, err
 		}
 		var sc schema.TableSchema
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		decoder.UseNumber()
 		if err := decoder.Decode(&sc); err != nil {
-			registry.Close()
 			return nil, fmt.Errorf("%w: invalid schema in constraint snapshot", ErrCatalogCorrupt)
 		}
-		tables[name] = constraints.Table{Schema: &sc}
-
+		out[name] = &sc
 	}
-	registry.Close()
-	if err := registry.Err(); err != nil {
+	return out, registry.Err()
+}
+
+func sqliteReferencing(ctx context.Context, tx querier, table string) ([]string, error) {
+	schemas, err := sqliteSchemas(ctx, tx)
+	if err != nil {
 		return nil, err
+	}
+	all := make([]*schema.TableSchema, 0, len(schemas))
+	for _, sc := range schemas {
+		all = append(all, sc)
+	}
+	return schema.ReferencingTables(all, table), nil
+}
+
+func sqliteConstraintSnapshot(ctx context.Context, tx *sql.Tx, changed string, incoming bool) (map[string]constraints.Table, error) {
+	schemas, err := sqliteSchemas(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	tables := make(map[string]constraints.Table, len(schemas))
+	for name, sc := range schemas {
+		tables[name] = constraints.Table{Schema: sc}
 	}
 	tables = constraints.SelectChecks(tables, changed, incoming)
 	needed := make(map[string]bool)

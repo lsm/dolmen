@@ -9,9 +9,11 @@ import (
 )
 
 const (
-	CatalogFormat = 5
+	CatalogFormat = 6
 
 	CatalogMinReader = 3
+
+	ConstraintMinReader = 6
 
 	catalogFormatKey    = "catalog_format"
 	catalogMinReaderKey = "catalog_min_reader"
@@ -163,4 +165,15 @@ func readCatalogVersion(ctx context.Context, db rowQuerier) (format int, minRead
 		*dst = n
 	}
 	return format, minReader, nil
+}
+
+func requireConstraintReader(ctx context.Context, tx *sql.Tx) error {
+	minReader, have, err := readCatalogInt(ctx, tx, catalogMinReaderKey)
+	if err != nil {
+		return err
+	}
+	if have && minReader >= ConstraintMinReader {
+		return nil
+	}
+	return writeCatalogInt(ctx, tx, catalogMinReaderKey, ConstraintMinReader)
 }

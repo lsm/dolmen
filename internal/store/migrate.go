@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -239,7 +240,8 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 	fields := make([]schema.Field, len(old.Fields))
 	copy(fields, old.Fields)
 	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields,
-		EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim, RowAccess: old.RowAccess, HasOwner: old.HasOwner}
+		EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim, RowAccess: old.RowAccess, HasOwner: old.HasOwner,
+		Constraints: slices.Clone(old.Constraints), AcceptReferences: old.AcceptReferences}
 
 	plan := &MigrationPlan{
 		FromVersion: old.Version,
@@ -421,6 +423,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			if err := schema.ValidateIdent(ch.To, "new field name"); err != nil {
 				return nil, invalidf("%s", err)
 			}
+			if err := RefuseConstrainedField(ctx, cur, "rename_field", ch.From); err != nil {
+				return nil, err
+			}
 			f, err := findField(ch.From)
 			if err != nil {
 				return nil, err
@@ -455,6 +460,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		case schema.OpDropField:
 			f, err := findField(ch.Name)
 			if err != nil {
+				return nil, err
+			}
+			if err := RefuseConstrainedField(ctx, cur, "drop_field", ch.Name); err != nil {
 				return nil, err
 			}
 			if f.Vectorize {
@@ -662,6 +670,13 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 		case schema.OpSetRowAccess:
 			if ch.Value == nil {
 				return nil, invalidf("set_row_access requires value: true restricts rows to the principal who wrote them, false stops the filtering")
+			}
+			referencing, err := sqliteReferencing(ctx, db, table)
+			if err != nil {
+				return nil, err
+			}
+			if err := RefuseConstrainedRowAccess(cur, referencing); err != nil {
+				return nil, err
 			}
 			if *ch.Value {
 				if cur.RowAccess == schema.RowAccessOwn {
