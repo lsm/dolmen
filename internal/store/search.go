@@ -322,7 +322,7 @@ scan:
 			}
 			if total+rowBytes+rawValSize(vals[i]) > MaxQueryBytes {
 				if len(byID) == 0 {
-					return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)
+					return nil, false, &responseBudgetError{invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)}
 				}
 				complete = false
 				break scan
@@ -335,7 +335,7 @@ scan:
 			rowBytes += proj.presentedSize(c, vals[i], v)
 			if total+rowBytes+labelBytes > MaxQueryBytes {
 				if len(byID) == 0 {
-					return nil, false, invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)
+					return nil, false, &responseBudgetError{invalidf("search result exceeds the %d MiB response budget on its first row", MaxQueryBytes>>20)}
 				}
 				complete = false
 				break scan

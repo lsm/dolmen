@@ -71,7 +71,7 @@ needs a sidecar implementing dolmen's FTS core subset (§7), stated plainly rath
 over. Side benefit: because the engine stores open-format Parquet/Iceberg, analytics
 consumption (Spark/Trino/DuckDB) is a *property of the storage*, not a separate export
 pipeline — still DISTINCT from the user-facing `export`/`import` portability ops D20 skips
-(those remain skipped). Demand-gating stays: **designed-not-built until a demander (D20
+(general portability remains skipped; the approved import exception is linked at D20). Demand-gating stays: **designed-not-built until a demander (D20
 status, like webhooks §9)** — now designed *as an engine*, not as a read-side path.
 
 ### 0.5.2 Two-level tenancy — two mechanisms, never mixed
@@ -142,8 +142,9 @@ Engine obligations, stated beside §0.5.3's confinement rule:
   concurrent dolmen processes are safe via engine-native coordination. Declared so no one
   assumes HA an engine cannot give.
 
-**Deliberate non-features** (recorded so they read as decisions, not omissions): **data
-portability is SKIPPED** — no `export`/`import` ops; laptop→central promotion, per-tenant
+**Deliberate non-features** (recorded so they read as decisions, not omissions): **general data
+portability is SKIPPED** — except the human-approved
+[identity-preserving import](import-and-source-migration.md) (#704/#705), no `export`/`import` ops; laptop→central promotion, per-tenant
 offboarding, and engine-migration dumps all wait for a real-world demander (#32 stays open,
 unrescoped; the seam keeps portability designed, not user-exercisable). **The audit surface is
 DEFERRED** — no `list_audit` or audit-event store now; the audit story is §1.2 attribution
@@ -1918,8 +1919,8 @@ ETL layer (an ETL layer in dolmen would be fiso-shaped, not dolmen-shaped).
 
 ## Decision index
 
-Pending approval: [identity-preserving import and SQLite/Postgres migration](import-and-source-migration.md)
-(#704/#705) proposes a limited D20 exception; D20 is unchanged until human approval.
+Human-approved exception to D20: [identity-preserving import and SQLite/Postgres migration](import-and-source-migration.md)
+(#704/#705); general export and other portability remain deferred.
 
 | # | Decision | Where |
 |---|---|---|
@@ -1942,7 +1943,7 @@ Pending approval: [identity-preserving import and SQLite/Postgres migration](imp
 | D17 | Architecture invariants: namespace is a logical tenant coordinate (permissions bind to names, never files); two-level tenancy — projects structural via namespaces (engine-mapped file/schema), users logical via the owner predicate (delegatable to native RLS); user-per-namespace is an anti-pattern; raw-SQL confinement is an engine obligation; Postgres the reference shared engine (adapter #2, D25) | §0.5 |
 | D18 | Grant lifecycle: no owner concept (inheritance covers creators); last-admin-on-`*` revoke guard (409); drop cascades grant deletion (clean slate on recreation, count reported in drop confirm); grants target existing objects only | §3.4 |
 | D19 | Consistency contract: op atomicity; per-namespace serial observability + read-your-writes; 409-or-nothing collision surfacing; engine-declared deployment topology (sqlite = 1 process/data-dir; shared engines = N pods) | §0.6 |
-| D20 | Data portability SKIPPED and audit surface DEFERRED, deliberately — no features without real-world demanders (#32 open, unrescoped) | §0.6 |
+| D20 | General data portability SKIPPED except the approved [identity-preserving import](import-and-source-migration.md) (#704/#705); audit surface DEFERRED (#32 open, unrescoped) | §0.6 |
 | D21 | Identity is additive, pluggable **sources** behind one seam; a request is authenticated when any enabled source yields a principal; everything downstream is source-blind. Trusted-proxy headers = v1; native OIDC (built in #361: PocketBase-shaped provider abstraction, Ed25519 signed tokens, PKCE+state, principal = `sub` never email, `/v1/auth/begin` + callback as the one non-JSON browser surface); API keys `dlm_…` hashed in the registry; the authn stream builds the seam | §1, §1.4–1.5 |
 | D22 | Credential model on record: humans get expiring signed tokens, machines get hashed revocable named keys carrying principal + optional groups; no sessions/refresh/email/user records (deliberate — nothing user-shaped to leak, IdP owns recovery); accepted losses on record — no per-device revocation (revoke = rotate the signing secret), no sliding sessions; enterprises use the gateway tier | §1.4–1.6 |
 | D23 | Bootstrap written up explicitly: the deadlock rationale; the admin key is a kingmaker, not a king (implicit grant on the credential, identity vanishes with the env, grants persist; `dolmen-admin` reserved across all sources; removal safe via the root-admin startup check + last-admin guard). Namespace-creation gates: `auth: off` implicit forever; `auth: on` `not_found`-after-authz; `create_namespace` requires `admin` on the parent; `schema` creates content, never tenancy | §1.3, §2 |

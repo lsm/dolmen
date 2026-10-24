@@ -59,7 +59,8 @@ activation slice 8c additionally requires Lane A's 8a → 8b → 8f, 5a, 5d, 6b,
 Filing cadence (drift control): Lane 0 + Lane A issues are filed now; Lane B issues file when
 Lane A is moving. **Amended 2026-09-19:** the principal requested the Postgres adapter;
 implementation now follows [postgresql.md](postgresql.md). **Still demander-gated (spec D20/D25):**
-the lakehouse adapter, webhooks, export/import, job-queue/claim semantics.
+the lakehouse adapter, webhooks, general export/import, job-queue/claim semantics.
+The approved import exception follows [import-and-source-migration.md](import-and-source-migration.md) (#705).
 
 **Native OIDC (10c–10g) is scheduled, not demander-gated — the scope decision, recorded:** the
 spec's build order lands the OIDC + keys stream as part of the authn seam work (§1: "Native
@@ -1430,11 +1431,11 @@ Acceptance: docs review; no behavior change.
 
 ## Not filed — demander-gated (D20/D25)
 
-Pending approval: [identity-preserving import and SQLite/Postgres migration](import-and-source-migration.md)
-is proposed under #704/#705; implementation remains held for human approval.
+Human-approved exception: [identity-preserving import and SQLite/Postgres migration](import-and-source-migration.md)
+is tracked under #705 in five small implementation PRs.
 
 The Postgres adapter (engine-2) was authorized on 2026-09-19 and is tracked in
 [postgresql.md](postgresql.md). The lakehouse adapter (engine-3, append-dominated tier),
-webhooks (§9 layer 4), user-facing export/import, and job-queue/claim semantics
+webhooks (§9 layer 4), general user-facing export/import, and job-queue/claim semantics
 remain designed but unscheduled pending a demander. The seam (slices 2a–2c) and the
 spec-pinned signatures are what keep them cheap to add when one appears.

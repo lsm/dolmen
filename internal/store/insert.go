@@ -68,7 +68,7 @@ func (s *Store) insert(ctx context.Context, nsName, table string, records []map[
 	records = normalized
 
 	for attempt := 0; ; attempt++ {
-		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, owner, domain, shared)
+		ids, changes, replayed, done, err := s.insertAttempt(ctx, n, nsName, table, records, emb, idemKey, owner, domain, shared, nil)
 		if done {
 			return ids, changes, replayed, true, err
 		}
@@ -90,7 +90,7 @@ func (s *Store) payloadHash(ctx context.Context, sc *schema.TableSchema, records
 	return h
 }
 
-func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain, shared *sharedWriteTx) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
+func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string, records []map[string]any, emb Embedder, idemKey, owner string, domain IdemDomain, shared *sharedWriteTx, identities []ImportIdentity) (ids []int64, changes ChangeRange, replayed bool, done bool, err error) {
 
 	gen, err := s.genFor(ctx, n, shared, table)
 	if err != nil {
@@ -210,6 +210,10 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 	stmts := newStmtCache(tx)
 	defer stmts.close()
 	for i, row := range coercedRows {
+		if identities != nil {
+			row.cols = append(row.cols, q("id"), q("created_at"))
+			row.vals = append(row.vals, identities[i].ID, identities[i].CreatedAt)
+		}
 		stampNowVals(row.vals)
 		var vec []float32
 		if ev, ok := embFor[i]; ok {

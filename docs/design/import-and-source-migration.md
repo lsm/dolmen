@@ -1,11 +1,10 @@
 # Identity-preserving import and source migration
 
-Proposed for #704; implementation tracked by #705 under #698. Human approval is
-required before implementation. This proposes a narrow exception to D20 in
+Approved by the human for #704 at `aed68c4`; implementation tracked by #705 under
+#698. This is a narrow exception to D20 in
 [identity-and-engines.md](identity-and-engines.md): importing application rows now
 has a demander. General export, replication, and backup/restore remain unchanged;
-Pending-approval pointers in the D20 decision index and implementation plan link
-to this proposal; no older decision changes before human approval.
+The D20 decision index and implementation plan link to this approved exception.
 
 ## Import contract
 
@@ -39,6 +38,8 @@ key/payload retries return the original receipt with `replayed: true`; a changed
 payload with that key conflicts. Reuse existing table incarnation and idempotency
 machinery, with an import-specific receipt domain. Return ordered `ids`, `inserted`,
 `skipped`, `replayed` and `changes`; a replay receipt retains its original counts.
+For deterministic retries, omitted timestamp defaults of `now` use the imported
+`created_at`; export explicit values to preserve a different source default.
 
 SQLite, Postgres and lakehouse targets share this contract. Reserve the allocator
 above both its previous high-water mark and the greatest imported ID before
@@ -88,6 +89,9 @@ before switching readers. Keep source/export intact; failed migrations never cle
 up tables or overwrite a previously populated target automatically.
 
 ## Delivery and proof
+
+Slice 1 adds the internal SQLite import path and shared identity validation. Public
+HTTP/MCP and Go facade exposure waits for slice 4; other engines follow in 2–3.
 
 Small independently testable PRs: shared import validation and SQLite engine;
 Postgres allocator/import; lakehouse import; HTTP/MCP and Go facade wiring;
