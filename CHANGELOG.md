@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Constraints**: tables can declare managed `unique` keys (one to eight fields, optionally only
+  for rows matching a `where` predicate) and `foreign_key` references to another table's `id` in
+  the same namespace, which must opt in with `accept_references: true`. Every write path on every
+  engine checks the write's whole result, a violation is a `conflict` naming the constraint, and
+  deleting a referenced row is refused. `migrate` gains `add_constraint`, `drop_constraint` and
+  `set_accept_references`; the Go library gains `CreateTableWithOptions`. Under `-auth on` these
+  need `read` on the tables they consult. The first constrained table raises the catalog's minimum
+  reader, so older binaries refuse it: stop them before adding one.
+
 - On PostgreSQL and lakehouse, an `update` whose filter matches no row now checks its file values
   as SQLite does, so an oversized file or a `copy_from` naming no readable file is refused instead
   of answering `updated: 0`.

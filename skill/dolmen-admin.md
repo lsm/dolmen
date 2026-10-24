@@ -369,9 +369,9 @@ What the schema and administration operations need:
 
 | Operation | Needs |
 |---|---|
-| `create_table` | `schema` on the namespace |
-| `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_shape`, `set_file_constraints`, `set_fulltext`, `set_vectorize`, `set_row_access`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
-| `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it |
+| `create_table` | `schema` on the namespace. With `accept_references`, also `read` on the namespace; with `constraints`, also `read` on the new table and on every table a foreign key references |
+| `migrate`, `list_migrations` | `schema` on the table. A change whose outcome depends on the existing rows also needs `read`: `set_enum`, `set_shape`, `set_file_constraints`, `set_fulltext`, `set_vectorize`, `set_row_access`, `add_constraint`, `set_accept_references`, `drop_field`, and an `add_field` that is required, full-text, vectorized, or carries a `default` |
+| `drop_table` | `schema` and `admin`, since dropping a table deletes the grants on it. On a table with `accept_references`, also `read` on the namespace |
 | `create_namespace` (`{"namespace":"eng"}`, or `"eng/team-a"` for a sub-namespace) | `admin` on the parent namespace, or on `*` for a top-level one |
 | `drop_namespace` | `admin` on the namespace |
 | `vacuum` | `admin` on the namespace |
@@ -382,7 +382,11 @@ What the schema and administration operations need:
 
 The data operations need what the core skill lists ({{ .BaseURL }}/skills/dolmen): `read` for
 reads, searches and the change feed, `create`, `update` and `delete` for the matching writes, and
-`read` on the whole namespace for `query`. With authentication on, a write never creates a
+`read` on the whole namespace for `query`. A write to a constrained table also needs `read` on
+that table and on every table its foreign keys reference (on `row_access` tables, any data verb
+there will do), and a `delete` from a table with `accept_references` needs `read` on the whole
+namespace, whether or not anything references it; `migrate` `set_accept_references` needs the
+same, and `add_constraint` / `drop_constraint` need `read` on every table the constraint names. With authentication on, a write never creates a
 namespace implicitly, so create it first.
 
 ### Separating tenants: two knobs
@@ -948,6 +952,37 @@ match, before ranking.
   either way the call may be retried. A namespace over
   `-max-namespace-files-size` refuses new files with `507`.
 
+### Constraints
+
+`create_table` takes `constraints` and `accept_references`, and `migrate` adds or removes them
+later. Every write path enforces them against the write's whole result, so a violation is a
+`conflict` naming the constraint and nothing is written:
+
+```json
+{"namespace": "acme", "table": "tasks",
+ "fields": [{"name": "project_id", "type": "number"}, {"name": "slug", "type": "string"}, {"name": "done", "type": "boolean"}],
+ "constraints": [
+   {"name": "project_ref", "kind": "foreign_key", "field": "project_id", "references": {"table": "projects", "field": "id"}},
+   {"name": "open_slug", "kind": "unique", "fields": ["slug"], "where": "done = FALSE"}]}
+```
+
+- `unique` names one to eight `string`, `text`, `number`, `boolean` or `timestamp` fields. A row
+  takes part only when `where` is true; a key with a NULL never conflicts. Text compares exactly
+  (case-sensitive), numbers exactly (`1` equals `1.0`), and timestamps as stored, so the same
+  instant at two offsets is two keys. `where` allows comparisons, `IS [NOT] NULL`, `AND`, `OR`,
+  `NOT` and parentheses only.
+- `foreign_key` names one `number` field holding another table's `id` in the same namespace, or
+  its own table's. The referenced table must be created with `"accept_references": true` (or get
+  it with `set_accept_references`); NULL is allowed unless the field is required. Deleting a
+  referenced row is refused, so delete children first. There are no cascades.
+- On `row_access` tables a key is unique per owner, and both ends of a foreign key must be
+  `row_access` tables, the child pointing only at a parent with the same owner.
+- At most 32 constraints per table. While a constraint names a field, that field cannot be
+  renamed or dropped; while a table is referenced, it cannot be dropped; and `set_row_access` is
+  refused on either. Drop the constraint first.
+- The first constrained table in a namespace (on PostgreSQL, in the catalog) keeps older dolmen
+  binaries out; stop them before you add one.
+
 ### Id, `created_at`, and stability
 
 - Every row has `id` and `created_at`. You cannot supply them; they are assigned on insert and
@@ -1030,6 +1065,16 @@ itself is shared — so copy the exact shape per op:
 
   ```json
   {"op": "set_file_constraints", "name": "recording", "max_bytes": 52428800, "media_types": ["audio/*"]}
+  ```
+
+- `add_constraint` — `constraint`, in the same shape as `create_table`'s. It refuses with a
+  `conflict` when existing rows break it, and runs as its own `migrate` call, not alongside
+  `add_field`, `rename_field` or `drop_field`. `drop_constraint` — `name`.
+  `set_accept_references` — `value`; turning it off is refused while a foreign key references the
+  table:
+
+  ```json
+  {"op": "add_constraint", "constraint": {"name": "email_key", "kind": "unique", "fields": ["email"]}}
   ```
 
 Three top-level keys complete the request:

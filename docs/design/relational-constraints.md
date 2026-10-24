@@ -1,6 +1,6 @@
 # Foreign keys and partial unique indexes
 
-**Proposed for #700; implementation (#701) waits for human approval.** Add portable,
+**Approved in #700; implemented in #701.** Add portable,
 managed constraints to typed tables, preserving the engine consistency and visibility
 contracts in [identity-and-engines.md](identity-and-engines.md). Every row keeps its
 single system `id`; composite primary keys and arbitrary SQL DDL remain out of scope.

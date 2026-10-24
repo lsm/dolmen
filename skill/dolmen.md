@@ -622,6 +622,16 @@ The optional `filter` parameter is separate from the MATCH `query`: it is regula
 - `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe to key off across sessions.
 - `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else if eq .Dialect "duckdb" }}cast it with `CAST(created_at AS TIMESTAMPTZ)` as described above{{ else }}SQLite date/time functions{{ end }}.
 
+### Constraints
+
+A table may declare managed constraints; `describe_table` lists them under `constraints`. A
+`unique` constraint keeps a key (one to eight fields, optionally only for rows matching its
+`where`) to one row; a `foreign_key` makes a number field hold the `id` of a row in another table.
+A write that would break one fails with `conflict` naming the constraint and changes nothing,
+including the rest of a `batch`. Repair the write rather than retrying it: change the duplicate
+key, create the parent first, or delete the children before the parent. A table that other tables
+reference refuses the delete of a referenced row the same way.
+
 ### Limits and guardrails
 
 | Resource | Limit | Behavior |
