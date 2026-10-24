@@ -8,7 +8,7 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func relationSetup(t *testing.T, h *harness) {
+func relationSetup(t *testing.T, h *harness, extra ...schema.Field) {
 	t.Helper()
 	if testEngine(t) != store.EngineSQLite {
 		t.Skip("relation tables are SQLite-only until the other engines keep the declaration")
@@ -19,6 +19,7 @@ func relationSetup(t *testing.T, h *harness) {
 		t.Fatal(err)
 	}
 	fields := []schema.Field{{Name: "src", Type: schema.Number, Required: true}, {Name: "dst", Type: schema.Number, Required: true}, {Name: "kind", Type: schema.String, Required: true}, {Name: "weight", Type: schema.Number}}
+	fields = append(fields, extra...)
 	opts := store.TableOpts{
 		Constraints: []schema.Constraint{
 			{Name: "src_ref", Kind: schema.ConstraintForeignKey, Field: "src", References: &schema.ConstraintReference{Table: "nodes", Field: "id"}},
@@ -101,5 +102,24 @@ func TestRelateInsertsOneIdempotentEdge(t *testing.T) {
 				t.Fatalf("a refused relate wrote an edge: %v rows", n)
 			}
 		})
+	}
+}
+
+func TestRelateTakesFileProperties(t *testing.T) {
+	h := newHarness(t)
+	relationSetup(t, h, schema.Field{Name: "doc", Type: schema.File})
+	h.seedTable("acme", "docs", fileTableFields())
+	if code, body := h.multipartCall("insert", `{"namespace":"acme","table":"docs","records":[{"title":"src","doc":{"part":"f"}}]}`, map[string][]byte{"f": []byte("edge notes")}); code != 200 {
+		t.Fatalf("insert: %d %v", code, body)
+	}
+	src := h.mustHTTP("read_rows", map[string]any{"namespace": "acme", "table": "docs", "ids": []int{1}})["rows"].([]any)[0].(map[string]any)["doc"].(map[string]any)
+	edge := map[string]any{"namespace": "acme", "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"doc": map[string]any{"copy_from": map[string]any{"table": "docs", "id": 1, "field": "doc"}}}}
+	h.mustHTTP("relate", edge)
+	h.mustMCP("relate", edge)
+	for _, id := range []int{1, 2} {
+		ref := h.mustHTTP("read_rows", map[string]any{"namespace": "acme", "table": "links", "ids": []int{id}})["rows"].([]any)[0].(map[string]any)["doc"].(map[string]any)
+		if ref["sha256"] != src["sha256"] {
+			t.Fatalf("edge %d file property = %v, want the copied file", id, ref)
+		}
 	}
 }
