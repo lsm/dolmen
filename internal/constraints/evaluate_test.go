@@ -183,3 +183,18 @@ func TestUnconditionalCompiledKeyPreservesOwnerDomain(t *testing.T) {
 		t.Fatalf("owner domain collapsed: %v", err)
 	}
 }
+
+func TestNonfiniteKeysAreRejectedOutsideThePredicate(t *testing.T) {
+	plan, err := CompileUnique(t.Context(), predicateFields, schema.Constraint{Name: "active_quantity", Kind: schema.ConstraintUnique, Fields: []string{"slug", "quantity"}, Where: "active = TRUE"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, active := range []any{false, nil} {
+		for _, n := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			_, participates, err := plan.Key(t.Context(), map[string]any{"slug": nil, "quantity": n, "active": active}, nil)
+			if err == nil || participates {
+				t.Fatalf("non-finite key accepted outside predicate: active=%v, participation=%v, err=%v", active, participates, err)
+			}
+		}
+	}
+}
