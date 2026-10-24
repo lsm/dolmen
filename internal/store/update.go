@@ -380,6 +380,9 @@ func (s *Store) updateAttempt(ctx context.Context, nsName, table, where string, 
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_update_ids`); err != nil {
 		return UpsertResult{}, true, err
 	}
+	if err := checkSQLiteConstraints(ctx, tx, sc, false); err != nil {
+		return UpsertResult{}, true, err
+	}
 	if err := s.commitOwned(wt); err != nil {
 		return UpsertResult{}, true, err
 	}
