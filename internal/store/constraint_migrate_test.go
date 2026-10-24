@@ -97,3 +97,18 @@ func TestSQLiteAcceptReferencesCannotBeTurnedOffUnderASelfReference(t *testing.T
 		t.Fatalf("turning off accept_references under the table's own foreign key: %v", err)
 	}
 }
+
+func TestSQLiteAddConstraintDryRunReportsExistingViolations(t *testing.T) {
+	s := openRowAccessStore(t)
+	ctx := t.Context()
+	if _, err := s.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "slug", Type: schema.String}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "notes", []map[string]any{{"slug": "dup"}, {"slug": "dup"}}, WriteOpts{}, Embedder{}, nil, Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	add := []schema.Change{{Op: schema.OpAddConstraint, Constraint: &schema.Constraint{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}}}
+	if _, err := s.PlanMigration(ctx, "ns", "notes", add, Embedder{}, Incarnation{}, nil, Incarnation{}); !errors.Is(err, derr.ErrConflict) || !strings.Contains(err.Error(), "slug_key") {
+		t.Fatalf("a dry run must report that existing rows break the constraint: %v", err)
+	}
+}
