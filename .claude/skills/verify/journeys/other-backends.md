@@ -10,17 +10,18 @@ PostgreSQL (CI job `postgres-foundation`): a disposable `postgres:17` with user
 query and backend roles" step. `scripts/pg.sh start` does both in Docker on
 `127.0.0.1:55432` (override with `DOLMEN_VERIFY_PG_PORT`) and prints the exports;
 `scripts/pg.sh stop` removes the container. On macOS, follow the Colima setup
-in SKILL.md without changing the global Docker context. Set
-`DOCKER_CONTEXT=colima` on each `pg.sh` command below. Then:
+in SKILL.md without changing the global Docker context, and prefix each `pg.sh`
+command below with `DOCKER_CONTEXT=colima`. On other hosts, use the commands as
+written with the available Docker context:
 
 ```bash
-eval "$(DOCKER_CONTEXT=colima .claude/skills/verify/scripts/pg.sh start)"
+eval "$(.claude/skills/verify/scripts/pg.sh start)"
 go test -count=1 -v ./internal/postgres -run 'TestPostgres(ConstraintMigrations|AddConstraintDryRun|ConstraintChangesRunAlone|ForeignKeyDryRun|MigrationKeepsStoredRelation|AcceptReferencesRequiresValue)'
 DOLMEN_ENGINE=postgres go test -count=1 -v ./internal/conformance -run '^TestConstraintMigrationBackendIsEnforcedOnHTTPAndMCP$'
 go test -race -count=1 ./internal/postgres
 DOLMEN_ENGINE=postgres go test -race -count=1 ./internal/conformance
 DOLMEN_ENGINE=postgres go test -race -count=1 ./internal/blackbox
-DOCKER_CONTEXT=colima .claude/skills/verify/scripts/pg.sh stop
+.claude/skills/verify/scripts/pg.sh stop
 ```
 
 Expect existing duplicates and orphans to produce `conflict` during planning and
