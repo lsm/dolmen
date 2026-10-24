@@ -53,10 +53,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	schema, err := st.CreateTable(ctx, "demo", "notes", []dolmen.Field{
+	schema, err := st.CreateTableWithOptions(ctx, "demo", "notes", []dolmen.Field{
 		{Name: "body", Type: dolmen.Text, Fulltext: true, Vectorize: true},
 		{Name: "priority", Type: dolmen.Number},
-	})
+	}, dolmen.CreateTableOptions{AcceptReferences: true})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -78,6 +78,30 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println("inserted", ins.Inserted, "rows, replay returned", retry.Replayed, "with ids", retry.Ids)
+
+	_, err = st.CreateTableWithOptions(ctx, "demo", "links", []dolmen.Field{
+		{Name: "src", Type: dolmen.Number, Required: true},
+		{Name: "dst", Type: dolmen.Number, Required: true},
+		{Name: "kind", Type: dolmen.String, Required: true},
+	}, dolmen.CreateTableOptions{
+		Constraints: []dolmen.Constraint{
+			dolmen.ForeignKeyConstraint{Name: "src_ref", Field: "src", ReferencesTable: "notes"},
+			dolmen.ForeignKeyConstraint{Name: "dst_ref", Field: "dst", ReferencesTable: "notes"},
+		},
+		Relation: &dolmen.Relation{Source: "src", Target: "dst", Type: "kind"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	edge, err := st.Relate(ctx, "demo", "links", dolmen.Edge{Source: ins.Ids[0], Target: ins.Ids[1], Type: "follows"}, dolmen.InsertOptions{IdempotencyKey: "edge-1"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	linkSchema, _, err := st.DescribeTable(ctx, "demo", "links")
+	if err != nil || linkSchema.Relation == nil || len(linkSchema.Constraints) != 2 {
+		log.Fatalf("relation schema: %+v %v", linkSchema, err)
+	}
+	fmt.Println("declared relation table and related edge", edge.ID, "with", len(linkSchema.Constraints), "foreign keys")
 
 	_, err = st.Insert(ctx, "demo", "notes", []map[string]any{
 		{"body": "different body"},

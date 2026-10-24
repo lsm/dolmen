@@ -40,8 +40,10 @@ type TableSchema struct {
 	Fields           []Field
 	EmbedSpace       string
 	EmbedDim         int
+	RowAccess        string
 	Constraints      []Constraint
 	AcceptReferences bool
+	Relation         *Relation
 }
 
 type Constraint interface {
@@ -65,8 +67,16 @@ func (c UniqueConstraint) constraintName() string { return c.Name }
 func (c ForeignKeyConstraint) constraintName() string { return c.Name }
 
 type CreateTableOptions struct {
+	RowAccess        string
 	Constraints      []Constraint
 	AcceptReferences bool
+	Relation         *Relation
+}
+
+type Relation struct {
+	Source string
+	Target string
+	Type   string
 }
 
 func constraintsToSchema(cs []Constraint) ([]schema.Constraint, error) {
@@ -149,6 +159,10 @@ func schemaToTableSchema(sc *schema.TableSchema) TableSchema {
 	if sc == nil {
 		return TableSchema{}
 	}
+	var relation *Relation
+	if sc.Relation != nil {
+		relation = &Relation{Source: sc.Relation.Source, Target: sc.Relation.Target, Type: sc.Relation.Type}
+	}
 	return TableSchema{
 		Namespace:        sc.Namespace,
 		Name:             sc.Name,
@@ -156,7 +170,9 @@ func schemaToTableSchema(sc *schema.TableSchema) TableSchema {
 		Fields:           schemaToFields(sc.Fields),
 		EmbedSpace:       sc.EmbedSpace,
 		EmbedDim:         sc.EmbedDim,
+		RowAccess:        sc.RowAccess,
 		Constraints:      schemaToConstraints(sc.Constraints),
 		AcceptReferences: sc.AcceptReferences,
+		Relation:         relation,
 	}
 }

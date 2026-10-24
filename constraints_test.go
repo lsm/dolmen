@@ -3,6 +3,7 @@ package dolmen
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -27,8 +28,12 @@ func TestTheLibraryDeclaresAndEnforcesConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sc.Constraints) != 2 || sc.Constraints[0] != declared[0] {
+	if !reflect.DeepEqual(sc.Constraints, declared) {
 		t.Fatalf("created schema: %+v", sc.Constraints)
+	}
+	tasks, _, err := st.DescribeTable(ctx, "app", "tasks")
+	if err != nil || !reflect.DeepEqual(tasks.Constraints, declared) {
+		t.Fatalf("described constraints: %+v %v", tasks.Constraints, err)
 	}
 	described, _, err := st.DescribeTable(ctx, "app", "projects")
 	if err != nil || !described.AcceptReferences {
@@ -50,5 +55,29 @@ func TestTheLibraryDeclaresAndEnforcesConstraints(t *testing.T) {
 	}
 	if _, err := st.CreateTableWithOptions(ctx, "app", "notes", []Field{{Name: "slug", Type: String}}, CreateTableOptions{Constraints: []Constraint{strayConstraint{}}}); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("a Constraint that is not one of the library's types: %v", err)
+	}
+}
+
+func TestCreateTableOptionsKeepNormalizationAndValidation(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := t.Context()
+	sc, err := st.CreateTableWithOptions(ctx, " App ", " Notes ", []Field{{Name: "slug", Type: String}}, CreateTableOptions{RowAccess: "own"})
+	if err != nil || sc.Namespace != "app" || sc.Name != "notes" || sc.RowAccess != "own" || sc.Relation != nil || len(sc.Constraints) != 0 || sc.AcceptReferences {
+		t.Fatalf("normalized schema: %+v %v", sc, err)
+	}
+	if _, err := st.CreateTableWithOptions(ctx, "app", "bad-name", []Field{{Name: "body", Type: Text}}, CreateTableOptions{}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("malformed name: %v", err)
+	}
+	if _, err := st.CreateTableWithOptions(ctx, "app", "bad_policy", []Field{{Name: "body", Type: Text}}, CreateTableOptions{RowAccess: "invalid"}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("invalid row access: %v", err)
+	}
+	for _, c := range []Constraint{nil, (*UniqueConstraint)(nil), strayConstraint{}} {
+		if _, err := st.CreateTableWithOptions(ctx, "app", "bad_constraint", []Field{{Name: "body", Type: Text}}, CreateTableOptions{Constraints: []Constraint{c}}); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("invalid constraint value: %v", err)
+		}
 	}
 }

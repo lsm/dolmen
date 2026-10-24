@@ -959,3 +959,57 @@ func TestEmbeddedParityQueryVectorCap(t *testing.T) {
 		t.Fatalf("the façade must refuse the same vector with the wire's message:\n got %v\nwant %v", err, wire["message"])
 	}
 }
+
+func TestEmbeddedParityRelationTableOptions(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	st := openEmbedded(t, dir)
+	defer st.Close()
+	fields := []dolmen.Field{{Name: "src", Type: dolmen.Number, Required: true}, {Name: "dst", Type: dolmen.Number, Required: true}, {Name: "kind", Type: dolmen.String, Required: true}}
+	opts := dolmen.CreateTableOptions{
+		Constraints: []dolmen.Constraint{
+			dolmen.ForeignKeyConstraint{Name: "src_ref", Field: "src", ReferencesTable: "nodes"},
+			dolmen.ForeignKeyConstraint{Name: "dst_ref", Field: "dst", ReferencesTable: "nodes"},
+			dolmen.UniqueConstraint{Name: "distinct_edge", Fields: []string{"src", "dst", "kind"}},
+		},
+		Relation: &dolmen.Relation{Source: "src", Target: "dst", Type: "kind"},
+	}
+	if testEngine(t) != store.EngineSQLite {
+		if _, err := st.CreateTableWithOptions(ctx, "graph", "links", fields, opts); !errors.Is(err, dolmen.ErrInvalidRequest) {
+			t.Fatalf("unenforced relation: %v", err)
+		}
+		if _, _, err := st.DescribeTable(ctx, "graph", "links"); !errors.Is(err, dolmen.ErrNotFound) {
+			t.Fatalf("refused table persisted: %v", err)
+		}
+		return
+	}
+	if _, err := st.CreateTableWithOptions(ctx, "graph", "nodes", []dolmen.Field{{Name: "label", Type: dolmen.String}}, dolmen.CreateTableOptions{AcceptReferences: true}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := st.CreateTableWithOptions(ctx, "graph", "links", fields, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	described, _, err := st.DescribeTable(ctx, "graph", "links")
+	if err != nil || !reflect.DeepEqual(created, described) {
+		t.Fatalf("facade describe: %+v %v", described, err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	h := newHarnessAt(t, dir, &fakeProvider{})
+	wire := h.mustHTTPNumbered("describe_table", map[string]any{"namespace": "graph", "table": "links"})["table"].(map[string]any)
+	wantRelation := map[string]any{"source": "src", "target": "dst", "type": "kind"}
+	wantConstraints := []any{
+		map[string]any{"name": "src_ref", "kind": "foreign_key", "field": "src", "references": map[string]any{"table": "nodes", "field": "id"}},
+		map[string]any{"name": "dst_ref", "kind": "foreign_key", "field": "dst", "references": map[string]any{"table": "nodes", "field": "id"}},
+		map[string]any{"name": "distinct_edge", "kind": "unique", "fields": []any{"src", "dst", "kind"}},
+	}
+	if wire["namespace"] != created.Namespace || wire["name"] != created.Name || wire["version"] != json.Number(strconv.Itoa(created.Version)) || !reflect.DeepEqual(wire["relation"], wantRelation) || !reflect.DeepEqual(wire["constraints"], wantConstraints) {
+		t.Fatalf("HTTP schema: %v", wire)
+	}
+	parent := h.mustHTTPNumbered("describe_table", map[string]any{"namespace": "graph", "table": "nodes"})["table"].(map[string]any)
+	if parent["accept_references"] != true {
+		t.Fatalf("HTTP parent policy: %v", parent)
+	}
+}

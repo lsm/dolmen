@@ -43,7 +43,11 @@ func (s *Store) CreateTableWithOptions(ctx context.Context, namespace, table str
 	if err != nil {
 		return TableSchema{}, err
 	}
-	sc, err := s.eng.CreateTable(ctx, ns, ops.NormalizeTable(table), fieldsToSchema(fields), store.TableOpts{Constraints: declared, AcceptReferences: opts.AcceptReferences}, [16]byte{})
+	var relation *schema.Relation
+	if opts.Relation != nil {
+		relation = &schema.Relation{Source: opts.Relation.Source, Target: opts.Relation.Target, Type: opts.Relation.Type}
+	}
+	sc, err := s.eng.CreateTable(ctx, ns, ops.NormalizeTable(table), fieldsToSchema(fields), store.TableOpts{RowAccess: opts.RowAccess, Constraints: declared, AcceptReferences: opts.AcceptReferences, Relation: relation}, [16]byte{})
 	if err != nil {
 		return TableSchema{}, facadeErr(ctx, err)
 	}

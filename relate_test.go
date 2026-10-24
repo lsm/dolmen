@@ -2,6 +2,7 @@ package dolmen
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -30,8 +31,16 @@ func relationStore(t *testing.T, storeOpts ...Option) *Store {
 		},
 		Relation: &Relation{Source: "src", Target: "dst", Type: "kind"},
 	}
-	if _, err := st.CreateTableWithOptions(ctx, "ns", "links", fields, opts); err != nil {
+	sc, err := st.CreateTableWithOptions(ctx, "ns", "links", fields, opts)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sc.Relation, opts.Relation) || !reflect.DeepEqual(sc.Constraints, opts.Constraints) {
+		t.Fatalf("created relation schema: %+v", sc)
+	}
+	described, _, err := st.DescribeTable(ctx, "ns", "links")
+	if err != nil || !reflect.DeepEqual(described.Relation, opts.Relation) || !reflect.DeepEqual(described.Constraints, opts.Constraints) {
+		t.Fatalf("described relation schema: %+v %v", described, err)
 	}
 	if _, err := st.Insert(ctx, "ns", "nodes", []map[string]any{{"label": "a"}, {"label": "b"}}, InsertOptions{}); err != nil {
 		t.Fatal(err)
