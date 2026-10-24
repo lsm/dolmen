@@ -16,8 +16,14 @@ func TestSQLiteCreateTableRefusesInvalidDeclarationsBeforeDDL(t *testing.T) {
 	if _, err := s.CreateTable(ctx, "ns", "plain_parent", []schema.Field{{Name: "slug", Type: schema.String}}, TableOpts{}, [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
+	if minReader := catalogMinReader(t, s, "ns"); minReader >= ConstraintMinReader {
+		t.Fatalf("a namespace without declarations stamped catalog_min_reader %d", minReader)
+	}
 	if _, err := s.CreateTable(ctx, "ns", "own_parent", []schema.Field{{Name: "slug", Type: schema.String}}, TableOpts{RowAccess: schema.RowAccessOwn, AcceptReferences: true}, [16]byte{}); err != nil {
 		t.Fatal(err)
+	}
+	if minReader := catalogMinReader(t, s, "ns"); minReader != ConstraintMinReader {
+		t.Fatalf("accept_references alone must keep older binaries out: catalog_min_reader %d", minReader)
 	}
 	fk := func(parent string) []schema.Constraint {
 		return []schema.Constraint{{Name: "parent_ref", Kind: schema.ConstraintForeignKey, Field: "parent_id", References: &schema.ConstraintReference{Table: parent, Field: "id"}}}
@@ -35,9 +41,6 @@ func TestSQLiteCreateTableRefusesInvalidDeclarationsBeforeDDL(t *testing.T) {
 		if _, _, err := s.DescribeTable(ctx, "ns", "notes", nil, Incarnation{}); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("%s: a refused declaration left the table behind: %v", label, err)
 		}
-	}
-	if minReader := catalogMinReader(t, s, "ns"); minReader >= ConstraintMinReader {
-		t.Fatalf("refused declarations stamped catalog_min_reader %d", minReader)
 	}
 	sc, err := s.CreateTable(ctx, "ns", "notes", fields, TableOpts{AcceptReferences: true, Constraints: fk("notes")}, [16]byte{})
 	if err != nil {
