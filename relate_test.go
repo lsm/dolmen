@@ -4,12 +4,16 @@ import (
 	"errors"
 	"testing"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func TestRelateInsertsOneIdempotentEdge(t *testing.T) {
-	st, err := Open(t.TempDir())
+func relationStore(t *testing.T, storeOpts ...Option) *Store {
+	t.Helper()
+	st, err := Open(t.TempDir(), storeOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,6 +39,27 @@ func TestRelateInsertsOneIdempotentEdge(t *testing.T) {
 	if _, err := st.Insert(ctx, "ns", "nodes", []map[string]any{{"label": "a"}, {"label": "b"}}, InsertOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	return st
+}
+
+func TestRelateRecordsItsOwnOpSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	st := relationStore(t, WithTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))))
+	rec.Reset()
+	if _, err := st.Relate(t.Context(), "ns", "links", Edge{Source: 1, Target: 2, Type: "k"}, InsertOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range rec.Ended() {
+		if s.Name() == "dolmen.op relate" && spanAttr(s, "dolmen.table") == "links" && spanAttr(s, "dolmen.op.outcome") == "ok" {
+			return
+		}
+	}
+	t.Fatalf("no dolmen.op relate span among %d spans", len(rec.Ended()))
+}
+
+func TestRelateInsertsOneIdempotentEdge(t *testing.T) {
+	st := relationStore(t)
+	ctx := t.Context()
 	edge := Edge{Source: 1, Target: 2, Type: "k", Properties: map[string]any{"weight": 0.5}}
 	r, err := st.Relate(ctx, "ns", "links", edge, InsertOptions{IdempotencyKey: "e1"})
 	if err != nil || r.ID != 1 || r.Replayed {
