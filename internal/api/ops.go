@@ -910,7 +910,7 @@ var Ops = map[string]OpDef{
 					"items":       constraintSchema("Constraint declaration"),
 				},
 				"accept_references": prop("boolean", "Let foreign keys on other tables, or on this one, reference this table's ids; deleting a referenced row is then refused"),
-				"relation":          relationSchema("Make this a relation table, whose rows are graph edges written with relate: name the fields holding each edge's source id, target id and type. Both endpoint fields need a foreign_key constraint"),
+				"relation":          relationSchema("Make this a relation table, whose rows are graph edges: name the fields holding each edge's source id, target id and type. Both endpoint fields need a foreign_key constraint"),
 			},
 			"required": []string{"namespace", "table", "fields"},
 		},
