@@ -101,7 +101,7 @@ func RefuseMixedConstraintChanges(changes []schema.Change) error {
 		switch ch.Op {
 		case schema.OpAddConstraint, schema.OpDropConstraint, schema.OpSetAcceptReferences:
 			constraintOp = ch.Op
-		case schema.OpAddField, schema.OpRenameField, schema.OpDropField:
+		case schema.OpAddField, schema.OpRenameField, schema.OpDropField, schema.OpSetRowAccess:
 			fieldOp = ch.Op
 		}
 	}
