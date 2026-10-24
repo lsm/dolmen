@@ -74,6 +74,9 @@ func TestImportEncodedByteBoundAndRowLimit(t *testing.T) {
 			t.Fatalf("encoded request %d > 230", n)
 		}
 	}
+	if err := runImport(importArgs(srv.URL, "-bytes", "230"), func(string) string { return "" }, strings.NewReader(strings.Repeat(" ", 300)+line), &out, &errs); err != nil {
+		t.Fatalf("bound encoded request, not insignificant source whitespace: %v", err)
+	}
 	sizes = nil
 	rows = nil
 	if err := runImport(importArgs(srv.URL), func(string) string { return "" }, strings.NewReader(strings.Repeat(line, 1001)), &out, &errs); err != nil {
@@ -111,11 +114,32 @@ func TestImportStopsAtFirstErrorWithoutEchoingValues(t *testing.T) {
 }
 
 func TestImportRejectsMalformedOrOversizedLines(t *testing.T) {
-	for _, input := range []string{`{"body":"NEVER-ECHO",`, `null`, `[]`, `{} {"body":"NEVER-ECHO"}`, strings.Repeat("x", 300)} {
+	for _, input := range []string{"", `{"body":"NEVER-ECHO",`, `null`, `[]`, `{} {"body":"NEVER-ECHO"}`, strings.Repeat("x", 300)} {
 		var out, errs bytes.Buffer
 		err := runImport(importArgs("http://127.0.0.1:1", "-bytes", "230"), func(string) string { return "" }, strings.NewReader(input), &out, &errs)
 		if err == nil || !strings.Contains(err.Error(), "line 1") || strings.Contains(err.Error(), "NEVER-ECHO") {
 			t.Fatalf("unsafe/missing line error: %v", err)
+		}
+	}
+}
+
+func TestImportDoesNotFollowRedirectOrExposeCredentials(t *testing.T) {
+	followed := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { followed = true }))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	var out, errs bytes.Buffer
+	err := runImport(importArgs(source.URL), func(string) string { return "NEVER-ECHO" }, strings.NewReader(`{"id":1}`), &out, &errs)
+	if err == nil || followed || strings.Contains(err.Error()+errs.String()+out.String(), "NEVER-ECHO") {
+		t.Fatalf("redirect/credential handling: followed=%v err=%v", followed, err)
+	}
+	for _, args := range [][]string{{"-token", "NEVER-ECHO"}, {"-url", "http://NEVER-ECHO@localhost"}, {"-rows", "1001"}, {"-bytes", "33554433"}} {
+		err := runImport(args, func(string) string { return "" }, strings.NewReader("{}"), &out, &errs)
+		if err == nil || strings.Contains(err.Error()+errs.String()+out.String(), "NEVER-ECHO") {
+			t.Fatalf("unsafe option error: %v", err)
 		}
 	}
 }
