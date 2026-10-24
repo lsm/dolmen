@@ -117,6 +117,7 @@ type TableOpts struct {
 	RowAccess        string
 	Constraints      []schema.Constraint
 	AcceptReferences bool
+	Relation         *schema.Relation
 }
 
 type DeleteOpts = DeleteOptions
