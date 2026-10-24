@@ -229,6 +229,7 @@ func (s *Store) retireOwnerlessIdempotency(ctx context.Context, tx pgx.Tx) error
 
 type namespace struct {
 	commit     *int64
+	reserved   *int64
 	name       string
 	physical   string
 	generation [16]byte
@@ -335,6 +336,7 @@ func (s *Store) write(ctx context.Context, name string, expected [16]byte, fn fu
 		return &replacedError{msg: fmt.Sprintf("%v: namespace %s was replaced; resolve its current state", store.ErrNotFound, name)}
 	}
 	n.commit = new(int64)
+	n.reserved = new(int64)
 	if err := fn(tx, n); err != nil {
 		return err
 	}
@@ -352,6 +354,9 @@ func (s *Store) reserveChanges(ctx context.Context, tx pgx.Tx, n namespace, coun
 	err := tx.QueryRow(ctx, "UPDATE "+s.relation("namespaces")+" SET next_change = next_change + $1 WHERE name = $2 AND generation = $3 RETURNING next_change", count, n.name, n.generation[:]).Scan(&last)
 	if err != nil {
 		return store.ChangeRange{}, err
+	}
+	if n.reserved != nil {
+		*n.reserved += count
 	}
 	return store.ChangeRange{First: last - count + 1, Last: last, Count: count}, nil
 }

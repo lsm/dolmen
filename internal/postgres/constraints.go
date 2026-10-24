@@ -22,8 +22,15 @@ type constraintTable struct {
 
 func (s *Store) constrained(ctx context.Context, table string, incoming bool, fn func(pgx.Tx, namespace) error) func(pgx.Tx, namespace) error {
 	return func(tx pgx.Tx, n namespace) error {
+		var before int64
+		if n.reserved != nil {
+			before = *n.reserved
+		}
 		if err := fn(tx, n); err != nil {
 			return err
+		}
+		if n.reserved != nil && *n.reserved == before {
+			return nil
 		}
 		return s.checkConstraints(ctx, tx, n, table, incoming)
 	}
