@@ -27,5 +27,6 @@ check batch_expected_rows '"updated":1' "$(call batch "$claim")"
 check batch_expected_rows_stale 'expected_rows mismatch' "$(call batch "$claim")"
 check batch_expected_rows_rolled_back '"n":1' "$(call query '{"namespace":"verify","sql":"SELECT count(*) AS n FROM events WHERE title = '"'"'claimed'"'"'"}')"
 check batch_expected_rows_null '"code":"invalid_request"' "$(call batch '{"namespace":"verify","writes":[{"kind":"delete","table":"events","filter":"1=1","expected_rows":null}]}')"
+check relate_needs_relation 'not a relation table' "$(call relate '{"namespace":"verify","table":"events","source":1,"target":2,"type":"k"}')"
 check openapi '"openapi"' "$(curl -sS "$(cat "$W/url")/v1/openapi.json")"
 exit $fail
