@@ -16,8 +16,15 @@ func RefuseConstraintOptions(opts TableOpts) error {
 	return nil
 }
 
+func RefuseRelationOptions(opts TableOpts) error {
+	if opts.Relation != nil {
+		return fmt.Errorf("%w: relation tables are available on the SQLite engine only so far; omit relation on this engine", ErrInvalid)
+	}
+	return nil
+}
+
 func RefuseUnenforcedConstraints(sc *schema.TableSchema) error {
-	if len(sc.Constraints) > 0 || sc.AcceptReferences {
+	if len(sc.Constraints) > 0 || sc.AcceptReferences || sc.Relation != nil {
 		return fmt.Errorf("%w: %w: this table requires constraint enforcement; upgrade dolmen to a binary that enforces constraints before using this table", ErrInvalid, ErrCatalogTooNew)
 	}
 	return nil
@@ -33,6 +40,9 @@ func RefuseReferencedDrop(table string, referencing []string) error {
 func RefuseConstrainedField(ctx context.Context, sc *schema.TableSchema, op, field string) error {
 	if name := schema.ConstraintNamingField(ctx, sc.Fields, sc.Constraints, field); name != "" {
 		return invalidf("%s %s: constraint %q names this field; drop the constraint first", op, field, name)
+	}
+	if r := sc.Relation; r != nil && (field == r.Source || field == r.Target || field == r.Type) {
+		return invalidf("%s %s: the table's relation declaration names this field; it stays while the relation does", op, field)
 	}
 	return nil
 }

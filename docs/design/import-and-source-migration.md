@@ -92,6 +92,15 @@ up tables or overwrite a previously populated target automatically.
 
 Slice 1 adds the internal SQLite import path and shared identity validation. Public
 HTTP/MCP and Go facade exposure waits for slice 4; other engines follow in 2–3.
+Slice 2 adds the same internal path on Postgres: explicit IDs go in with
+`OVERRIDING SYSTEM VALUE`, the identity sequence is raised with `setval` to the
+greater of its last value and the chunk's highest new ID under the namespace write
+lock, and existing IDs are compared by reading a scratch copy of the candidate
+rows (a `LIKE` temp table, dropped before commit) through the ordinary row decoder.
+Slice 3 adds it on the lakehouse: imported IDs ride the ordinary append commit,
+which raises `next_id` to past the highest of them under the store write lock;
+existing IDs are compared by presenting both the stored row and the candidate
+through the ordinary row presenter, with secrets opened from their catalog side table.
 
 Small independently testable PRs: shared import validation and SQLite engine;
 Postgres allocator/import; lakehouse import; HTTP/MCP and Go facade wiring;

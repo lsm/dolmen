@@ -138,7 +138,9 @@ func (s *Store) checkAppend(ctx context.Context, n *namespace, state tableState,
 	staged := make([]map[string]any, len(rows))
 	for i, row := range rows {
 		staged[i] = maps.Clone(row)
-		staged[i]["id"] = next + int64(i)
+		if _, imported := row["id"]; !imported {
+			staged[i]["id"] = next + int64(i)
+		}
 	}
 	return s.checkConstraints(ctx, n, state, stagedRows{rows: staged}, false)
 }

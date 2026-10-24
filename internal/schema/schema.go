@@ -60,6 +60,7 @@ type TableSchema struct {
 	HasOwner         bool         `json:"has_owner,omitempty"`
 	Constraints      []Constraint `json:"constraints,omitempty"`
 	AcceptReferences bool         `json:"accept_references,omitempty"`
+	Relation         *Relation    `json:"relation,omitempty"`
 }
 
 const (

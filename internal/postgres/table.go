@@ -143,6 +143,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	if err := store.ValidateEngineNames("postgresql", table, fields); err != nil {
 		return nil, err
 	}
+	if err := store.RefuseRelationOptions(opts); err != nil {
+		return nil, err
+	}
 	if err := store.RequireSecretKey(s.secrets, fields); err != nil {
 		return nil, err
 	}
@@ -364,6 +367,9 @@ func (s *Store) DropTable(ctx context.Context, ns, table string, expected store.
 			return err
 		}
 		if err := s.purgeBatchRecordsForTable(ctx, tx, ns, table); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM "+s.relation("imports")+" WHERE namespace=$1 AND table_name=$2", ns, table); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, "UPDATE "+s.relation("tables")+" SET active=false, physical=NULL, drop_generation=drop_generation+1 WHERE namespace=$1 AND name=$2", ns, table)
