@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"testing"
@@ -24,13 +25,13 @@ func TestImportRecordsOverHTTPAndMCP(t *testing.T) {
 	h := newHarness(t)
 	h.seedTable("imp", "events", []map[string]any{{"name": "body", "type": "text", "fulltext": true}})
 
-	first := h.mustHTTP("import_records", importBody("snap-a-0001", importRecord(9007199254740993, "granite archive"), importRecord(42, "second")))
-	want := map[string]any{"ids": []any{float64(9007199254740993), float64(42)}, "inserted": float64(2), "skipped": float64(0), "replayed": false, "changes": float64(2)}
+	first := h.mustHTTPNumbered("import_records", importBody("snap-a-0001", importRecord(9007199254740993, "granite archive"), importRecord(42, "second")))
+	want := map[string]any{"ids": []any{json.Number("9007199254740993"), json.Number("42")}, "inserted": json.Number("2"), "skipped": json.Number("0"), "replayed": false, "changes": json.Number("2")}
 	if !reflect.DeepEqual(first, want) {
 		t.Fatalf("http import: %v", first)
 	}
-	rows := h.mustHTTP("read_rows", map[string]any{"namespace": "imp", "table": "events", "ids": []any{42}})["rows"].([]any)
-	if len(rows) != 1 || rows[0].(map[string]any)["created_at"] != "2026-01-02T03:04:05.123Z" {
+	rows := h.mustHTTPNumbered("read_rows", map[string]any{"namespace": "imp", "table": "events", "ids": []any{9007199254740993}})["rows"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["id"] != json.Number("9007199254740993") || rows[0].(map[string]any)["created_at"] != "2026-01-02T03:04:05.123Z" {
 		t.Fatalf("imported identity: %v", rows)
 	}
 	found := h.mustHTTP("search_fulltext", map[string]any{"namespace": "imp", "table": "events", "query": "granite"})["results"].([]any)
@@ -67,9 +68,9 @@ func TestImportRecordsOverHTTPAndMCP(t *testing.T) {
 		t.Fatalf("import must not create a namespace: %d %v", status, out)
 	}
 
-	next := h.mustHTTP("insert", map[string]any{"namespace": "imp", "table": "events", "records": []any{map[string]any{"body": "ordinary"}}})
-	if id := next["ids"].([]any)[0].(float64); id <= 9007199254740993 {
-		t.Fatalf("ordinary insert below the imported high-water mark: %v", next)
+	next := h.mustHTTPNumbered("insert", map[string]any{"namespace": "imp", "table": "events", "records": []any{map[string]any{"body": "ordinary"}}})
+	if id := next["ids"].([]any)[0]; id != json.Number("9007199254740994") {
+		t.Fatalf("ordinary insert must follow the imported high-water mark exactly: %v", next)
 	}
 }
 
