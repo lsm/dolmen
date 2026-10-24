@@ -233,3 +233,15 @@ func (s *Store) referencing(ctx context.Context, tx pgx.Tx, n namespace, table s
 	}
 	return schema.ReferencingTables(schemas, table), nil
 }
+
+func (s *Store) checkMigratedConstraints(ctx context.Context, tx pgx.Tx, n namespace, old, cur *schema.TableSchema) error {
+	if len(cur.Constraints) == 0 && !cur.AcceptReferences && !old.AcceptReferences {
+		return nil
+	}
+	if len(cur.Constraints) > 0 || cur.AcceptReferences {
+		if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = GREATEST(version, $1)", constraintCatalogVersion); err != nil {
+			return err
+		}
+	}
+	return s.checkConstraints(ctx, tx, n, cur.Name, true)
+}

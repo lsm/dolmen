@@ -158,6 +158,9 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 
 	defaults := map[string]any{}
 
+	if err := store.RefuseMixedConstraintChanges(changes); err != nil {
+		return nil, err
+	}
 	for i, ch := range changes {
 		if ch.Op != schema.OpAddField && ch.Default != nil {
 			return nil, invalidf("changes[%d]: default is only allowed on add_field (op %q has no added field to backfill)", i, ch.Op)
@@ -166,7 +169,10 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
 		}
 		if !schema.TakesValue(ch.Op) && ch.Value != nil {
-			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access (op %q has no flag to set)", i, ch.Op)
+			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access/set_accept_references (op %q has no flag to set)", i, ch.Op)
+		}
+		if (ch.Op == schema.OpAddConstraint) != (ch.Constraint != nil) {
+			return nil, invalidf("changes[%d]: constraint is required on add_constraint and allowed on no other op (op %q)", i, ch.Op)
 		}
 		if cur.HasOwner {
 			targets := []string{ch.Name, ch.To}
@@ -550,6 +556,11 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			}
 			f.Shape = shape
 			plan.Operations = append(plan.Operations, store.ShapeOperation(ch.Name, shape))
+		case schema.OpAddConstraint, schema.OpDropConstraint, schema.OpSetAcceptReferences:
+			if err := store.PlanConstraintChange(ctx, cur, ch, func() ([]string, error) { return s.referencing(ctx, tx, n, old.Name) }); err != nil {
+				return nil, err
+			}
+			plan.Operations = append(plan.Operations, store.DescribeConstraintChange(ch))
 		case schema.OpSetRowAccess:
 			if ch.Value == nil {
 				return nil, invalidf("set_row_access requires value: true restricts rows to the principal who wrote them, false stops the filtering")
@@ -642,7 +653,7 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			f.MaxBytes, f.MediaTypes = next.MaxBytes, next.MediaTypes
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_file_constraints %s max_bytes=%d media_types=%v", ch.Name, next.MaxBytes, next.MediaTypes))
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, set_row_access)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, set_row_access, add_constraint, drop_constraint, set_accept_references)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
@@ -929,6 +940,9 @@ func (s *Store) migrateTable(ctx context.Context, ns, table string, changes []sc
 				return err
 			}
 			if err := s.saveMigration(ctx, tx, n, current, work, changes); err != nil {
+				return err
+			}
+			if err := s.checkMigratedConstraints(ctx, tx, n, current.schema, work.cur); err != nil {
 				return err
 			}
 			return s.deleteStagedVectors(ctx, tx, ns, table)
