@@ -268,6 +268,9 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 			return err
 		}
 		pin := state.schema.EmbedDim != dim || space == "" && state.schema.EmbedDim != 0
+		if err := s.checkAppend(ctx, n, state, rows); err != nil {
+			return err
+		}
 		tx, err := n.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err

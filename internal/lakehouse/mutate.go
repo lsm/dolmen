@@ -223,6 +223,10 @@ type changeStep struct {
 }
 
 func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableState, m mutation, stamp string) (store.ChangeRange, error) {
+	staged := stagedRows{deletes: m.deletes, rows: append(append([]map[string]any{}, m.inserts...), mapValues(m.updates)...)}
+	if err := s.checkConstraints(ctx, n, state, staged, len(m.deletes) > 0); err != nil {
+		return store.ChangeRange{}, err
+	}
 	tx, err := n.db.BeginTx(ctx, nil)
 	if err != nil {
 		return store.ChangeRange{}, err
@@ -365,6 +369,14 @@ func (s *Store) commitMutation(ctx context.Context, n *namespace, state tableSta
 }
 
 func mapKeys(m map[int64]map[string]any) []int64 { return sortedKeys(m) }
+
+func mapValues(m map[int64]map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(m))
+	for _, id := range sortedKeys(m) {
+		out = append(out, m[id])
+	}
+	return out
+}
 
 func sortedKeys(m map[int64]map[string]any) []int64 {
 	keys := make([]int64, 0, len(m))
@@ -510,6 +522,9 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 				return err
 			}
 			pin := embeddingPin(state, space, dim, emb)
+			if err := s.checkAppend(ctx, n, state, rows); err != nil {
+				return err
+			}
 			tx, err := n.db.BeginTx(ctx, nil)
 			if err != nil {
 				return err
