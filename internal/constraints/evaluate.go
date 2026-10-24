@@ -21,10 +21,14 @@ func (p *UniquePlan) Key(ctx context.Context, row map[string]any, owner *string)
 		return "", false, fmt.Errorf("a unique constraint must be compiled before evaluation")
 	}
 	matches, err := evaluate(ctx, p.predicate, row)
+	if err != nil {
+		return "", false, err
+	}
+	key, participates, err := UniqueKey(p.keys, row, owner)
 	if err != nil || matches != yes {
 		return "", false, err
 	}
-	return UniqueKey(p.keys, row, owner)
+	return key, participates, nil
 }
 
 func evaluate(ctx context.Context, c *condition, row map[string]any) (truth, error) {
