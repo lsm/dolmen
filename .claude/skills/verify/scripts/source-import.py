@@ -108,6 +108,9 @@ for label, directory in (("sqlite", lite), ("postgres", pg)):
         assert conflict.returncode != 0 and "line 2" in conflict.stderr and "conflict" in conflict.stderr
         assert "NEVER-ECHO" not in conflict.stderr and not conflict.stdout
         assert call("query", {"namespace": namespace, "sql": "SELECT * FROM " + table + " ORDER BY id"})["rows"] == rows
+        invalid = cli(namespace, table, "invalid-field", json.dumps(dict(rows[0], id=100, body={"value": "NEVER-ECHO"})) + "\n")
+        assert invalid.returncode != 0 and "line 1 field body: invalid_request" in invalid.stderr, invalid.stderr
+        assert "NEVER-ECHO" not in invalid.stderr and not invalid.stdout
         print("PASS " + label + " " + table + ": interrupted resume, replay, regrouped skip, exact rows, no duplicate changes, atomic conflict")
     assert call("search_fulltext", {"namespace": namespace, "table": "events", "query": "granite"})["results"]
     print("PASS " + label + ": rebuilt fulltext index; references and truncated timestamps compare exactly")

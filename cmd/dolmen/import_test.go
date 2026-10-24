@@ -96,7 +96,7 @@ func TestImportStopsAtFirstErrorWithoutEchoingValues(t *testing.T) {
 			return
 		}
 		w.WriteHeader(400)
-		fmt.Fprint(w, `{"ok":false,"error":{"code":"invalid_request","message":"import record 1: field \"body\": value \"NEVER-ECHO\" is invalid"}}`)
+		fmt.Fprint(w, `{"ok":false,"error":{"code":"invalid_request","message":"import record 1: invalid request: field \"body\": value \"NEVER-ECHO\" is invalid"}}`)
 	}))
 	defer srv.Close()
 	var out, errs bytes.Buffer
