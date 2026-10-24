@@ -27,5 +27,8 @@ check batch_expected_rows '"updated":1' "$(call batch "$claim")"
 check batch_expected_rows_stale 'expected_rows mismatch' "$(call batch "$claim")"
 check batch_expected_rows_rolled_back '"n":1' "$(call query '{"namespace":"verify","sql":"SELECT count(*) AS n FROM events WHERE title = '"'"'claimed'"'"'"}')"
 check batch_expected_rows_null '"code":"invalid_request"' "$(call batch '{"namespace":"verify","writes":[{"kind":"delete","table":"events","filter":"1=1","expected_rows":null}]}')"
+check create_nodes '"accept_references":true' "$(call create_table '{"namespace":"verify","table":"nodes","accept_references":true,"fields":[{"name":"label","type":"string"}]}')"
+check create_relation '"relation":{"source":"src","target":"dst","type":"kind"}' "$(call create_table '{"namespace":"verify","table":"links","fields":[{"name":"src","type":"number","required":true},{"name":"dst","type":"number","required":true},{"name":"kind","type":"string","required":true}],"constraints":[{"name":"src_ref","kind":"foreign_key","field":"src","references":{"table":"nodes","field":"id"}},{"name":"dst_ref","kind":"foreign_key","field":"dst","references":{"table":"nodes","field":"id"}}],"relation":{"source":"src","target":"dst","type":"kind"}}')"
+check dangling_edge 'src_ref' "$(call insert '{"namespace":"verify","table":"links","records":[{"src":1,"dst":1,"kind":"k"}]}')"
 check openapi '"openapi"' "$(curl -sS "$(cat "$W/url")/v1/openapi.json")"
 exit $fail

@@ -84,9 +84,24 @@ func tableOutSchema(desc string) map[string]any {
 			"embed_dim":         prop("integer", "Dimension of the server-side embedding (present when set)"),
 			"constraints":       map[string]any{"type": "array", "description": "Managed constraints (present when declared)", "items": constraintSchema("Constraint declaration")},
 			"accept_references": prop("boolean", "Present and true when foreign keys may reference this table"),
+			"relation":          relationSchema("Present on a relation table: which fields hold an edge's source id, target id and type"),
 		},
 		"required":             []string{"namespace", "name", "version", "fields"},
 		"additionalProperties": false,
+	}
+}
+
+func relationSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"description":          desc,
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"source": prop("string", "Required number field holding the id of the row an edge starts at; it needs a foreign_key constraint"),
+			"target": prop("string", "Required number field holding the id of the row an edge ends at; it needs a foreign_key constraint"),
+			"type":   prop("string", "Required string field holding the edge's type"),
+		},
+		"required": []string{"source", "target", "type"},
 	}
 }
 
@@ -895,6 +910,7 @@ var Ops = map[string]OpDef{
 					"items":       constraintSchema("Constraint declaration"),
 				},
 				"accept_references": prop("boolean", "Let foreign keys on other tables, or on this one, reference this table's ids; deleting a referenced row is then refused"),
+				"relation":          relationSchema("Make this a relation table, whose rows are graph edges written with relate: name the fields holding each edge's source id, target id and type. Both endpoint fields need a foreign_key constraint"),
 			},
 			"required": []string{"namespace", "table", "fields"},
 		},
@@ -909,10 +925,10 @@ var Ops = map[string]OpDef{
 				if err := decode(body, &ext); err != nil {
 					return nil, err
 				}
-				req = createTableReq{Namespace: ext.Namespace, Table: ext.Table, Fields: ext.Fields, Constraints: ext.Constraints, AcceptReferences: ext.AcceptReferences}
+				req = createTableReq{Namespace: ext.Namespace, Table: ext.Table, Fields: ext.Fields, Constraints: ext.Constraints, AcceptReferences: ext.AcceptReferences, Relation: ext.Relation}
 				rowAccess = ext.RowAccess
-				if len(req.Constraints) > 0 || req.AcceptReferences {
-					return nil, badRequest("constraints and accept_references are not available with -auth on yet; create the table without them")
+				if len(req.Constraints) > 0 || req.AcceptReferences || req.Relation != nil {
+					return nil, badRequest("constraints, accept_references and relation are not available with -auth on yet; create the table without them")
 				}
 			} else if err := decode(body, &req); err != nil {
 				return nil, err
@@ -933,7 +949,7 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{RowAccess: rowAccess, Constraints: req.Constraints, AcceptReferences: req.AcceptReferences}, [16]byte{})
+			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{RowAccess: rowAccess, Constraints: req.Constraints, AcceptReferences: req.AcceptReferences, Relation: req.Relation}, [16]byte{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}

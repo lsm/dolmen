@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `create_table` takes `constraints` (unique keys, partial with `where`, and foreign keys to
+  another table's `id`), `accept_references` and `relation` over HTTP and MCP, and
+  `describe_table` returns them. They are checked on every write. SQLite only for now, and refused
+  under `-auth on` until the permission gates land (#701, #735).
+
 - Batch `update` and `delete` writes take `expected_rows`, the exact number of rows the write
   must match, on HTTP, MCP and the Go facade (`BatchWrite.ExpectedRows`). The count is checked
   inside the transaction on every engine; any other count fails the whole batch with `conflict` and

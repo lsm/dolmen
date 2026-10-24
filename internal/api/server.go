@@ -398,6 +398,7 @@ type createTableReq struct {
 	Fields           []schema.Field      `json:"fields"`
 	Constraints      []schema.Constraint `json:"constraints"`
 	AcceptReferences bool                `json:"accept_references"`
+	Relation         *schema.Relation    `json:"relation"`
 }
 
 type createTableAuthReq struct {
@@ -407,6 +408,7 @@ type createTableAuthReq struct {
 	RowAccess        string              `json:"row_access"`
 	Constraints      []schema.Constraint `json:"constraints"`
 	AcceptReferences bool                `json:"accept_references"`
+	Relation         *schema.Relation    `json:"relation"`
 }
 
 type inferReq struct {

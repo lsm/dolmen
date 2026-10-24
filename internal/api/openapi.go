@@ -343,6 +343,7 @@ func tableSchemaComponent(authOn bool) map[string]any {
 		"embed_dim":         intProp(0, 0),
 		"constraints":       arrayOf(constraintSchema("Constraint declaration")),
 		"accept_references": propBool(),
+		"relation":          relationSchema("Relation roles"),
 	}
 	if authOn {
 		props["row_access"] = map[string]any{"type": "string", "enum": []string{schema.RowAccessOwn}, "description": "Present when the table keeps each row private to the principal that wrote it"}
