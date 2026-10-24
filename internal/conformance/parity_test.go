@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/lsm/dolmen/internal/api"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 type parityStep struct {
@@ -129,8 +130,27 @@ func parityScript() []parityStep {
 	}
 }
 
+func relationParitySteps() []parityStep {
+	ns := "parity"
+	ref := func(name, field string) map[string]any {
+		return map[string]any{"name": name, "kind": "foreign_key", "field": field, "references": map[string]any{"table": "nodes", "field": "id"}}
+	}
+	return []parityStep{
+		{"create_nodes", "create_table", map[string]any{"namespace": ns, "table": "nodes", "accept_references": true, "fields": []map[string]any{{"name": "label", "type": "string"}}}, false},
+		{"create_relation", "create_table", map[string]any{"namespace": ns, "table": "links",
+			"fields":      []map[string]any{{"name": "src", "type": "number", "required": true}, {"name": "dst", "type": "number", "required": true}, {"name": "kind", "type": "string", "required": true}, {"name": "weight", "type": "number"}},
+			"constraints": []map[string]any{ref("src_ref", "src"), ref("dst_ref", "dst")},
+			"relation":    map[string]any{"source": "src", "target": "dst", "type": "kind"}}, false},
+		{"insert_nodes", "insert", map[string]any{"namespace": ns, "table": "nodes", "records": []map[string]any{{"label": "n1"}, {"label": "n2"}}}, false},
+		{"relate", "relate", map[string]any{"namespace": ns, "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"weight": 0.5}, "idempotency_key": "edge-1"}, false},
+		{"relate_replay", "relate", map[string]any{"namespace": ns, "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"weight": 0.5}, "idempotency_key": "edge-1"}, false},
+		{"drop_relation", "drop_table", map[string]any{"namespace": ns, "table": "links", "confirm": "links"}, false},
+	}
+}
+
 var parityPinnedElsewhere = map[string]string{
 	"file_url": "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
+	"relate":   "TestRelateInsertsOneIdempotentEdge on engines that cannot declare relation tables",
 }
 
 func TestTransportParityAllOperations(t *testing.T) {
@@ -138,6 +158,9 @@ func TestTransportParityAllOperations(t *testing.T) {
 	mcpH := newHarness(t)
 
 	steps := parityScript()
+	if testEngine(t) == store.EngineSQLite {
+		steps = append(steps[:2:2], append(relationParitySteps(), steps[2:]...)...)
+	}
 
 	covered := map[string]bool{}
 	for _, step := range steps {

@@ -31,6 +31,7 @@ rpc 20 '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"import_
 rpc 6 '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_rows","arguments":{"namespace":"verify","table":"missing"}}}' '"isError":true' tools/call-teaching-error
 rpc 7 '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"batch","arguments":{"namespace":"verify","writes":[{"kind":"update","table":"notes","filter":"body = ?","args":["hello from mcp"],"set":{"body":"claimed"},"expected_rows":1}]}}}' '"updated":1' tools/call-batch-expected_rows
 rpc 8 '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"batch","arguments":{"namespace":"verify","writes":[{"kind":"update","table":"notes","filter":"body = ?","args":["hello from mcp"],"set":{"body":"claimed"},"expected_rows":1}]}}}' 'expected_rows mismatch' tools/call-batch-expected_rows-stale
+rpc 9 '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"relate","arguments":{"namespace":"verify","table":"notes","source":1,"target":1,"type":"k"}}}' 'not a relation table' tools/call-relate-teaching-error
 exec 3>&-
 wait "$pid" || true
 exit $fail

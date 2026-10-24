@@ -10,8 +10,8 @@ import (
 
 func declaringEngine(t *testing.T) {
 	t.Helper()
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("only SQLite keeps constraint declarations so far; remove this skip as each engine's create slice lands")
+	if testEngine(t) == store.EngineLakehouse {
+		t.Skip("lakehouse keeps no constraint declarations yet; remove this skip when its create slice lands")
 	}
 }
 

@@ -12,7 +12,7 @@ $S/stop.sh "$W"
 
 It speaks JSON-RPC to `$W/dolmen mcp -data $W/mcp-data`: `initialize`,
 `tools/list`, then `create_table`, `insert`, `read_rows`, `import_records`, a missing-table
-error and a `batch` claim with `expected_rows` plus its stale retry through `tools/call`. Expect every line `PASS`: results in
+error and a `batch` claim with `expected_rows` plus its stale retry, and `relate` refusing a table that is not a relation table, through `tools/call`. Expect every line `PASS`: results in
 `structuredContent` with empty `content`, errors with `isError: true`.
 
 The server answers stdio requests concurrently, so a client must wait for a

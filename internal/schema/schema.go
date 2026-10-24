@@ -97,6 +97,8 @@ type Change struct {
 	MediaTypes *[]string `json:"media_types,omitempty"`
 
 	Default any `json:"default,omitempty"`
+
+	Constraint *Constraint `json:"constraint,omitempty"`
 }
 
 const (
@@ -109,11 +111,15 @@ const (
 	OpSetShape           = "set_shape"
 	OpSetFileConstraints = "set_file_constraints"
 	OpSetRowAccess       = "set_row_access"
+
+	OpAddConstraint       = "add_constraint"
+	OpDropConstraint      = "drop_constraint"
+	OpSetAcceptReferences = "set_accept_references"
 )
 
 func TakesValue(op string) bool {
 	switch op {
-	case OpSetFulltext, OpSetVectorize, OpSetRowAccess:
+	case OpSetFulltext, OpSetVectorize, OpSetRowAccess, OpSetAcceptReferences:
 		return true
 	}
 	return false
@@ -123,7 +129,7 @@ func (c Change) ReadsRows() bool {
 	switch c.Op {
 	case OpAddField:
 		return c.Field == nil || c.Field.Required || c.Field.Fulltext || c.Field.Vectorize || c.Default != nil
-	case OpSetEnum, OpSetShape, OpSetFileConstraints, OpSetVectorize, OpSetFulltext, OpSetRowAccess, OpDropField:
+	case OpSetEnum, OpSetShape, OpSetFileConstraints, OpSetVectorize, OpSetFulltext, OpSetRowAccess, OpDropField, OpAddConstraint, OpSetAcceptReferences:
 		return true
 	}
 	return false

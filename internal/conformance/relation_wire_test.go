@@ -25,7 +25,9 @@ func relationTableBody(table string) map[string]any {
 
 func TestRelationTablesAreDeclaredOnBothTransports(t *testing.T) {
 	h := newHarness(t)
-	declaringEngine(t)
+	if testEngine(t) != store.EngineSQLite {
+		t.Skip("relation tables are SQLite-only so far")
+	}
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "nodes", "accept_references": true, "fields": []map[string]any{{"name": "label", "type": "string"}}})
 	created := map[string]map[string]any{
@@ -101,8 +103,8 @@ func TestDeclarationsAreAdvertisedOnlyWhileAuthIsOff(t *testing.T) {
 }
 
 func TestUndeclaringEnginesNameTheEngineAsTheGap(t *testing.T) {
-	if testEngine(t) == store.EngineSQLite {
-		t.Skip("SQLite keeps declarations")
+	if testEngine(t) != store.EngineLakehouse {
+		t.Skip("only lakehouse still keeps no declarations")
 	}
 	h := newHarness(t)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
