@@ -38,6 +38,7 @@ var appendDDL = []string{
 	`CREATE INDEX IF NOT EXISTS _dolmen_lakehouse_commits_pending ON _dolmen_lakehouse_commits(commit_id) WHERE materialized = 0`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, kind TEXT NOT NULL, owner TEXT, commit_id INTEGER NOT NULL, at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_idempotency(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(table_name, generation, owner, key))`,
+	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_imports(table_name TEXT NOT NULL, generation INTEGER NOT NULL, owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(table_name, generation, owner, key))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_secrets(table_name TEXT NOT NULL, generation INTEGER NOT NULL, row_id INTEGER NOT NULL, field TEXT NOT NULL, value BLOB NOT NULL, PRIMARY KEY(table_name, generation, row_id, field))`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_cursors(token TEXT PRIMARY KEY, position INTEGER NOT NULL, chain_origin INTEGER NOT NULL, chain_start INTEGER NOT NULL, issued_at INTEGER NOT NULL, table_name TEXT NOT NULL, drop_generation INTEGER NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS _dolmen_lakehouse_batches(owner TEXT NOT NULL, key TEXT NOT NULL, payload_hash TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(owner, key))`,
@@ -127,13 +128,27 @@ func canonicalNumber(v any) string {
 	return text
 }
 
-func (s *Store) prepareRows(ctx context.Context, ns string, state tableState, records []map[string]any, emb store.Embedder, stamp, owner string) ([]map[string]any, error) {
+type recordError struct {
+	index int
+	error
+}
+
+func (e *recordError) Unwrap() error { return e.error }
+
+func (s *Store) prepareRows(ctx context.Context, ns string, state tableState, records []map[string]any, emb store.Embedder, stamp, owner string) (_ []map[string]any, err error) {
 	sc := state.schema
 	out := make([]map[string]any, len(records))
 	texts := []string{}
 	indices := []int{}
 	vf := sc.VectorizeField()
+	at := -1
+	defer func() {
+		if err != nil && at >= 0 {
+			err = &recordError{at, err}
+		}
+	}()
 	for i, rec := range records {
+		at = i
 		for name := range rec {
 			if sc.Field(name) == nil {
 				return nil, invalidf("unknown field %q on table %s (see describe_table)", name, sc.Name)
@@ -174,6 +189,7 @@ func (s *Store) prepareRows(ctx context.Context, ns string, state tableState, re
 		}
 		out[i] = row
 	}
+	at = -1
 	if len(texts) > 0 {
 		vecs, err := store.EmbedTexts(ctx, sc, sc.Name, texts, emb)
 		if err != nil {
@@ -309,9 +325,15 @@ func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, 
 		return result, err
 	}
 	result.Ids = make([]int64, len(rows))
+	top := next
 	for i, row := range rows {
-		result.Ids[i] = next + int64(i)
-		row["id"] = result.Ids[i]
+		id, imported := row["id"].(int64)
+		if !imported {
+			id = next + int64(i)
+		}
+		result.Ids[i] = id
+		row["id"] = id
+		top = max(top, id+1)
 		for _, f := range state.schema.SecretFields() {
 			sealed, ok := row[f.Name].([]byte)
 			if !ok {
@@ -323,7 +345,7 @@ func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, 
 			row[f.Name] = secretPresent
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_ids(table_name, generation, next_id) VALUES(?,?,?) ON CONFLICT(table_name, generation) DO UPDATE SET next_id=excluded.next_id`, inc.Table, inc.DropGen, next+int64(len(rows))); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_ids(table_name, generation, next_id) VALUES(?,?,?) ON CONFLICT(table_name, generation) DO UPDATE SET next_id=excluded.next_id`, inc.Table, inc.DropGen, top); err != nil {
 		return result, err
 	}
 	var payload bytes.Buffer
