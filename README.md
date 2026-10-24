@@ -1555,6 +1555,15 @@ it answer `internal_error` (the log names the missing key id) and `rotate_secret
 replay while the old key is configured; after it is removed, such a replay answers `conflict`
 rather than inserting again.
 
+## Import mapped application rows
+
+`dolmen import -namespace demo -table events -snapshot export-a < events.jsonl`
+preserves source IDs and canonical UTC-millisecond creation times in existing
+tables. It sends row/byte-bounded chunks to `/v1/import_records`, prints committed
+chunk numbers and stops on the first error. Use `DOLMEN_TOKEN` from the environment
+for authentication. See [the SQLite/Postgres snapshot recipes](examples/import/README.md)
+for explicit mapping, counted timestamp truncation, retry keys and comparison.
+
 ## Backup and restore
 
 A namespace is a SQLite file in WAL mode, so copying `<ns>.db` while the server runs can miss

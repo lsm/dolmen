@@ -18,6 +18,10 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 - macOS: resolve the temp dir before running Go tests, or three root-package
   symlink tests fail spuriously (see CLAUDE.md):
   `export TMPDIR="$(cd "$TMPDIR" && pwd -P)"`
+- Disposable PostgreSQL uses `scripts/pg.sh` and Docker. On macOS, start Colima
+  with `colima start --activate=false` if needed; set `DOCKER_CONTEXT=colima` per
+  Docker/pg.sh command. Never change the global Docker context. Use a unique
+  `DOLMEN_VERIFY_PG_NAME` and free `DOLMEN_VERIFY_PG_PORT`, and always stop it.
 - Scripts live in `scripts/` next to this file (bash 3.2 compatible; need
   `curl` and `python3` for picking a free port):
 
@@ -29,6 +33,7 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 | `scripts/lib.sh` | `scrub_env`, sourced by the two launchers: drops every `DOLMEN_*` (except `DOLMEN_ADMIN_KEY`), `OPENAI_API_KEY`, `REMBED_CACHE` and `HF_TOKEN`, as `internal/blackbox` does. |
 | `scripts/http-smoke.sh W` | HTTP journey, PASS/FAIL per step. |
 | `scripts/mcp-stdio.sh W` | MCP-over-stdio journey using `$W/dolmen`, PASS/FAIL per step. |
+| `scripts/source-import.py W CONTAINER` | Synthetic SQLite/Postgres export-to-CLI migration proof; uses the disposable `pg.sh` container with `DOCKER_CONTEXT=colima`. |
 
 ```bash
 S=.claude/skills/verify/scripts
