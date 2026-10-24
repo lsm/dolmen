@@ -26,6 +26,7 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 | `scripts/serve.sh [flags]` | builds `./cmd/dolmen` into a new `dolmen-verify.*` temp dir, starts it on a free loopback port with `-data $W/data`, `DOLMEN_EMBED_PROVIDER=none`, auth off; waits for `/healthz`; prints the work dir `W`. Extra args go to `dolmen`. |
 | `scripts/call.sh W op 'json'` | `POST /v1/{op}` to that server and prints the envelope. |
 | `scripts/stop.sh W` | stops the server and deletes `W`. |
+| `scripts/lib.sh` | `scrub_env`, sourced by the two launchers: drops every `DOLMEN_*` (except `DOLMEN_ADMIN_KEY`), `OPENAI_API_KEY`, `REMBED_CACHE` and `HF_TOKEN`, as `internal/blackbox` does. |
 | `scripts/http-smoke.sh W` | HTTP journey, PASS/FAIL per step. |
 | `scripts/mcp-stdio.sh W` | MCP-over-stdio journey using `$W/dolmen`, PASS/FAIL per step. |
 

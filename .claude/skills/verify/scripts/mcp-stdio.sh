@@ -7,7 +7,8 @@ set -euo pipefail
 W="$1"
 rm -f "$W/mcp.in" "$W/mcp.out"
 mkfifo "$W/mcp.in" "$W/mcp.out"
-env -u DOLMEN_DATA DOLMEN_EMBED_PROVIDER=none "$W/dolmen" mcp -data "$W/mcp-data" <"$W/mcp.in" >"$W/mcp.out" 2>"$W/mcp.log" &
+. "$(dirname "$0")/lib.sh"
+(scrub_env; DOLMEN_EMBED_PROVIDER=none exec "$W/dolmen" mcp -data "$W/mcp-data") <"$W/mcp.in" >"$W/mcp.out" 2>"$W/mcp.log" &
 pid=$!
 exec 3>"$W/mcp.in" 4<"$W/mcp.out"
 fail=0
