@@ -76,15 +76,55 @@ func tableOutSchema(desc string) map[string]any {
 		"type":        "object",
 		"description": desc,
 		"properties": map[string]any{
-			"namespace":   prop("string", "Namespace of the table"),
-			"name":        prop("string", "Table name"),
-			"version":     prop("integer", "Schema version (starts at 1, bumps on migrate)"),
-			"fields":      map[string]any{"type": "array", "description": "Field definitions", "items": fieldOutSchema("Field definition")},
-			"embed_space": prop("string", "Embedding space of the vectorize field (present when set)"),
-			"embed_dim":   prop("integer", "Dimension of the server-side embedding (present when set)"),
+			"namespace":         prop("string", "Namespace of the table"),
+			"name":              prop("string", "Table name"),
+			"version":           prop("integer", "Schema version (starts at 1, bumps on migrate)"),
+			"fields":            map[string]any{"type": "array", "description": "Field definitions", "items": fieldOutSchema("Field definition")},
+			"embed_space":       prop("string", "Embedding space of the vectorize field (present when set)"),
+			"embed_dim":         prop("integer", "Dimension of the server-side embedding (present when set)"),
+			"constraints":       map[string]any{"type": "array", "description": "Managed constraints (present when declared)", "items": constraintSchema("Constraint declaration")},
+			"accept_references": prop("boolean", "Present and true when foreign keys may reference this table"),
+			"relation":          relationSchema("Present on a relation table: which fields hold an edge's source id, target id and type"),
 		},
 		"required":             []string{"namespace", "name", "version", "fields"},
 		"additionalProperties": false,
+	}
+}
+
+func relationSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"description":          desc,
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"source": prop("string", "Required number field holding the id of the row an edge starts at; it needs a foreign_key constraint"),
+			"target": prop("string", "Required number field holding the id of the row an edge ends at; it needs a foreign_key constraint"),
+			"type":   prop("string", "Required string field holding the edge's type"),
+		},
+		"required": []string{"source", "target", "type"},
+	}
+}
+
+func constraintSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"description":          desc,
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"name":   prop("string", "Constraint name, unique within the table; follows the field-name rules"),
+			"kind":   map[string]any{"type": "string", "enum": []string{schema.ConstraintUnique, schema.ConstraintForeignKey}, "description": "unique or foreign_key"},
+			"fields": map[string]any{"type": "array", "description": "unique: 1 to 8 string, text, number, boolean or timestamp fields; a row whose key has a NULL never conflicts", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": schema.MaxUniqueConstraintFields},
+			"where":  prop("string", "unique: optional predicate (comparisons, IS [NOT] NULL, AND, OR, NOT); only rows where it is true take part"),
+			"field":  prop("string", "foreign_key: the number field holding parent system ids; NULL is allowed unless the field is required"),
+			"references": map[string]any{
+				"type":                 "object",
+				"description":          "foreign_key: the referenced table in the same namespace and its system id",
+				"additionalProperties": false,
+				"properties":           map[string]any{"table": prop("string", "Referenced table"), "field": map[string]any{"type": "string", "enum": []string{"id"}}},
+				"required":             []string{"table", "field"},
+			},
+		},
+		"required": []string{"name", "kind"},
 	}
 }
 
@@ -839,7 +879,9 @@ var Ops = map[string]OpDef{
 			"default=<value> is stored by later inserts that omit the field (instead of NULL; must match " +
 			"the field's type; not allowed on required or vectorize fields) — a timestamp field may instead declare " +
 			"default=now(), stamped with the server's current time on each write that omits the field, so idempotent " +
-			"retries can omit it and replay instead of hashing a regenerated client timestamp. Consider infer_schema first when starting from sample records.",
+			"retries can omit it and replay instead of hashing a regenerated client timestamp. " +
+			"constraints=[...] declares managed unique keys (optionally partial, with where) and foreign keys to another table's id, checked on every write; " +
+			"a referenced table must be created with accept_references=true. Consider infer_schema first when starting from sample records.",
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -861,6 +903,14 @@ var Ops = map[string]OpDef{
 					},
 					"items": fieldItemSchema("Field definition", true),
 				},
+				"constraints": map[string]any{
+					"type":        "array",
+					"description": "Managed constraints checked on every write, at most 32. A unique constraint names 1 to 8 scalar fields and an optional where predicate; a foreign_key names a number field and references another table's system id, which must accept references",
+					"maxItems":    schema.MaxConstraintsPerTable,
+					"items":       constraintSchema("Constraint declaration"),
+				},
+				"accept_references": prop("boolean", "Let foreign keys on other tables, or on this one, reference this table's ids; deleting a referenced row is then refused"),
+				"relation":          relationSchema("Make this a relation table, whose rows are graph edges: name the fields holding each edge's source id, target id and type. Both endpoint fields need a foreign_key constraint"),
 			},
 			"required": []string{"namespace", "table", "fields"},
 		},
@@ -875,8 +925,11 @@ var Ops = map[string]OpDef{
 				if err := decode(body, &ext); err != nil {
 					return nil, err
 				}
-				req = createTableReq{Namespace: ext.Namespace, Table: ext.Table, Fields: ext.Fields}
+				req = createTableReq{Namespace: ext.Namespace, Table: ext.Table, Fields: ext.Fields, Constraints: ext.Constraints, AcceptReferences: ext.AcceptReferences, Relation: ext.Relation}
 				rowAccess = ext.RowAccess
+				if len(req.Constraints) > 0 || req.AcceptReferences || req.Relation != nil {
+					return nil, badRequest("constraints, accept_references and relation are not available with -auth on yet; create the table without them")
+				}
 			} else if err := decode(body, &req); err != nil {
 				return nil, err
 			}
@@ -896,7 +949,7 @@ var Ops = map[string]OpDef{
 			if err := s.ensureNamespace(ctx, ns); err != nil {
 				return nil, wrapStoreErr(err)
 			}
-			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{RowAccess: rowAccess}, [16]byte{})
+			sc, err := s.eng.CreateTable(ctx, ns, normTable(req.Table), req.Fields, store.TableOpts{RowAccess: rowAccess, Constraints: req.Constraints, AcceptReferences: req.AcceptReferences, Relation: req.Relation}, [16]byte{})
 			if err != nil {
 				return nil, wrapStoreErr(err)
 			}

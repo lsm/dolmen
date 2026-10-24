@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+- `create_table` takes `constraints` (unique keys, partial with `where`, and foreign keys to
+  another table's `id`), `accept_references` and `relation` over HTTP and MCP, and
+  `describe_table` returns them. They are checked on every write. Constraints work on SQLite and
+  PostgreSQL and relation tables on SQLite so far; all are refused under `-auth on` until the permission gates land (#701, #735).
 - `relate` writes one directed graph edge into a relation table on HTTP, MCP and the Go facade
   (`Store.Relate`), taking `source`, `target`, `type` and optional `properties`, with the same
-  `idempotency_key` replay as `insert`. Relation tables are not declarable over the wire yet (#736).
+  `idempotency_key` replay as `insert`. (#736).
 
 - Batch `update` and `delete` writes take `expected_rows`, the exact number of rows the write
   must match, on HTTP, MCP and the Go facade (`BatchWrite.ExpectedRows`). The count is checked

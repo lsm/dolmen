@@ -393,16 +393,22 @@ type tableReq struct {
 }
 
 type createTableReq struct {
-	Namespace string         `json:"namespace"`
-	Table     string         `json:"table"`
-	Fields    []schema.Field `json:"fields"`
+	Namespace        string              `json:"namespace"`
+	Table            string              `json:"table"`
+	Fields           []schema.Field      `json:"fields"`
+	Constraints      []schema.Constraint `json:"constraints"`
+	AcceptReferences bool                `json:"accept_references"`
+	Relation         *schema.Relation    `json:"relation"`
 }
 
 type createTableAuthReq struct {
-	Namespace string         `json:"namespace"`
-	Table     string         `json:"table"`
-	Fields    []schema.Field `json:"fields"`
-	RowAccess string         `json:"row_access"`
+	Namespace        string              `json:"namespace"`
+	Table            string              `json:"table"`
+	Fields           []schema.Field      `json:"fields"`
+	RowAccess        string              `json:"row_access"`
+	Constraints      []schema.Constraint `json:"constraints"`
+	AcceptReferences bool                `json:"accept_references"`
+	Relation         *schema.Relation    `json:"relation"`
 }
 
 type inferReq struct {

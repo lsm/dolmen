@@ -335,12 +335,15 @@ func components(authOn bool) map[string]any {
 
 func tableSchemaComponent(authOn bool) map[string]any {
 	props := map[string]any{
-		"namespace":   stringProp(store.NSPathPattern()),
-		"name":        stringProp(`^[a-z][a-z0-9_]{0,63}$`),
-		"version":     intProp(1, 0),
-		"fields":      arrayOf(ref("Field")),
-		"embed_space": stringProp(""),
-		"embed_dim":   intProp(0, 0),
+		"namespace":         stringProp(store.NSPathPattern()),
+		"name":              stringProp(`^[a-z][a-z0-9_]{0,63}$`),
+		"version":           intProp(1, 0),
+		"fields":            arrayOf(ref("Field")),
+		"embed_space":       stringProp(""),
+		"embed_dim":         intProp(0, 0),
+		"constraints":       arrayOf(constraintSchema("Constraint declaration")),
+		"accept_references": propBool(),
+		"relation":          relationSchema("Relation roles"),
 	}
 	if authOn {
 		props["row_access"] = map[string]any{"type": "string", "enum": []string{schema.RowAccessOwn}, "description": "Present when the table keeps each row private to the principal that wrote it"}

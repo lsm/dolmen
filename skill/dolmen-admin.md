@@ -950,6 +950,25 @@ match, before ranking.
   either way the call may be retried. A namespace over
   `-max-namespace-files-size` refuses new files with `507`.
 
+### Constraints and relation tables
+
+`create_table` takes `constraints`, managed checks applied on every write, batches included:
+
+- `{"name":"open_slug","kind":"unique","fields":["slug"],"where":"done = FALSE"}` takes 1 to 8 scalar
+  fields. The optional `where` limits it to the rows where the predicate is true, and a key with a
+  NULL never conflicts.
+- `{"name":"project_ref","kind":"foreign_key","field":"project_id","references":{"table":"projects","field":"id"}}`
+  makes a number field hold another row's `id` in the same namespace. The referenced table must be
+  created with `"accept_references": true`. Deleting a referenced row is a `conflict`, and dropping a
+  referenced table is refused until the declaring table is gone.
+
+A violation is a `conflict` that names the constraint, and nothing is written. A **relation table** holds
+graph edges: declare required `number` source and target fields, each with a `foreign_key`, plus a
+required `string` type field, then name the roles with
+`"relation":{"source":"src","target":"dst","type":"kind"}`. Its other fields are the edge's
+properties. `describe_table` returns `constraints`, `accept_references` and `relation` as declared.
+`constraints` and `accept_references` work on SQLite and PostgreSQL, and `relation` on SQLite only so far; all three are refused while authentication is on.
+
 ### Id, `created_at`, and stability
 
 - Every row has `id` and `created_at`. Ordinary writes cannot supply them; they are assigned on
