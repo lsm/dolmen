@@ -83,3 +83,17 @@ func TestSQLiteConstraintMigrationsCheckExistingRows(t *testing.T) {
 		t.Fatalf("the remaining unique constraint must still apply: %v", err)
 	}
 }
+
+func TestSQLiteAcceptReferencesCannotBeTurnedOffUnderASelfReference(t *testing.T) {
+	s := openRowAccessStore(t)
+	ctx := t.Context()
+	self := []schema.Constraint{{Name: "parent_ref", Kind: schema.ConstraintForeignKey, Field: "parent_id", References: &schema.ConstraintReference{Table: "nodes", Field: "id"}}}
+	if _, err := s.CreateTable(ctx, "ns", "nodes", []schema.Field{{Name: "parent_id", Type: schema.Number}}, TableOpts{AcceptReferences: true, Constraints: self}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	_, err := s.Migrate(ctx, "ns", "nodes", []schema.Change{{Op: schema.OpSetAcceptReferences, Value: &off}}, Embedder{}, Incarnation{})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "drop that constraint first") || !strings.Contains(err.Error(), "nodes") {
+		t.Fatalf("turning off accept_references under the table's own foreign key: %v", err)
+	}
+}
