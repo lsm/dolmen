@@ -22,6 +22,18 @@ type InsertResult struct {
 	Changes  ChangeRange
 }
 
+type ImportResult struct {
+	Ids      []int64
+	Inserted int64
+	Skipped  int64
+	Replayed bool
+	Changes  ChangeRange
+}
+
+type ImportOptions struct {
+	IdempotencyKey string
+}
+
 type UpdateResult struct {
 	Updated int64
 	Changes ChangeRange
@@ -99,6 +111,31 @@ func (s *Store) Insert(ctx context.Context, namespace, table string, records []m
 		Replayed: res.Replayed,
 		Changes:  ChangeRange(res.Changes),
 	}, nil
+}
+
+func (s *Store) ImportRecords(ctx context.Context, namespace, table string, records []map[string]any, opts ImportOptions) (r0 ImportResult, err error) {
+	ctx, span := s.startOp(ctx, "import_records", namespace, table)
+	defer func() { endOp(span, err) }()
+	if err := s.begin(); err != nil {
+		return ImportResult{}, err
+	}
+	defer s.done()
+	if err := ctx.Err(); err != nil {
+		return ImportResult{}, facadeErr(ctx, err)
+	}
+	ctx, records, fp, err := s.withFiles(ctx, records)
+	if err != nil {
+		return ImportResult{}, facadeErr(ctx, err)
+	}
+	var engErr error
+	defer func() { fp.finish(engErr) }()
+	res, err := s.eng.ImportRecords(ctx, ops.NormalizeNamespace(namespace), ops.NormalizeTable(table), records,
+		store.WriteOpts{IdempotencyKey: opts.IdempotencyKey}, s.embedder(), store.Incarnation{})
+	engErr = err
+	if err != nil {
+		return ImportResult{}, facadeErr(ctx, err)
+	}
+	return ImportResult{Ids: res.Ids, Inserted: res.Inserted, Skipped: res.Skipped, Replayed: res.Replayed, Changes: ChangeRange(res.Changes)}, nil
 }
 
 func (s *Store) UpsertByKey(ctx context.Context, namespace, table string, on []string, records []map[string]any) (r0 InsertResult, err error) {

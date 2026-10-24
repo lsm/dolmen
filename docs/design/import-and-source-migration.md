@@ -101,6 +101,9 @@ Slice 3 adds it on the lakehouse: imported IDs ride the ordinary append commit,
 which raises `next_id` to past the highest of them under the store write lock;
 existing IDs are compared by presenting both the stored row and the candidate
 through the ordinary row presenter, with secrets opened from their catalog side table.
+Slice 4 exposes it as `import_records` on `/v1` and MCP (multipart files included)
+and as `Store.ImportRecords` on the Go façade. Neither surface creates the namespace,
+and `changes` in the wire response is the count of change events the chunk emitted.
 
 Small independently testable PRs: shared import validation and SQLite engine;
 Postgres allocator/import; lakehouse import; HTTP/MCP and Go facade wiring;
