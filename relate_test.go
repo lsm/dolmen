@@ -2,13 +2,11 @@ package dolmen
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"github.com/lsm/dolmen/internal/schema"
-	"github.com/lsm/dolmen/internal/store"
 )
 
 func relationStore(t *testing.T, storeOpts ...Option) *Store {
@@ -22,19 +20,27 @@ func relationStore(t *testing.T, storeOpts ...Option) *Store {
 	if err := st.CreateNamespace(ctx, "ns"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.eng.CreateTable(ctx, "ns", "nodes", []schema.Field{{Name: "label", Type: schema.String}}, store.TableOpts{AcceptReferences: true}, [16]byte{}); err != nil {
+	if _, err := st.CreateTableWithOptions(ctx, "ns", "nodes", []Field{{Name: "label", Type: String}}, CreateTableOptions{AcceptReferences: true}); err != nil {
 		t.Fatal(err)
 	}
-	fields := []schema.Field{{Name: "src", Type: schema.Number, Required: true}, {Name: "dst", Type: schema.Number, Required: true}, {Name: "kind", Type: schema.String, Required: true}, {Name: "weight", Type: schema.Number}}
-	opts := store.TableOpts{
-		Constraints: []schema.Constraint{
-			{Name: "src_ref", Kind: schema.ConstraintForeignKey, Field: "src", References: &schema.ConstraintReference{Table: "nodes", Field: "id"}},
-			{Name: "dst_ref", Kind: schema.ConstraintForeignKey, Field: "dst", References: &schema.ConstraintReference{Table: "nodes", Field: "id"}},
+	fields := []Field{{Name: "src", Type: Number, Required: true}, {Name: "dst", Type: Number, Required: true}, {Name: "kind", Type: String, Required: true}, {Name: "weight", Type: Number}}
+	opts := CreateTableOptions{
+		Constraints: []Constraint{
+			ForeignKeyConstraint{Name: "src_ref", Field: "src", ReferencesTable: "nodes"},
+			ForeignKeyConstraint{Name: "dst_ref", Field: "dst", ReferencesTable: "nodes"},
 		},
-		Relation: &schema.Relation{Source: "src", Target: "dst", Type: "kind"},
+		Relation: &Relation{Source: "src", Target: "dst", Type: "kind"},
 	}
-	if _, err := st.eng.CreateTable(ctx, "ns", "links", fields, opts, [16]byte{}); err != nil {
+	sc, err := st.CreateTableWithOptions(ctx, "ns", "links", fields, opts)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sc.Relation, opts.Relation) || !reflect.DeepEqual(sc.Constraints, opts.Constraints) {
+		t.Fatalf("created relation schema: %+v", sc)
+	}
+	described, _, err := st.DescribeTable(ctx, "ns", "links")
+	if err != nil || !reflect.DeepEqual(described.Relation, opts.Relation) || !reflect.DeepEqual(described.Constraints, opts.Constraints) {
+		t.Fatalf("described relation schema: %+v %v", described, err)
 	}
 	if _, err := st.Insert(ctx, "ns", "nodes", []map[string]any{{"label": "a"}, {"label": "b"}}, InsertOptions{}); err != nil {
 		t.Fatal(err)

@@ -9,7 +9,11 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-func (s *Store) CreateTable(ctx context.Context, namespace, table string, fields []Field) (r0 TableSchema, err error) {
+func (s *Store) CreateTable(ctx context.Context, namespace, table string, fields []Field) (TableSchema, error) {
+	return s.CreateTableWithOptions(ctx, namespace, table, fields, CreateTableOptions{})
+}
+
+func (s *Store) CreateTableWithOptions(ctx context.Context, namespace, table string, fields []Field, opts CreateTableOptions) (r0 TableSchema, err error) {
 	ctx, span := s.startOp(ctx, "create_table", namespace, table)
 	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
@@ -35,7 +39,15 @@ func (s *Store) CreateTable(ctx context.Context, namespace, table string, fields
 	if err := ops.EnsureNamespace(ctx, s.eng, ns); err != nil {
 		return TableSchema{}, facadeErr(ctx, err)
 	}
-	sc, err := s.eng.CreateTable(ctx, ns, ops.NormalizeTable(table), fieldsToSchema(fields), store.TableOpts{}, [16]byte{})
+	declared, err := constraintsToSchema(opts.Constraints)
+	if err != nil {
+		return TableSchema{}, err
+	}
+	var relation *schema.Relation
+	if opts.Relation != nil {
+		relation = &schema.Relation{Source: opts.Relation.Source, Target: opts.Relation.Target, Type: opts.Relation.Type}
+	}
+	sc, err := s.eng.CreateTable(ctx, ns, ops.NormalizeTable(table), fieldsToSchema(fields), store.TableOpts{RowAccess: opts.RowAccess, Constraints: declared, AcceptReferences: opts.AcceptReferences, Relation: relation}, [16]byte{})
 	if err != nil {
 		return TableSchema{}, facadeErr(ctx, err)
 	}

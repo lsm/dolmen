@@ -1,6 +1,7 @@
 package dolmen
 
 import (
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/schema"
 )
 
@@ -33,12 +34,79 @@ type Field struct {
 }
 
 type TableSchema struct {
-	Namespace  string
-	Name       string
-	Version    int
-	Fields     []Field
-	EmbedSpace string
-	EmbedDim   int
+	Namespace        string
+	Name             string
+	Version          int
+	Fields           []Field
+	EmbedSpace       string
+	EmbedDim         int
+	RowAccess        string
+	Constraints      []Constraint
+	AcceptReferences bool
+	Relation         *Relation
+}
+
+type Constraint interface {
+	constraintName() string
+}
+
+type UniqueConstraint struct {
+	Name   string
+	Fields []string
+	Where  string
+}
+
+type ForeignKeyConstraint struct {
+	Name            string
+	Field           string
+	ReferencesTable string
+}
+
+func (c UniqueConstraint) constraintName() string { return c.Name }
+
+func (c ForeignKeyConstraint) constraintName() string { return c.Name }
+
+type CreateTableOptions struct {
+	RowAccess        string
+	Constraints      []Constraint
+	AcceptReferences bool
+	Relation         *Relation
+}
+
+type Relation struct {
+	Source string
+	Target string
+	Type   string
+}
+
+func constraintsToSchema(cs []Constraint) ([]schema.Constraint, error) {
+	out := make([]schema.Constraint, 0, len(cs))
+	for i, c := range cs {
+		switch c := c.(type) {
+		case UniqueConstraint:
+			out = append(out, schema.Constraint{Name: c.Name, Kind: schema.ConstraintUnique, Fields: c.Fields, Where: c.Where})
+		case ForeignKeyConstraint:
+			out = append(out, schema.Constraint{Name: c.Name, Kind: schema.ConstraintForeignKey, Field: c.Field, References: &schema.ConstraintReference{Table: c.ReferencesTable, Field: "id"}})
+		default:
+			return nil, derr.New(derr.InvalidRequest, "constraints[%d]: use a dolmen.UniqueConstraint or dolmen.ForeignKeyConstraint value", i)
+		}
+	}
+	return out, nil
+}
+
+func schemaToConstraints(cs []schema.Constraint) []Constraint {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]Constraint, 0, len(cs))
+	for _, c := range cs {
+		if c.Kind == schema.ConstraintForeignKey && c.References != nil {
+			out = append(out, ForeignKeyConstraint{Name: c.Name, Field: c.Field, ReferencesTable: c.References.Table})
+			continue
+		}
+		out = append(out, UniqueConstraint{Name: c.Name, Fields: c.Fields, Where: c.Where})
+	}
+	return out
 }
 
 func fieldsToSchema(fields []Field) []schema.Field {
@@ -91,12 +159,20 @@ func schemaToTableSchema(sc *schema.TableSchema) TableSchema {
 	if sc == nil {
 		return TableSchema{}
 	}
+	var relation *Relation
+	if sc.Relation != nil {
+		relation = &Relation{Source: sc.Relation.Source, Target: sc.Relation.Target, Type: sc.Relation.Type}
+	}
 	return TableSchema{
-		Namespace:  sc.Namespace,
-		Name:       sc.Name,
-		Version:    sc.Version,
-		Fields:     schemaToFields(sc.Fields),
-		EmbedSpace: sc.EmbedSpace,
-		EmbedDim:   sc.EmbedDim,
+		Namespace:        sc.Namespace,
+		Name:             sc.Name,
+		Version:          sc.Version,
+		Fields:           schemaToFields(sc.Fields),
+		EmbedSpace:       sc.EmbedSpace,
+		EmbedDim:         sc.EmbedDim,
+		RowAccess:        sc.RowAccess,
+		Constraints:      schemaToConstraints(sc.Constraints),
+		AcceptReferences: sc.AcceptReferences,
+		Relation:         relation,
 	}
 }
