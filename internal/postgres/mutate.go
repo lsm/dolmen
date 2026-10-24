@@ -212,7 +212,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 		}
 		retry := false
 		result := store.InsertResult{Ids: []int64{}}
-		err = s.write(ctx, ns, state.incarnation.NsGen, func(tx pgx.Tx, n namespace) error {
+		err = s.write(ctx, ns, state.incarnation.NsGen, s.constrained(ctx, table, false, func(tx pgx.Tx, n namespace) error {
 			current, err := s.loadTable(ctx, tx, n, table)
 			if err != nil {
 				return err
@@ -279,7 +279,7 @@ func (s *Store) mutate(ctx context.Context, ns, table, filter string, args []any
 				}
 			}
 			return nil
-		})
+		}))
 		if err != nil {
 			return store.InsertResult{}, err
 		}
@@ -343,7 +343,7 @@ func (s *Store) deleteRows(ctx context.Context, ns, table, filter string, args [
 		return result, err
 	}
 	result := store.DeleteResult{}
-	err = s.write(ctx, ns, [16]byte{}, func(tx pgx.Tx, n namespace) error {
+	err = s.write(ctx, ns, [16]byte{}, s.constrained(ctx, table, true, func(tx pgx.Tx, n namespace) error {
 		state, err := s.loadTable(ctx, tx, n, table)
 		if err != nil {
 			return err
@@ -388,6 +388,6 @@ func (s *Store) deleteRows(ctx context.Context, ns, table, filter string, args [
 		result.Deleted = command.RowsAffected()
 		result.Changes, err = s.mintChanges(ctx, tx, n, state, store.ChangeDelete, ids, owners)
 		return err
-	})
+	}))
 	return result, err
 }
