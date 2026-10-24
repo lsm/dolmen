@@ -111,7 +111,7 @@ for label, directory in (("sqlite", lite), ("postgres", pg)):
         invalid = cli(namespace, table, "invalid-field", json.dumps(dict(rows[0], id=100, body={"value": "NEVER-ECHO"})) + "\n")
         assert invalid.returncode != 0 and "line 1 field body: invalid_request" in invalid.stderr, invalid.stderr
         assert "NEVER-ECHO" not in invalid.stderr and not invalid.stdout
-        print("PASS " + label + " " + table + ": interrupted resume, replay, regrouped skip, exact rows, no duplicate changes, atomic conflict")
+        print("PASS " + label + " " + table + ": interrupted resume, replay, regrouped skip, exact rows, no duplicate changes, atomic conflict, safe coercion field")
     assert call("search_fulltext", {"namespace": namespace, "table": "events", "query": "granite"})["results"]
     print("PASS " + label + ": rebuilt fulltext index; references and truncated timestamps compare exactly")
-(work / "source-import.json").write_text(json.dumps({"verified": True, "sourceRows": {"events": 3, "notes": 2}, "postgresPrecisionLoss": {"events": 2, "notes": 1, "total": 3}, "sources": ["sqlite", "postgres"]}, indent=2) + "\n")
+(work / "source-import.json").write_text(json.dumps({"verified": True, "sourceRows": {"events": 3, "notes": 2}, "postgresPrecisionLoss": {"events": 2, "notes": 1, "total": 3}, "sources": ["sqlite", "postgres"], "safeCoercionField": True}, indent=2) + "\n")

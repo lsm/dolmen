@@ -155,7 +155,7 @@ func runImport(args []string, getenv func(string) string, stdin io.Reader, stdou
 }
 
 var importRecordLocation = regexp.MustCompile(`^import record ([0-9]+)`)
-var importFieldLocation = regexp.MustCompile(`^import record [0-9]+: (?:unknown )?field "([a-zA-Z_][a-zA-Z0-9_]*)"`)
+var importFieldLocation = regexp.MustCompile(`^import record [0-9]+: (?:invalid request: )?(?:unknown )?field "([a-zA-Z_][a-zA-Z0-9_]*)"`)
 
 func importErrorLocation(message string, first, count int) (int, string) {
 	field := "record"

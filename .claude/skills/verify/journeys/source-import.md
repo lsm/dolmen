@@ -4,7 +4,9 @@ Use synthetic data only. The source-to-target CLI proof uses SQLite plus a
 throwaway Postgres 17 source. It executes `examples/import/{sqlite,postgres}.sql`,
 compares mapped rows (large IDs, nulls, escaped text, references and UTC timestamp
 truncation), interrupts/restarts the CLI, retries original/new keys, and checks
-change counts plus conflicting-chunk rollback. Postgres precision loss must be
+change counts plus conflicting-chunk rollback. An actual server coercion failure
+must name `line 1 field body`, omit the synthetic value, and print no commit.
+Postgres precision loss must be
 `events=2`, `notes=1`, `total=3`; `.999999` must become `.999`, not the next second.
 
 Shared setup (including Colima without a global context change) is in SKILL.md;
