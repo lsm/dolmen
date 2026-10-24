@@ -19,7 +19,9 @@ type RelateResult struct {
 	Changes  ChangeRange
 }
 
-func (s *Store) Relate(ctx context.Context, namespace, table string, edge Edge, opts InsertOptions) (RelateResult, error) {
+func (s *Store) Relate(ctx context.Context, namespace, table string, edge Edge, opts InsertOptions) (r0 RelateResult, err error) {
+	ctx, span := s.startOp(ctx, "relate", namespace, table)
+	defer func() { endOp(span, err) }()
 	if err := s.begin(); err != nil {
 		return RelateResult{}, err
 	}

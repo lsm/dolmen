@@ -58,7 +58,7 @@ func (d idleReader) Read(p []byte) (int, error) {
 
 func (s *Server) multipartOp(w http.ResponseWriter, r *http.Request, op string) {
 	if !fileWriteOps[op] {
-		writeError(w, r, &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: fmt.Sprintf("%s takes an application/json body; multipart/form-data is accepted only by insert, update, upsert, upsert_by_key and batch, to carry files", op)})
+		writeError(w, r, &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: fmt.Sprintf("%s takes an application/json body; multipart/form-data is accepted only by insert, update, upsert, upsert_by_key, batch and relate, to carry files", op)})
 		return
 	}
 	if s.files == nil {

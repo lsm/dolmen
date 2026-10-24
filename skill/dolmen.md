@@ -233,8 +233,8 @@ Searches answer with `results`, where `query` and `read_rows` answer with `rows`
 A `file` field holds a reference to bytes the server stores beside the namespace. Attach a file
 in the same call as the write: send the operation as `multipart/form-data` to `/v1/{operation}`,
 with the JSON request in a first part named `request` and each file in its own part, and write
-`{"part": "<part name>"}` as the field's value. `insert`, `update`, `upsert`, `upsert_by_key` and
-`batch` accept this (`update` and `upsert` take `filter`, optional `args` and `set`, and `upsert`
+`{"part": "<part name>"}` as the field's value. `insert`, `update`, `upsert`, `upsert_by_key`,
+`batch` and `relate` (in `properties`) accept this (`update` and `upsert` take `filter`, optional `args` and `set`, and `upsert`
 inserts `set` as a new row when nothing matches; `upsert_by_key` takes `on`, the natural-key
 fields, and `records`); you never read the file yourself:
 
