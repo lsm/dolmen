@@ -6,7 +6,9 @@ root = pathlib.Path(sys.argv[1])
 for scale in (10000, 100000):
     reports = [json.loads((root / f"{backend}-{scale}.json").read_text()) for backend in ("sqlite", "badger")]
     left, right = reports
-    for a, b in zip(left["Cases"], right["Cases"], strict=True):
+    if len(left["Cases"]) != len(right["Cases"]):
+        raise SystemExit(f"unequal case counts: {scale}")
+    for a, b in zip(left["Cases"], right["Cases"]):
         for field in ("Case", "Samples", "Found", "Truncated", "Scanned", "Checksum"):
             if a[field] != b[field]:
                 raise SystemExit(f"unequal work: {scale} {a['Case']} {field}: {a[field]} != {b[field]}")
