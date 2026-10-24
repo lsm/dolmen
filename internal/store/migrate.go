@@ -241,7 +241,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 	copy(fields, old.Fields)
 	cur := &schema.TableSchema{Namespace: nsName, Name: table, Version: old.Version, Fields: fields,
 		EmbedSpace: old.EmbedSpace, EmbedDim: old.EmbedDim, RowAccess: old.RowAccess, HasOwner: old.HasOwner,
-		Constraints: slices.Clone(old.Constraints), AcceptReferences: old.AcceptReferences}
+		Constraints: slices.Clone(old.Constraints), AcceptReferences: old.AcceptReferences, Relation: old.Relation}
 
 	plan := &MigrationPlan{
 		FromVersion: old.Version,
