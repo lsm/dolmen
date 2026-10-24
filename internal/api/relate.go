@@ -22,7 +22,8 @@ type relateReq struct {
 var relateOp = OpDef{
 	Description: "Insert one directed edge into a relation table: a row whose declared source and target fields hold the ids of the two rows it connects, " +
 		"whose type field holds the edge's type, and whose other fields come from properties. Both endpoints must exist; a missing one is a conflict naming its foreign key, and nothing is written. " +
-		"Pass idempotency_key to make a retry safe, exactly as for insert: the same key and edge return the original id with replayed=true. Delete edges with delete; an endpoint row cannot be deleted while an edge references it.",
+		"Pass idempotency_key to make a retry safe, exactly as for insert: the same key and edge return the original id with replayed=true. Delete edges with delete; an endpoint row cannot be deleted while an edge references it. " +
+		fileWriteHint,
 	InputSchema: map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,

@@ -28,6 +28,7 @@ var fileWriteOps = map[string]bool{
 	"update":        true,
 	"upsert":        true,
 	"upsert_by_key": true,
+	"relate":        true,
 	"batch":         true,
 }
 
