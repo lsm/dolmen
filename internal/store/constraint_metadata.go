@@ -9,7 +9,7 @@ import (
 
 func RefuseConstraintOptions(opts TableOpts) error {
 	if len(opts.Constraints) > 0 || opts.AcceptReferences {
-		return fmt.Errorf("%w: constraints and accept_references are not enforced by this binary; omit these options until enforcement is available", ErrInvalid)
+		return fmt.Errorf("%w: constraints and accept_references are not available on this storage engine yet; omit them, or use a SQLite-backed server", ErrInvalid)
 	}
 	return nil
 }
