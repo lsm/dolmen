@@ -197,3 +197,19 @@ func TestPostgresImportNamesTheFailingRecord(t *testing.T) {
 		t.Fatalf("partial validation: %+v %v", read, err)
 	}
 }
+
+func TestPostgresImportResumesChunkLargerThanOneReadBudget(t *testing.T) {
+	s := importTable(t, testConfig(t))
+	ctx := t.Context()
+	var rows []map[string]any
+	for i := range 3 {
+		rows = append(rows, importRow(int64(42+i), strings.Repeat(string(rune('a'+i)), store.MaxQueryBytes/3+1)))
+	}
+	if _, err := s.ImportRecords(ctx, "app", "events", rows, importKey("large"), store.Embedder{}, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := s.ImportRecords(ctx, "app", "events", rows, importKey("large-resume"), store.Embedder{}, store.Incarnation{})
+	if err != nil || resumed.Skipped != 3 || resumed.Inserted != 0 {
+		t.Fatalf("resume: %+v %v", resumed, err)
+	}
+}
