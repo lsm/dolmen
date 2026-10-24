@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -123,7 +124,7 @@ func TestPostgresImportAllocatorUnderConcurrentWrites(t *testing.T) {
 			}
 			var err error
 			if i%3 == 0 {
-				_, err = client.ImportRecords(ctx, "app", "events", []map[string]any{importRow(int64(1000+i), fmt.Sprint(i))}, importKey(fmt.Sprint("chunk-", i)), store.Embedder{}, store.Incarnation{})
+				_, err = client.ImportRecords(ctx, "app", "events", []map[string]any{importRow(int64(1000*(i+1)), fmt.Sprint(i))}, importKey(fmt.Sprint("chunk-", i)), store.Embedder{}, store.Incarnation{})
 			} else {
 				_, err = client.Insert(ctx, "app", "events", []map[string]any{{"body": "ordinary"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{})
 			}
@@ -137,11 +138,11 @@ func TestPostgresImportAllocatorUnderConcurrentWrites(t *testing.T) {
 	for err := range failures {
 		t.Error(err)
 	}
-	if _, err := s.ImportRecords(ctx, "app", "events", []map[string]any{importRow(int64(5), "below high-water")}, importKey("low"), store.Embedder{}, store.Incarnation{}); err != nil {
+	if _, err := s.ImportRecords(ctx, "app", "events", []map[string]any{importRow(int64(500), "below high-water")}, importKey("low"), store.Embedder{}, store.Incarnation{}); err != nil {
 		t.Fatal(err)
 	}
 	next, err := s.Insert(ctx, "app", "events", []map[string]any{{"body": "after"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{})
-	if err != nil || next.Ids[0] <= 1021 {
+	if err != nil || next.Ids[0] <= 22000 {
 		t.Fatalf("allocator moved backwards: %+v %v", next, err)
 	}
 	_, count, err := s.DescribeTable(ctx, "app", "events", nil, store.Incarnation{})
@@ -176,5 +177,23 @@ func TestPostgresImportSecretsAndDefaultsSkipByContent(t *testing.T) {
 	row["token"] = "different-synthetic-value"
 	if _, err := s.ImportRecords(ctx, "app", "vault", []map[string]any{row}, importKey("three"), store.Embedder{}, store.Incarnation{}); !errors.Is(err, derr.ErrConflict) {
 		t.Fatalf("secret conflict: %v", err)
+	}
+}
+
+func TestPostgresImportNamesTheFailingRecord(t *testing.T) {
+	s := importTable(t, testConfig(t))
+	ctx := t.Context()
+	bad := importRow(43, "bad")
+	bad["bogus"] = true
+	_, err := s.ImportRecords(ctx, "app", "events", []map[string]any{importRow(42, "fine"), bad}, importKey("bad"), store.Embedder{}, store.Incarnation{})
+	if !errors.Is(err, store.ErrInvalid) || err.Error() != `import record 1: invalid request: unknown field "bogus" on table events (see describe_table)` {
+		t.Fatalf("remediation: %v", err)
+	}
+	if _, err := s.Insert(ctx, "app", "events", []map[string]any{{"bogus": true}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err == nil || strings.Contains(err.Error(), "record") {
+		t.Fatalf("ordinary insert message changed: %v", err)
+	}
+	read, err := s.GetRows(ctx, "app", "events", []int64{42}, nil, store.Incarnation{})
+	if err != nil || len(read.Rows) != 0 {
+		t.Fatalf("partial validation: %+v %v", read, err)
 	}
 }
