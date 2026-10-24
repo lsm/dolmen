@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func relationTableBody(table string) map[string]any {
@@ -71,5 +73,41 @@ func TestDeclarationsAreRefusedWhileAuthIsOn(t *testing.T) {
 		if env := h.mcpCall("create_table", body).toolError(); env == nil || !strings.Contains(env["message"].(string), "-auth on") {
 			t.Fatalf("mcp %s under -auth on: %v", label, env)
 		}
+	}
+}
+
+func createTableInputProps(t *testing.T, h *harness) map[string]any {
+	t.Helper()
+	res := h.rpc(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	tools, _ := res.result["tools"].([]any)
+	for _, tool := range tools {
+		if m := tool.(map[string]any); m["name"] == "create_table" {
+			return m["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		}
+	}
+	t.Fatal("tools/list has no create_table")
+	return nil
+}
+
+func TestDeclarationsAreAdvertisedOnlyWhileAuthIsOff(t *testing.T) {
+	for _, mode := range []harnessMode{authOff, authAdminKey} {
+		props := createTableInputProps(t, newHarnessMode(t, mode))
+		for _, name := range []string{"constraints", "accept_references", "relation"} {
+			if _, ok := props[name]; ok != mode.off() {
+				t.Fatalf("auth %s: create_table advertises %s = %v, want %v", mode.name, name, ok, mode.off())
+			}
+		}
+	}
+}
+
+func TestUndeclaringEnginesNameTheEngineAsTheGap(t *testing.T) {
+	if testEngine(t) == store.EngineSQLite {
+		t.Skip("SQLite keeps declarations")
+	}
+	h := newHarness(t)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
+	code, out := h.httpCall("create_table", map[string]any{"namespace": "app", "table": "nodes", "accept_references": true, "fields": []map[string]any{{"name": "label", "type": "string"}}})
+	if code != http.StatusBadRequest || !strings.Contains(errMessage(out), "storage engine") {
+		t.Fatalf("%s: %d %v, want a refusal naming the storage engine", testEngine(t), code, out)
 	}
 }
