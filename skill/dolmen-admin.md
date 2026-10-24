@@ -952,12 +952,32 @@ match, before ranking.
 
 ### Id, `created_at`, and stability
 
-- Every row has `id` and `created_at`. You cannot supply them; they are assigned on insert and
-  returned in reads.
+- Every row has `id` and `created_at`. Ordinary writes cannot supply them; they are assigned on
+  insert and returned in reads. The one exception is `import_records`, below.
 - `id` is `AUTOINCREMENT` — monotonically increasing and never reused after deletes — so it is safe
   to key off across sessions.
 - `created_at` is a UTC millisecond ISO string, e.g. `2026-09-03T12:34:56.123Z`. Use string
   comparisons or {{ if eq .Dialect "postgresql" }}cast it with `::timestamptz` as described above{{ else if eq .Dialect "duckdb" }}cast it with `CAST(created_at AS TIMESTAMPTZ)` as described above{{ else }}SQLite date/time functions{{ end }}.
+
+### Importing rows from another database: `import_records`
+
+`import_records` copies rows in from another database keeping their identity. It takes
+`namespace`, `table` (which must already exist — create it first with the mapped fields),
+`records` (1–1,000) and a required `idempotency_key`. Every record carries its source `id` (a
+positive integer below 2^63−1, sent as an exact JSON integer, never a float) and `created_at` in
+exactly `YYYY-MM-DDTHH:MM:SS.sssZ` (UTC, milliseconds; convert and truncate in the export, the
+server never does). It needs `admin` and `create` on the table.
+
+- Each call is one atomic chunk. An id already holding identical content is counted in `skipped`
+  and emits no change event; an id holding different content fails the whole chunk with
+  `conflict` and writes nothing, so import into a fresh table or fix the source.
+- The same key with the same records returns the original receipt with `replayed: true`; the same
+  key with different records is rejected. Name keys after the immutable export (for example
+  `snapshot-a/events/0001`), so a restarted import replays or skips what already landed.
+- The response is `ids` (input order), `inserted`, `skipped`, `replayed` and `changes` (change
+  events emitted). Ordinary inserts afterwards get ids above every imported one.
+- A timestamp field with `default: "now()"` left out of a record takes that record's `created_at`.
+  Embeddings and search indexes are rebuilt; owner, grants and secret keys are never imported.
 
 ### The `migrate` payload
 

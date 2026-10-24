@@ -1125,6 +1125,7 @@ atomically with your side effects rather than deduplicating on frame content.
 | `create_table` | Typed fields with `fulltext` / `vector` / `vectorize` / `enum` / `shape` / `default` annotations (`enum` restricts a string field to a closed vocabulary; `shape` restricts a json field to one JSON shape such as `array<string>`; `default` is stored by inserts that omit the field — a timestamp field may declare `"now()"`, stamped server-side at write time so idempotent retries can omit the field and replay) |
 | `infer_schema` | Propose fields from sample records (creates nothing). Names are always valid for `create_table` on the running engine, which renames the keywords PostgreSQL or DuckDB reserve as it does SQLite's; `warnings` explains every rename or merge, `provenance` maps fields to source keys, and `evidence` counts presence, nulls and observed types per field |
 | `insert` | Validated records; indexes and embeddings update automatically; `idempotency_key` makes retries replay the original ids |
+| `import_records` | Import rows from another database keeping their source `id` and `created_at`; 1–1,000 records per chunk with a required `idempotency_key`; identical existing ids are skipped, differing ones conflict and roll the chunk back; needs table `admin` and `create` |
 | `relate` | One directed edge into a relation table (`source` and `target` row ids, `type`, optional `properties`); both endpoints must exist; `idempotency_key` as for `insert`. Relation tables cannot be declared over the wire yet |
 | `batch` | An ordered list of `insert` / `update` / `delete` / `upsert` / `upsert_by_key` writes to one namespace, applied in a single transaction — all commit or none does — with one result per write in order, one change-feed commit, and one `idempotency_key` for the whole batch. At most 100 writes and 1,000 rows touched in total; `namespace` and `idempotency_key` are set once per batch and refused inside a write, and `dry_run`, `limit` and `confirm` are refused inside a write because a batch is all-or-nothing. An error names the failing write as `writes[i]` and keeps that write's own error class. A batch `update` or `delete` may carry `expected_rows` (0 to 1,000), the exact count it must match (`updated` / `matched`), checked inside the transaction; any other count fails the whole batch with `conflict`, which makes read-decide-write a compare-and-set |
 | `upsert_by_key` | Insert-or-update keyed by natural field(s) (`on`); converges instead of duplicating on retry |
@@ -1160,7 +1161,7 @@ Change-feed `commit` is a stable positive integer within a namespace incarnation
   log (surfaced by `list_migrations`).
 - **Files**: a `file` field holds a reference to bytes stored beside the namespace in
   `<data>/<ns>.files/`, content-addressed by SHA-256, so identical bytes are stored once however
-  many rows reference them. A write attaches files in the same call: `insert`, `update`, `upsert`,
+  many rows reference them. A write attaches files in the same call: `insert`, `import_records`, `update`, `upsert`,
   `upsert_by_key` and `batch` accept `multipart/form-data`, with the JSON request in a first part
   named `request` and each file in its own part, referenced as `{"part": "<part name>"}`:
 

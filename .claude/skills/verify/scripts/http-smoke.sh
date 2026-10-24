@@ -27,6 +27,12 @@ check batch_expected_rows '"updated":1' "$(call batch "$claim")"
 check batch_expected_rows_stale 'expected_rows mismatch' "$(call batch "$claim")"
 check batch_expected_rows_rolled_back '"n":1' "$(call query '{"namespace":"verify","sql":"SELECT count(*) AS n FROM events WHERE title = '"'"'claimed'"'"'"}')"
 check batch_expected_rows_null '"code":"invalid_request"' "$(call batch '{"namespace":"verify","writes":[{"kind":"delete","table":"events","filter":"1=1","expected_rows":null}]}')"
+imp='{"namespace":"verify","table":"events","idempotency_key":"snap/events/1","records":[{"id":9007199254740993,"created_at":"2026-01-02T03:04:05.123Z","title":"imported row"}]}'
+check import_records '"ids":[9007199254740993],"inserted":1,"replayed":false,"skipped":0' "$(call import_records "$imp")"
+check import_identity '"created_at":"2026-01-02T03:04:05.123Z","embedding":null,"id":9007199254740993' "$(call read_rows '{"namespace":"verify","table":"events","ids":[9007199254740993]}')"
+check import_replay '"replayed":true' "$(call import_records "$imp")"
+check import_conflict '"code":"conflict"' "$(call import_records '{"namespace":"verify","table":"events","idempotency_key":"snap/events/2","records":[{"id":9007199254740993,"created_at":"2026-01-02T03:04:05.123Z","title":"changed"}]}')"
+check insert_after_import '"ids":[9007199254740994]' "$(call insert '{"namespace":"verify","table":"events","records":[{"title":"after import"}]}')"
 check relate_needs_relation 'not a relation table' "$(call relate '{"namespace":"verify","table":"events","source":1,"target":2,"type":"k"}')"
 check openapi '"openapi"' "$(curl -sS "$(cat "$W/url")/v1/openapi.json")"
 exit $fail

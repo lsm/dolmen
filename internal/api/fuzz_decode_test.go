@@ -38,6 +38,7 @@ func decodeTargets() []decodeTarget {
 		{op: "create_table_auth", new: func() any { return new(createTableAuthReq) }},
 		{op: "infer_schema", new: func() any { return new(inferReq) }},
 		{op: "insert", new: func() any { return new(insertReq) }},
+		{op: "import_records", new: func() any { return new(importReq) }},
 		{op: "relate", new: func() any { return new(relateReq) }},
 		{op: "upsert_by_key", new: func() any { return new(upsertReq) }},
 		{op: "read_rows", new: func() any { return new(readRowsReq) }},
