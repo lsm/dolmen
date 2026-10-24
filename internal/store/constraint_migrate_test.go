@@ -112,3 +112,21 @@ func TestSQLiteAddConstraintDryRunReportsExistingViolations(t *testing.T) {
 		t.Fatalf("a dry run must report that existing rows break the constraint: %v", err)
 	}
 }
+
+func TestSQLiteConstraintChangesRunInTheirOwnMigration(t *testing.T) {
+	s := openRowAccessStore(t)
+	ctx := t.Context()
+	unique := []schema.Constraint{{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}}
+	if _, err := s.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "slug", Type: schema.String}, {Name: "memo", Type: schema.String}}, TableOpts{AcceptReferences: true, Constraints: unique}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	for _, constraintOp := range []schema.Change{{Op: schema.OpDropConstraint, Name: "slug_key"}, {Op: schema.OpSetAcceptReferences, Value: &on}} {
+		for _, fieldOp := range []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "code", Type: schema.String}}, {Op: schema.OpRenameField, From: "memo", To: "note"}} {
+			_, err := s.Migrate(ctx, "ns", "notes", []schema.Change{constraintOp, fieldOp}, Embedder{}, Incarnation{Version: 1})
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "its own migrate call") {
+				t.Fatalf("%s with %s: %v", constraintOp.Op, fieldOp.Op, err)
+			}
+		}
+	}
+}
