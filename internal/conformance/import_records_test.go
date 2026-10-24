@@ -48,7 +48,7 @@ func TestImportRecordsOverHTTPAndMCP(t *testing.T) {
 	}
 
 	status, out := h.httpCall("import_records", importBody("snap-a-0002", importRecord(44, "new"), importRecord(42, "changed")))
-	if status != http.StatusConflict || errorCode(out) != "conflict" {
+	if status != http.StatusBadRequest || errorCode(out) != "conflict" {
 		t.Fatalf("differing content: %d %v", status, out)
 	}
 	if res := h.mcpCall("import_records", importBody("snap-a-0003", importRecord(0, "zero"))); !res.isError() {

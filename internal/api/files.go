@@ -24,11 +24,12 @@ import (
 const maxRequestPartBytes = 32 << 20
 
 var fileWriteOps = map[string]bool{
-	"insert":        true,
-	"update":        true,
-	"upsert":        true,
-	"upsert_by_key": true,
-	"batch":         true,
+	"insert":         true,
+	"import_records": true,
+	"update":         true,
+	"upsert":         true,
+	"upsert_by_key":  true,
+	"batch":          true,
 }
 
 func WithFiles(fs *files.Store) Option {
@@ -57,7 +58,7 @@ func (d idleReader) Read(p []byte) (int, error) {
 
 func (s *Server) multipartOp(w http.ResponseWriter, r *http.Request, op string) {
 	if !fileWriteOps[op] {
-		writeError(w, r, &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: fmt.Sprintf("%s takes an application/json body; multipart/form-data is accepted only by insert, update, upsert, upsert_by_key and batch, to carry files", op)})
+		writeError(w, r, &Error{Status: http.StatusUnsupportedMediaType, Code: ErrCodeInvalid, Message: fmt.Sprintf("%s takes an application/json body; multipart/form-data is accepted only by insert, import_records, update, upsert, upsert_by_key and batch, to carry files", op)})
 		return
 	}
 	if s.files == nil {

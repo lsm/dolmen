@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drive `dolmen mcp` over stdio: initialize, tools/list, and create_table,
-# insert and read_rows through tools/call, against a throwaway data dir.
+# insert, import_records and read_rows through tools/call, against a throwaway data dir.
 # Requests are answered concurrently, so each waits for its reply first.
 # Usage: mcp-stdio.sh <work dir from serve.sh>   (uses $W/dolmen, not the server)
 set -euo pipefail
@@ -27,6 +27,7 @@ rpc 2 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' '"name":"search_vector"' 
 rpc 3 '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_table","arguments":{"namespace":"verify","table":"notes","fields":[{"name":"body","type":"text","fulltext":true}]}}}' '"version":1' tools/call-create_table
 rpc 4 '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"insert","arguments":{"namespace":"verify","table":"notes","records":[{"body":"hello from mcp"}]}}}' '"inserted":1' tools/call-insert
 rpc 5 '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"read_rows","arguments":{"namespace":"verify","table":"notes"}}}' '"hello from mcp"' tools/call-read_rows
+rpc 20 '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"import_records","arguments":{"namespace":"verify","table":"notes","idempotency_key":"snap/notes/1","records":[{"id":9007199254740993,"created_at":"2026-01-02T03:04:05.123Z","body":"imported over mcp"}]}}}' '"ids":[9007199254740993],"inserted":1' tools/call-import_records
 rpc 6 '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"read_rows","arguments":{"namespace":"verify","table":"missing"}}}' '"isError":true' tools/call-teaching-error
 rpc 7 '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"batch","arguments":{"namespace":"verify","writes":[{"kind":"update","table":"notes","filter":"body = ?","args":["hello from mcp"],"set":{"body":"claimed"},"expected_rows":1}]}}}' '"updated":1' tools/call-batch-expected_rows
 rpc 8 '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"batch","arguments":{"namespace":"verify","writes":[{"kind":"update","table":"notes","filter":"body = ?","args":["hello from mcp"],"set":{"body":"claimed"},"expected_rows":1}]}}}' 'expected_rows mismatch' tools/call-batch-expected_rows-stale

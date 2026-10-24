@@ -45,6 +45,10 @@ func parityScript() []parityStep {
 			"namespace": ns, "table": "docs", "idempotency_key": "retry-1",
 			"records": []map[string]any{{"title": "idem", "tag": "k", "score": 1}},
 		}, false},
+		{"import_records", "import_records", map[string]any{
+			"namespace": ns, "table": "docs", "idempotency_key": "snapshot-1",
+			"records": []map[string]any{{"id": 1000, "created_at": "2026-01-02T03:04:05.123Z", "title": "imported", "tag": "i", "score": 3}},
+		}, false},
 		{"upsert_by_key", "upsert_by_key", map[string]any{
 			"namespace": ns, "table": "docs", "on": []string{"tag"},
 			"records": []map[string]any{{"tag": "a", "score": 9}},

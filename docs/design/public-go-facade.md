@@ -76,7 +76,7 @@ The first slice exposes these operation families:
 | --- | --- | --- |
 | Namespace lifecycle | `CreateNamespace`, `ListNamespaces`, `DropNamespace` | Names and list options |
 | Table lifecycle | `CreateTable`, `ListTables`, `DescribeTable`, `DropTable` | `Field`, `FieldType`, `TableSchema`, create options |
-| Writes | `Insert`, `Update`, `Delete`, `UpsertByKey` | Operation-specific options and write results |
+| Writes | `Insert`, `Update`, `Delete`, `UpsertByKey`, `ImportRecords` | Operation-specific options and write results |
 | Reads | `GetRows`, `Query` | Query options and `QueryResult` |
 | Search | `SearchFulltext`, `SearchVector` | Search options, `VectorQuery`, `SearchResult` |
 

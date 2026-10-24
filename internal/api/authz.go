@@ -63,6 +63,7 @@ var authRules = map[string]authRule{
 	"list_migrations": {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbSchema}},
 
 	"insert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate}},
+	"import_records":  {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbAdmin, auth.VerbCreate}},
 	"update":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbUpdate}},
 	"delete":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbDelete}},
 	"upsert":          {Scope: scopeTable, Verbs: []auth.Verb{auth.VerbCreate, auth.VerbUpdate}},
