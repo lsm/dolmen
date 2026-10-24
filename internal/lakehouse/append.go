@@ -280,7 +280,7 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		if pin {
 			pinned = commitRows{EmbedSpace: emb.Identity, EmbedDim: state.schema.EmbedDim}
 		}
-		committed, err := s.commitAppend(ctx, tx, state, rows, opts, domain, hash, stamp, pinned)
+		committed, err := s.commitAppend(ctx, n, tx, state, rows, opts, domain, hash, stamp, pinned)
 		if err != nil {
 			return err
 		}
@@ -298,7 +298,7 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 	return result, err
 }
 
-func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, rows []map[string]any, opts store.WriteOpts, domain store.IdemDomain, hash store.IdemHash, stamp string, pinned commitRows) (store.InsertResult, error) {
+func (s *Store) commitAppend(ctx context.Context, n *namespace, tx *sql.Tx, state tableState, rows []map[string]any, opts store.WriteOpts, domain store.IdemDomain, hash store.IdemHash, stamp string, pinned commitRows) (store.InsertResult, error) {
 	var result store.InsertResult
 	inc := state.incarnation
 	var next int64

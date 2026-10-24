@@ -94,3 +94,37 @@ func TestLakehouseConstraintsCheckCommittedRowsPlusTheStagedWrite(t *testing.T) 
 		t.Fatal(err)
 	}
 }
+
+func TestLakehouseEveryAppendChecksConstraints(t *testing.T) {
+	s := openStore(t, t.TempDir())
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "app", "notes", []schema.Field{{Name: "slug", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "app", "notes", []map[string]any{{"slug": "taken"}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	err := s.withNamespace(ctx, "app", func(n *namespace) error {
+		state, err := loadTableDeclared(ctx, n, "app", "notes")
+		if err != nil {
+			return err
+		}
+		state.schema.Constraints = []schema.Constraint{{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}}
+		tx, err := n.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		_, err = s.commitAppend(ctx, n, tx, state, []map[string]any{{"slug": "taken"}}, store.WriteOpts{}, store.IdemDomain{}, store.IdemHash{}, "2026-10-24T00:00:00.000Z", commitRows{})
+		if !errors.Is(err, derr.ErrConflict) || !strings.Contains(err.Error(), "slug_key") {
+			t.Fatalf("an append from any write path, upsert's insert branch included, must check constraints: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

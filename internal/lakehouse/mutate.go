@@ -527,7 +527,7 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 				return err
 			}
 			defer tx.Rollback()
-			committed, err := s.commitAppend(ctx, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, pin)
+			committed, err := s.commitAppend(ctx, n, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, pin)
 			if err != nil {
 				return err
 			}
