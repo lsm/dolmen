@@ -395,6 +395,9 @@ func (s *Store) upsertKeyAttempt(ctx context.Context, n *nsDB, nsName, table str
 			changes.Count += rng.Count
 		}
 	}
+	if err := checkSQLiteConstraints(ctx, tx, sc, false); err != nil {
+		return nil, 0, 0, ChangeRange{}, true, err
+	}
 	if err := s.commitOwned(wt); err != nil {
 		return nil, 0, 0, ChangeRange{}, true, err
 	}

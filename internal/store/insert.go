@@ -274,6 +274,9 @@ func (s *Store) insertAttempt(ctx context.Context, n *nsDB, nsName, table string
 			return nil, ChangeRange{}, false, true, err
 		}
 	}
+	if err := checkSQLiteConstraints(ctx, tx, sc, false); err != nil {
+		return nil, ChangeRange{}, false, true, err
+	}
 	if err := s.commitOwned(wt); err != nil {
 		return nil, ChangeRange{}, false, true, err
 	}

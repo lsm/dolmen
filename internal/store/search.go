@@ -502,6 +502,9 @@ func (s *Store) deleteWith(ctx context.Context, n *nsDB, nsName, table, where st
 	if _, err := tx.ExecContext(ctx, `DROP TABLE _dolmen_delete_ids`); err != nil {
 		return DeleteResult{}, true, err
 	}
+	if err := checkSQLiteConstraints(ctx, tx, sc, true); err != nil {
+		return DeleteResult{}, true, err
+	}
 	if err := s.commitOwned(wt); err != nil {
 		return DeleteResult{}, true, err
 	}
