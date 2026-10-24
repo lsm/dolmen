@@ -130,3 +130,18 @@ func TestSQLiteConstraintChangesRunInTheirOwnMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestDropConstraintKeepsTheForeignKeysARelationUses(t *testing.T) {
+	s := relationStore(t)
+	ctx := t.Context()
+	for _, name := range []string{"src_ref", "dst_ref"} {
+		_, err := s.Migrate(ctx, "ns", "links", []schema.Change{{Op: schema.OpDropConstraint, Name: name}}, Embedder{}, Incarnation{})
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "relation") {
+			t.Fatalf("dropping %s, which the relation's endpoint uses: %v", name, err)
+		}
+	}
+	sc, _, err := s.DescribeTable(ctx, "ns", "links", nil, Incarnation{})
+	if err != nil || len(sc.Constraints) != 2 {
+		t.Fatalf("a refused drop_constraint changed the schema: %+v %v", sc, err)
+	}
+}
