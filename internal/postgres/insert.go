@@ -286,7 +286,7 @@ func (s *Store) insertRows(ctx context.Context, ns, table string, records []map[
 			return store.InsertResult{}, err
 		}
 		retry := false
-		err = s.write(ctx, ns, state.incarnation.NsGen, func(tx pgx.Tx, n namespace) error {
+		err = s.write(ctx, ns, state.incarnation.NsGen, s.constrained(ctx, table, false, func(tx pgx.Tx, n namespace) error {
 			current, err := s.loadTable(ctx, tx, n, table)
 			if err != nil {
 				return err
@@ -358,7 +358,7 @@ func (s *Store) insertRows(ctx context.Context, ns, table string, records []map[
 				return err
 			}
 			return nil
-		})
+		}))
 		if err != nil {
 			return store.InsertResult{}, err
 		}
