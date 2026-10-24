@@ -270,6 +270,9 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 
 	defaults := map[string]any{}
 
+	if err := RefuseMixedConstraintChanges(changes); err != nil {
+		return nil, err
+	}
 	for i, ch := range changes {
 		if ch.Op != schema.OpAddField && ch.Default != nil {
 			return nil, invalidf("changes[%d]: default is only allowed on add_field (op %q has no added field to backfill)", i, ch.Op)
@@ -278,7 +281,10 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			return nil, invalidf("changes[%d]: %s requires an explicit value (true or false)", i, ch.Op)
 		}
 		if !schema.TakesValue(ch.Op) && ch.Value != nil {
-			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access (op %q has no flag to set)", i, ch.Op)
+			return nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access/set_accept_references (op %q has no flag to set)", i, ch.Op)
+		}
+		if (ch.Op == schema.OpAddConstraint) != (ch.Constraint != nil) {
+			return nil, invalidf("changes[%d]: constraint is required on add_constraint and allowed on no other op (op %q)", i, ch.Op)
 		}
 		if cur.HasOwner {
 			targets := []string{ch.Name, ch.To}
@@ -667,6 +673,11 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			f.Shape = shape
 			plan.Operations = append(plan.Operations, ShapeOperation(ch.Name, shape))
 
+		case schema.OpAddConstraint, schema.OpDropConstraint, schema.OpSetAcceptReferences:
+			if err := PlanConstraintChange(ctx, cur, ch, func() ([]string, error) { return sqliteReferencing(ctx, db, table) }); err != nil {
+				return nil, err
+			}
+			plan.Operations = append(plan.Operations, DescribeConstraintChange(ch))
 		case schema.OpSetRowAccess:
 			if ch.Value == nil {
 				return nil, invalidf("set_row_access requires value: true restricts rows to the principal who wrote them, false stops the filtering")
@@ -727,7 +738,7 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 			}
 			plan.Operations = append(plan.Operations, fmt.Sprintf("set_file_constraints %s max_bytes=%d media_types=%v", ch.Name, f.MaxBytes, f.MediaTypes))
 		default:
-			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, set_row_access)", ch.Op)
+			return nil, invalidf("unknown migration op %q (valid: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, set_row_access, add_constraint, drop_constraint, set_accept_references)", ch.Op)
 		}
 	}
 	if len(plan.Destructive) > 0 && expectedVersion == 0 {
@@ -814,6 +825,13 @@ func planMigration(ctx context.Context, db querier, nsName, table string, old *s
 
 	w.rebuildFTSNeeded = rebuildFTSNeeded
 	w.vectorizeChanged = vectorizeChanged
+	if slices.ContainsFunc(changes, func(ch schema.Change) bool {
+		return ch.Op == schema.OpAddConstraint || ch.Op == schema.OpDropConstraint || ch.Op == schema.OpSetAcceptReferences
+	}) {
+		if err := checkSQLiteConstraints(ctx, db, cur, true); err != nil {
+			return nil, err
+		}
+	}
 	cur.Version = old.Version + 1
 	return w, nil
 }

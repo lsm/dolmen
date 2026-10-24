@@ -48,7 +48,7 @@ func sqliteReferencing(ctx context.Context, tx querier, table string) ([]string,
 	return schema.ReferencingTables(all, table), nil
 }
 
-func sqliteConstraintSnapshot(ctx context.Context, tx *sql.Tx, changed string, incoming bool) (map[string]constraints.Table, error) {
+func sqliteConstraintSnapshot(ctx context.Context, tx querier, changed *schema.TableSchema, incoming bool) (map[string]constraints.Table, error) {
 	schemas, err := sqliteSchemas(ctx, tx)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,8 @@ func sqliteConstraintSnapshot(ctx context.Context, tx *sql.Tx, changed string, i
 	for name, sc := range schemas {
 		tables[name] = constraints.Table{Schema: sc}
 	}
-	tables = constraints.SelectChecks(tables, changed, incoming)
+	tables[changed.Name] = constraints.Table{Schema: changed}
+	tables = constraints.SelectChecks(tables, changed.Name, incoming)
 	needed := make(map[string]bool)
 	for name, t := range tables {
 		if len(t.Schema.Constraints) > 0 {
@@ -82,7 +83,7 @@ func sqliteConstraintSnapshot(ctx context.Context, tx *sql.Tx, changed string, i
 	return tables, nil
 }
 
-func sqliteConstraintRows(ctx context.Context, tx *sql.Tx, name string, sc *schema.TableSchema) (map[int64]constraints.Row, error) {
+func sqliteConstraintRows(ctx context.Context, tx querier, name string, sc *schema.TableSchema) (map[int64]constraints.Row, error) {
 	columns := []string{q("id"), changeOwnerColumn(sc)}
 	var fields []schema.Field
 	for _, f := range sc.Fields {
@@ -122,11 +123,11 @@ func sqliteConstraintRows(ctx context.Context, tx *sql.Tx, name string, sc *sche
 	return result, rows.Err()
 }
 
-func checkSQLiteConstraints(ctx context.Context, tx *sql.Tx, sc *schema.TableSchema, incoming bool) error {
+func checkSQLiteConstraints(ctx context.Context, tx querier, sc *schema.TableSchema, incoming bool) error {
 	if len(sc.Constraints) == 0 && !(incoming && sc.AcceptReferences) {
 		return nil
 	}
-	tables, err := sqliteConstraintSnapshot(ctx, tx, sc.Name, incoming)
+	tables, err := sqliteConstraintSnapshot(ctx, tx, sc, incoming)
 	if err != nil {
 		return err
 	}
