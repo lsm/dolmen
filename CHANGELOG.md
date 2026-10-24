@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Batch `update` and `delete` writes take `expected_rows`, the exact number of rows the write
+  must match, on HTTP, MCP and the Go facade (`BatchWrite.ExpectedRows`). The count is checked
+  inside the transaction on every engine; any other count fails the whole batch with `conflict` and
+  writes nothing, so a read-decide-write becomes a compare-and-set (#703, #741).
+
 - On PostgreSQL and lakehouse, an `update` whose filter matches no row now checks its file values
   as SQLite does, so an oversized file or a `copy_from` naming no readable file is refused instead
   of answering `updated: 0`.

@@ -19,13 +19,14 @@ const (
 )
 
 type BatchWrite struct {
-	Kind    BatchWriteKind
-	Table   string
-	Records []map[string]any
-	On      []string
-	Filter  string
-	Args    []any
-	Set     map[string]any
+	Kind         BatchWriteKind
+	Table        string
+	Records      []map[string]any
+	On           []string
+	Filter       string
+	Args         []any
+	Set          map[string]any
+	ExpectedRows *int64
 }
 
 type BatchOptions struct {
@@ -151,6 +152,10 @@ func batchEngineWrite(i int, w BatchWrite) (store.BatchWrite, error) {
 		Filter:  w.Filter,
 		Args:    append([]any(nil), w.Args...),
 		Set:     w.Set,
+	}
+	if w.ExpectedRows != nil {
+		n := *w.ExpectedRows
+		ew.ExpectedRows = &n
 	}
 	switch w.Kind {
 	case BatchInsert, BatchUpdate, BatchDelete, BatchUpsert, BatchUpsertByKey:

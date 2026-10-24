@@ -835,6 +835,9 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 	if err := schema.ValidateConstraintDeclarations(ctx, fields, opts.Constraints); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
+	if err := schema.ValidateRelation(fields, opts.Constraints, opts.Relation); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
 	if err := schema.ValidateRowAccess(opts.RowAccess); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
@@ -874,7 +877,7 @@ func (s *Store) CreateTable(ctx context.Context, nsName, table string, fields []
 		return nil, err
 	}
 	sc := &schema.TableSchema{Namespace: nsName, Name: table, Version: 1, Fields: fields,
-		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != "", Constraints: opts.Constraints, AcceptReferences: opts.AcceptReferences}
+		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != "", Constraints: opts.Constraints, AcceptReferences: opts.AcceptReferences, Relation: opts.Relation}
 	raw, _ := json.Marshal(sc)
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO _dolmen_tables(name, version, schema_json) VALUES(?,?,?)`,

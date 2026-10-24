@@ -99,6 +99,19 @@ func main() {
 	}
 	fmt.Println("query matched", len(page.Rows), "rows")
 
+	one := int64(1)
+	claim := []dolmen.BatchWrite{{
+		Kind: dolmen.BatchUpdate, Table: "notes", Filter: "priority = ?", Args: []any{2},
+		Set: map[string]any{"priority": 3}, ExpectedRows: &one,
+	}}
+	if _, err := st.Batch(ctx, "demo", claim, dolmen.BatchOptions{}); err != nil {
+		log.Fatal(err)
+	}
+	if _, err := st.Batch(ctx, "demo", claim, dolmen.BatchOptions{}); !errors.Is(err, dolmen.ErrConflict) {
+		log.Fatal(err)
+	}
+	fmt.Println("expected_rows claimed once and refused the stale retry")
+
 	hits, err := st.SearchFulltext(ctx, "demo", "notes", "refunds", dolmen.SearchOptions{Limit: 5})
 	if err != nil {
 		log.Fatal(err)

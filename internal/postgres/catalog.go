@@ -134,6 +134,11 @@ func (s *Store) bootstrap(ctx context.Context) error {
  table_name text NOT NULL, drop_generation bigint NOT NULL, owner text NOT NULL, key text NOT NULL,
  payload_hash text NOT NULL, result_json text NOT NULL,
  PRIMARY KEY(namespace,table_name,drop_generation,owner,key))`,
+		"CREATE TABLE IF NOT EXISTS " + s.relation("imports") + ` (
+ namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
+ table_name text NOT NULL, drop_generation bigint NOT NULL, owner text NOT NULL, key text NOT NULL,
+ payload_hash text NOT NULL, result_json text NOT NULL,
+ PRIMARY KEY(namespace,table_name,drop_generation,owner,key))`,
 		"CREATE TABLE IF NOT EXISTS " + s.relation("changes") + ` (
  namespace text NOT NULL REFERENCES ` + s.relation("namespaces") + `(name) ON DELETE CASCADE,
  position bigint NOT NULL, table_name text NOT NULL, drop_generation bigint NOT NULL,

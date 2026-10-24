@@ -148,6 +148,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 	if err := store.ValidateEngineNames("duckdb", name, fields); err != nil {
 		return nil, err
 	}
+	if err := store.RefuseRelationOptions(opts); err != nil {
+		return nil, err
+	}
 	if err := store.RequireSecretKey(s.secrets, fields); err != nil {
 		return nil, err
 	}
@@ -281,7 +284,7 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 		if _, err := tx.ExecContext(ctx, `DELETE FROM _dolmen_lakehouse_batch_tables WHERE table_name = ?`, name); err != nil {
 			return err
 		}
-		for _, owned := range []string{"_dolmen_lakehouse_secrets", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_counts", "_dolmen_lakehouse_ids", "_dolmen_lakehouse_embed_stage"} {
+		for _, owned := range []string{"_dolmen_lakehouse_secrets", "_dolmen_lakehouse_idempotency", "_dolmen_lakehouse_imports", "_dolmen_lakehouse_counts", "_dolmen_lakehouse_ids", "_dolmen_lakehouse_embed_stage"} {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM `+owned+` WHERE table_name = ? AND generation = ?`, name, state.incarnation.DropGen); err != nil {
 				return err
 			}

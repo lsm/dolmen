@@ -84,12 +84,26 @@ func (s *Store) prepareRows(ctx context.Context, ns string, state tableState, re
 	return s.prepareValues(ctx, ns, state, records, emb, true)
 }
 
-func (s *Store) prepareValues(ctx context.Context, ns string, state tableState, records []map[string]any, emb store.Embedder, insert bool) ([]preparedRow, error) {
+type recordError struct {
+	index int
+	error
+}
+
+func (e *recordError) Unwrap() error { return e.error }
+
+func (s *Store) prepareValues(ctx context.Context, ns string, state tableState, records []map[string]any, emb store.Embedder, insert bool) (_ []preparedRow, err error) {
 	out := make([]preparedRow, len(records))
 	texts := []string{}
 	indices := []int{}
 	vf := state.schema.VectorizeField()
+	at := -1
+	defer func() {
+		if err != nil && at >= 0 {
+			err = &recordError{at, err}
+		}
+	}()
 	for i, rec := range records {
+		at = i
 		for name := range rec {
 			if state.schema.Field(name) == nil {
 				return nil, fmt.Errorf("%w: unknown field %q on table %s (see describe_table)", store.ErrInvalid, name, state.incarnation.Table)
@@ -150,6 +164,7 @@ func (s *Store) prepareValues(ctx context.Context, ns string, state tableState, 
 			}
 		}
 	}
+	at = -1
 	if len(texts) > 0 {
 		vecs, err := store.EmbedTexts(ctx, state.schema, state.incarnation.Table, texts, emb)
 		if err != nil {
