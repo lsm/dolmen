@@ -147,7 +147,7 @@ func (s *Store) upsertByKeyRows(ctx context.Context, ns, table string, keys []st
 		}
 		retry := false
 		result := store.InsertResult{Ids: []int64{}}
-		err = s.write(ctx, ns, state.incarnation.NsGen, func(tx pgx.Tx, n namespace) error {
+		err = s.write(ctx, ns, state.incarnation.NsGen, s.constrained(ctx, table, false, func(tx pgx.Tx, n namespace) error {
 			current, err := s.loadTable(ctx, tx, n, table)
 			if err != nil {
 				return err
@@ -246,7 +246,7 @@ func (s *Store) upsertByKeyRows(ctx context.Context, ns, table string, keys []st
 			result.Inserted = int64(len(inserted))
 			result.Updated = int64(len(updated))
 			return nil
-		})
+		}))
 		if err != nil {
 			return store.InsertResult{}, err
 		}
