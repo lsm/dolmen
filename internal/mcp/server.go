@@ -65,6 +65,7 @@ var toolAnnotations = map[string]map[string]any{
 	"infer_schema":    {"title": "Infer schema", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"insert":          {"title": "Insert records", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 	"import_records":  {"title": "Import records with their source ids", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+	"relate":          {"title": "Relate two rows", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 	"batch":           {"title": "Batch writes", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"upsert_by_key":   {"title": "Upsert by natural key", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},

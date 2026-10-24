@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `relate` writes one directed graph edge into a relation table on HTTP, MCP and the Go facade
+  (`Store.Relate`), taking `source`, `target`, `type` and optional `properties`, with the same
+  `idempotency_key` replay as `insert`. Relation tables are not declarable over the wire yet (#736).
+
 - Batch `update` and `delete` writes take `expected_rows`, the exact number of rows the write
   must match, on HTTP, MCP and the Go facade (`BatchWrite.ExpectedRows`). The count is checked
   inside the transaction on every engine; any other count fails the whole batch with `conflict` and

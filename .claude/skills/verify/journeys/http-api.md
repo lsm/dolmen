@@ -15,7 +15,7 @@ The smoke covers `create_table`, `insert`, `read_rows`, `search_fulltext`,
 error (`invalid_request`), a `batch` compare-and-set with `expected_rows` (the claim, the
 stale retry's conflict and its rollback, a refused `null`), `import_records` (a source id
 above 2^53, its `created_at` read back, replay, a differing-content `conflict`, and the next
-ordinary id above it) and `/v1/openapi.json`. Expect every line `PASS` and
+ordinary id above it), `relate` refusing a table that is not a relation table (relation tables cannot be declared on the wire yet, so a successful `relate` is covered by `go test ./internal/conformance -run TestRelate`) and `/v1/openapi.json`. Expect every line `PASS` and
 exit 0.
 
 Then exercise the operation you changed with `call.sh` and read the full

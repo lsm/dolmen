@@ -131,6 +131,7 @@ func parityScript() []parityStep {
 
 var parityPinnedElsewhere = map[string]string{
 	"file_url": "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
+	"relate":   "TestRelateInsertsOneIdempotentEdge",
 }
 
 func TestTransportParityAllOperations(t *testing.T) {

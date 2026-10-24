@@ -33,5 +33,6 @@ check import_identity '"created_at":"2026-01-02T03:04:05.123Z","embedding":null,
 check import_replay '"replayed":true' "$(call import_records "$imp")"
 check import_conflict '"code":"conflict"' "$(call import_records '{"namespace":"verify","table":"events","idempotency_key":"snap/events/2","records":[{"id":9007199254740993,"created_at":"2026-01-02T03:04:05.123Z","title":"changed"}]}')"
 check insert_after_import '"ids":[9007199254740994]' "$(call insert '{"namespace":"verify","table":"events","records":[{"title":"after import"}]}')"
+check relate_needs_relation 'not a relation table' "$(call relate '{"namespace":"verify","table":"events","source":1,"target":2,"type":"k"}')"
 check openapi '"openapi"' "$(curl -sS "$(cat "$W/url")/v1/openapi.json")"
 exit $fail
