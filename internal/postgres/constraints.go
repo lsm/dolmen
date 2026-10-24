@@ -49,10 +49,14 @@ func (s *Store) checkConstraints(ctx context.Context, tx pgx.Tx, n namespace, ta
 	if err != nil {
 		return err
 	}
+	return s.checkConstraintSchema(ctx, tx, n, sc, incoming)
+}
+
+func (s *Store) checkConstraintSchema(ctx context.Context, tx pgx.Tx, n namespace, sc *schema.TableSchema, incoming bool) error {
 	if len(sc.Constraints) == 0 && !(incoming && sc.AcceptReferences) {
 		return nil
 	}
-	tables, err := s.constraintSnapshot(ctx, tx, n, table, incoming)
+	tables, err := s.constraintSnapshot(ctx, tx, n, sc, incoming)
 	if err != nil {
 		return err
 	}
@@ -73,7 +77,7 @@ func decodeConstraintSchema(raw string) (*schema.TableSchema, error) {
 	return &sc, nil
 }
 
-func (s *Store) constraintSnapshot(ctx context.Context, tx pgx.Tx, n namespace, changed string, incoming bool) (map[string]constraints.Table, error) {
+func (s *Store) constraintSnapshot(ctx context.Context, tx pgx.Tx, n namespace, changed *schema.TableSchema, incoming bool) (map[string]constraints.Table, error) {
 	rows, err := tx.Query(ctx, "SELECT name, physical, schema_json, columns_json FROM "+s.relation("tables")+" WHERE namespace=$1 AND active ORDER BY name", n.name)
 	if err != nil {
 		return nil, err
@@ -103,7 +107,8 @@ func (s *Store) constraintSnapshot(ctx context.Context, tx pgx.Tx, n namespace, 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	tables = constraints.SelectChecks(tables, changed, incoming)
+	tables[changed.Name] = constraints.Table{Schema: changed}
+	tables = constraints.SelectChecks(tables, changed.Name, incoming)
 	needed := map[string]bool{}
 	for name, t := range tables {
 		if len(t.Schema.Constraints) > 0 {
@@ -232,4 +237,13 @@ func (s *Store) referencing(ctx context.Context, tx pgx.Tx, n namespace, table s
 		return nil, err
 	}
 	return schema.ReferencingTables(schemas, table), nil
+}
+
+func (s *Store) stampMigratedConstraints(ctx context.Context, tx pgx.Tx, cur *schema.TableSchema) error {
+	if len(cur.Constraints) > 0 || cur.AcceptReferences {
+		if _, err := tx.Exec(ctx, "UPDATE "+s.relation("version")+" SET version = GREATEST(version, $1)", constraintCatalogVersion); err != nil {
+			return err
+		}
+	}
+	return nil
 }
