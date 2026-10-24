@@ -522,12 +522,15 @@ func (s *Store) mutate(ctx context.Context, ns, name, filter string, args []any,
 				return err
 			}
 			pin := embeddingPin(state, space, dim, emb)
+			if err := s.checkAppend(ctx, n, state, rows); err != nil {
+				return err
+			}
 			tx, err := n.db.BeginTx(ctx, nil)
 			if err != nil {
 				return err
 			}
 			defer tx.Rollback()
-			committed, err := s.commitAppend(ctx, n, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, pin)
+			committed, err := s.commitAppend(ctx, tx, state, rows, store.WriteOpts{Owner: opts.Owner}, store.DomainFor(opts, scope), store.IdemHash{}, stamp, pin)
 			if err != nil {
 				return err
 			}

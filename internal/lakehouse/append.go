@@ -268,6 +268,9 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 			return err
 		}
 		pin := state.schema.EmbedDim != dim || space == "" && state.schema.EmbedDim != 0
+		if err := s.checkAppend(ctx, n, state, rows); err != nil {
+			return err
+		}
 		tx, err := n.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -280,7 +283,7 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		if pin {
 			pinned = commitRows{EmbedSpace: emb.Identity, EmbedDim: state.schema.EmbedDim}
 		}
-		committed, err := s.commitAppend(ctx, n, tx, state, rows, opts, domain, hash, stamp, pinned)
+		committed, err := s.commitAppend(ctx, tx, state, rows, opts, domain, hash, stamp, pinned)
 		if err != nil {
 			return err
 		}
@@ -295,7 +298,7 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 	return result, err
 }
 
-func (s *Store) commitAppend(ctx context.Context, n *namespace, tx *sql.Tx, state tableState, rows []map[string]any, opts store.WriteOpts, domain store.IdemDomain, hash store.IdemHash, stamp string, pinned commitRows) (store.InsertResult, error) {
+func (s *Store) commitAppend(ctx context.Context, tx *sql.Tx, state tableState, rows []map[string]any, opts store.WriteOpts, domain store.IdemDomain, hash store.IdemHash, stamp string, pinned commitRows) (store.InsertResult, error) {
 	var result store.InsertResult
 	inc := state.incarnation
 	var next int64
@@ -319,9 +322,6 @@ func (s *Store) commitAppend(ctx context.Context, n *namespace, tx *sql.Tx, stat
 			}
 			row[f.Name] = secretPresent
 		}
-	}
-	if err := s.checkConstraints(ctx, n, state, stagedRows{rows: rows}, false); err != nil {
-		return result, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_ids(table_name, generation, next_id) VALUES(?,?,?) ON CONFLICT(table_name, generation) DO UPDATE SET next_id=excluded.next_id`, inc.Table, inc.DropGen, next+int64(len(rows))); err != nil {
 		return result, err

@@ -2,8 +2,10 @@ package lakehouse
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/apache/iceberg-go/table"
@@ -121,4 +123,22 @@ func constraintRow(sc *schema.TableSchema, row map[string]any) (constraints.Row,
 		}
 	}
 	return out, nil
+}
+
+func (s *Store) checkAppend(ctx context.Context, n *namespace, state tableState, rows []map[string]any) error {
+	if len(state.schema.Constraints) == 0 {
+		return nil
+	}
+	inc := state.incarnation
+	next := int64(1)
+	err := n.db.QueryRowContext(ctx, `SELECT next_id FROM _dolmen_lakehouse_ids WHERE table_name=? AND generation=?`, inc.Table, inc.DropGen).Scan(&next)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	staged := make([]map[string]any, len(rows))
+	for i, row := range rows {
+		staged[i] = maps.Clone(row)
+		staged[i]["id"] = next + int64(i)
+	}
+	return s.checkConstraints(ctx, n, state, stagedRows{rows: staged}, false)
 }

@@ -113,14 +113,9 @@ func TestLakehouseEveryAppendChecksConstraints(t *testing.T) {
 			return err
 		}
 		state.schema.Constraints = []schema.Constraint{{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}}
-		tx, err := n.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		_, err = s.commitAppend(ctx, n, tx, state, []map[string]any{{"slug": "taken"}}, store.WriteOpts{}, store.IdemDomain{}, store.IdemHash{}, "2026-10-24T00:00:00.000Z", commitRows{})
+		err = s.checkAppend(ctx, n, state, []map[string]any{{"slug": "taken"}})
 		if !errors.Is(err, derr.ErrConflict) || !strings.Contains(err.Error(), "slug_key") {
-			t.Fatalf("an append from any write path, upsert's insert branch included, must check constraints: %v", err)
+			t.Fatalf("an append must check constraints before it opens the catalog transaction: %v", err)
 		}
 		return nil
 	})
