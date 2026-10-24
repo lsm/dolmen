@@ -23,9 +23,12 @@ func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", store.ErrInvalid, fmt.Sprintf(format, args...))
 }
 
-func (s *Store) planSchema(ctx context.Context, state tableState, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*store.MigrationPlan, *table.Transaction, error) {
+func (s *Store) planSchema(ctx context.Context, n *namespace, state tableState, changes []schema.Change, emb store.Embedder, expected store.Incarnation) (*store.MigrationPlan, *table.Transaction, error) {
 	if len(changes) == 0 {
 		return nil, nil, invalidf("no changes given")
+	}
+	if err := store.RefuseMixedConstraintChanges(changes); err != nil {
+		return nil, nil, err
 	}
 	if expected.Version < 0 {
 		return nil, nil, invalidf("expected_version must be a positive schema version, got %d", expected.Version)
@@ -67,7 +70,10 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			return nil, nil, invalidf("changes[%d]: %s requires value", i, ch.Op)
 		}
 		if !schema.TakesValue(ch.Op) && ch.Value != nil {
-			return nil, nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access", i)
+			return nil, nil, invalidf("changes[%d]: value is only allowed on set_fulltext/set_vectorize/set_row_access/set_accept_references", i)
+		}
+		if (ch.Op == schema.OpAddConstraint) != (ch.Constraint != nil) {
+			return nil, nil, invalidf("changes[%d]: constraint is required on add_constraint and allowed on no other op (op %q)", i, ch.Op)
 		}
 		if ch.Op == schema.OpSetEnum && ch.Enum == nil || ch.Op != schema.OpSetEnum && ch.Enum != nil {
 			return nil, nil, invalidf("changes[%d]: enum is required only on set_enum", i)
@@ -145,6 +151,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			if err != nil {
 				return nil, nil, err
 			}
+			if err := store.RefuseConstrainedField(ctx, next, "rename_field", ch.From); err != nil {
+				return nil, nil, err
+			}
 			if err := schema.ValidateIdent(ch.To, "field name"); err != nil {
 				return nil, nil, invalidf("%v", err)
 			}
@@ -172,6 +181,9 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 		case schema.OpDropField:
 			index, err := find(ch.Name)
 			if err != nil {
+				return nil, nil, err
+			}
+			if err := store.RefuseConstrainedField(ctx, next, "drop_field", ch.Name); err != nil {
 				return nil, nil, err
 			}
 			if err := tx.UpdateSchema(true, false).DeleteColumn([]string{ch.Name}).Commit(); err != nil {
@@ -239,7 +251,19 @@ func (s *Store) planSchema(ctx context.Context, state tableState, changes []sche
 			}
 			next.Fields[index].Shape = *ch.Shape
 			plan.Operations = append(plan.Operations, store.ShapeOperation(ch.Name, *ch.Shape))
+		case schema.OpAddConstraint, schema.OpDropConstraint, schema.OpSetAcceptReferences:
+			if err := store.PlanConstraintChange(ctx, next, ch, func() ([]string, error) { return s.referencing(ctx, n, next.Namespace, next.Name) }); err != nil {
+				return nil, nil, err
+			}
+			plan.Operations = append(plan.Operations, store.DescribeConstraintChange(ch))
 		case schema.OpSetRowAccess:
+			referencing, err := s.referencing(ctx, n, next.Namespace, next.Name)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := store.RefuseConstrainedRowAccess(next, referencing); err != nil {
+				return nil, nil, err
+			}
 			if *ch.Value {
 				if err := store.ValidateOwnerCollision(next.Fields); err != nil {
 					return nil, nil, err
@@ -309,7 +333,7 @@ func (s *Store) PlanMigration(ctx context.Context, ns, name string, changes []sc
 		if scope != nil && !scope.Empty && !state.schema.HasOwner {
 			return invalidf("table carries no owner column")
 		}
-		plan, _, err = s.planSchema(ctx, state, changes, emb, expected)
+		plan, _, err = s.planSchema(ctx, n, state, changes, emb, expected)
 		if err != nil {
 			return err
 		}
@@ -351,7 +375,7 @@ func (s *Store) Migrate(ctx context.Context, ns, name string, changes []schema.C
 			if err := sameTable(ns, state.incarnation, first); err != nil {
 				return err
 			}
-			plan, _, err := s.planSchema(ctx, state, changes, emb, expected)
+			plan, _, err := s.planSchema(ctx, n, state, changes, emb, expected)
 			if err != nil {
 				return err
 			}
@@ -418,7 +442,7 @@ func (s *Store) Migrate(ctx context.Context, ns, name string, changes []schema.C
 			if err := sameTable(ns, state.incarnation, first); err != nil {
 				return err
 			}
-			plan, tx, err := s.planSchema(ctx, state, changes, emb, expected)
+			plan, tx, err := s.planSchema(ctx, n, state, changes, emb, expected)
 			if err != nil {
 				return err
 			}
@@ -450,8 +474,14 @@ func (s *Store) Migrate(ctx context.Context, ns, name string, changes []schema.C
 				retry = true
 				return nil
 			}
+			if err := s.checkMigratedConstraints(ctx, n, state, plan.Table); err != nil {
+				return err
+			}
 			result, err = s.applyMigration(ctx, n, ns, state, changes, plan, tx, work, vectors, constant)
-			return err
+			if err != nil {
+				return err
+			}
+			return stampConstraintFormat(ctx, n, plan.Table)
 		})
 		if err != nil {
 			return nil, err

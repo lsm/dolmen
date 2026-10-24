@@ -23,23 +23,11 @@ func (s *Store) checkConstraints(ctx context.Context, n *namespace, state tableS
 	if len(sc.Constraints) == 0 && !(incoming && sc.AcceptReferences) {
 		return nil
 	}
-	ns := sc.Namespace
-	states := map[string]tableState{}
-	for ident, err := range n.catalog.ListTables(ctx, table.Identifier(strings.Split(ns, "/"))) {
-		if err != nil {
-			return err
-		}
-		name := ident[len(ident)-1]
-		if name == sc.Name {
-			states[name] = state
-			continue
-		}
-		other, err := loadTableDeclared(ctx, n, ns, name)
-		if err != nil {
-			return err
-		}
-		states[name] = other
+	states, err := s.namespaceTables(ctx, n, sc.Namespace)
+	if err != nil {
+		return err
 	}
+	states[sc.Name] = state
 	tables := make(map[string]constraints.Table, len(states))
 	for name, st := range states {
 		tables[name] = constraints.Table{Schema: st.schema}
@@ -87,7 +75,10 @@ func (s *Store) checkConstraints(ctx context.Context, n *namespace, state tableS
 		}
 		tables[name] = t
 	}
-	err := constraints.CheckCatalog(ctx, tables)
+	return catalogError(constraints.CheckCatalog(ctx, tables))
+}
+
+func catalogError(err error) error {
 	if err == nil || errors.Is(err, derr.ErrConflict) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
@@ -121,4 +112,64 @@ func constraintRow(sc *schema.TableSchema, row map[string]any) (constraints.Row,
 		}
 	}
 	return out, nil
+}
+
+func (s *Store) namespaceTables(ctx context.Context, n *namespace, ns string) (map[string]tableState, error) {
+	states := map[string]tableState{}
+	for ident, err := range n.catalog.ListTables(ctx, table.Identifier(strings.Split(ns, "/"))) {
+		if err != nil {
+			return nil, err
+		}
+		name := ident[len(ident)-1]
+		st, err := loadTable(ctx, n, ns, name)
+		if err != nil {
+			return nil, err
+		}
+		states[name] = st
+	}
+	return states, nil
+}
+
+func (s *Store) referencing(ctx context.Context, n *namespace, ns, name string) ([]string, error) {
+	states, err := s.namespaceTables(ctx, n, ns)
+	if err != nil {
+		return nil, err
+	}
+	schemas := make([]*schema.TableSchema, 0, len(states))
+	for _, st := range states {
+		schemas = append(schemas, st.schema)
+	}
+	return schema.ReferencingTables(schemas, name), nil
+}
+
+func (s *Store) checkNewTable(ctx context.Context, n *namespace, sc *schema.TableSchema) error {
+	if len(sc.Constraints) == 0 {
+		return nil
+	}
+	states, err := s.namespaceTables(ctx, n, sc.Namespace)
+	if err != nil {
+		return err
+	}
+	tables := map[string]constraints.Table{sc.Name: {Schema: sc}}
+	for name, st := range states {
+		tables[name] = constraints.Table{Schema: st.schema}
+	}
+	return catalogError(constraints.CheckCatalog(ctx, constraints.SelectChecks(tables, sc.Name, false)))
+}
+
+func stampConstraintFormat(ctx context.Context, n *namespace, sc *schema.TableSchema) error {
+	if len(sc.Constraints) == 0 && !sc.AcceptReferences {
+		return nil
+	}
+	_, err := n.db.ExecContext(ctx, `UPDATE _dolmen_lakehouse_meta SET format=MAX(format, ?) WHERE singleton=1`, constraintCatalogFormat)
+	return err
+}
+
+func (s *Store) checkMigratedConstraints(ctx context.Context, n *namespace, state tableState, next *schema.TableSchema) error {
+	if len(next.Constraints) == 0 && !next.AcceptReferences {
+		return nil
+	}
+	planned := state
+	planned.schema = next
+	return s.checkConstraints(ctx, n, planned, stagedRows{}, true)
 }

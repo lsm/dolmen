@@ -19,6 +19,8 @@ import (
 
 const catalogFormat = 3
 
+const constraintCatalogFormat = 4
+
 func namespacePath(name string) string { return filepath.FromSlash(name) + ".lakehouse" }
 
 func fileLocation(path string) string {
@@ -156,7 +158,7 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 		if err := db.QueryRowContext(ctx, `SELECT format, namespace, generation FROM _dolmen_lakehouse_meta WHERE singleton = 1`).Scan(&format, &stored, &raw); err != nil {
 			return nil, fmt.Errorf("%w: lakehouse namespace %s has unreadable catalog metadata: %v", store.ErrCatalogCorrupt, name, err)
 		}
-		if format > catalogFormat {
+		if format > constraintCatalogFormat {
 			return nil, fmt.Errorf("%w: lakehouse namespace %s requires catalog format %d; upgrade dolmen", store.ErrCatalogTooNew, name, format)
 		}
 		if format < 1 || stored != name || len(raw) != 16 {
@@ -180,7 +182,7 @@ func (s *Store) openCatalog(ctx context.Context, name, relative string, create b
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE _dolmen_lakehouse_meta SET format=? WHERE singleton=1`, catalogFormat); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE _dolmen_lakehouse_meta SET format=MAX(format, ?) WHERE singleton=1`, catalogFormat); err != nil {
 		return nil, err
 	}
 	dataDir := filepath.Join(s.dir, namespacePath(name), "data")
