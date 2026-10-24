@@ -284,9 +284,6 @@ func (s *Store) Insert(ctx context.Context, ns, name string, records []map[strin
 		if err != nil {
 			return err
 		}
-		if err := s.checkConstraints(ctx, n, state, stagedRows{rows: rows}, false); err != nil {
-			return err
-		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
@@ -322,6 +319,9 @@ func (s *Store) commitAppend(ctx context.Context, n *namespace, tx *sql.Tx, stat
 			}
 			row[f.Name] = secretPresent
 		}
+	}
+	if err := s.checkConstraints(ctx, n, state, stagedRows{rows: rows}, false); err != nil {
+		return result, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO _dolmen_lakehouse_ids(table_name, generation, next_id) VALUES(?,?,?) ON CONFLICT(table_name, generation) DO UPDATE SET next_id=excluded.next_id`, inc.Table, inc.DropGen, next+int64(len(rows))); err != nil {
 		return result, err
