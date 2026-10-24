@@ -10,7 +10,8 @@ PostgreSQL (CI job `postgres-foundation`): a disposable `postgres:17` with user
 query and backend roles" step. `scripts/pg.sh start` does both in Docker on
 `127.0.0.1:55432` (override with `DOLMEN_VERIFY_PG_PORT`) and prints the exports;
 `scripts/pg.sh stop` removes the container. On macOS without Docker Desktop,
-`colima start` first. Then:
+run `colima start`, then `docker context use default` (colima switches the
+machine-wide context) and `export DOCKER_CONTEXT=colima` for this shell. Then:
 
 ```bash
 eval "$(.claude/skills/verify/scripts/pg.sh start)"
