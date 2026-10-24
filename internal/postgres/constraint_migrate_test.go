@@ -125,3 +125,95 @@ func TestPostgresAddConstraintDryRunReportsExistingViolations(t *testing.T) {
 		t.Fatalf("execution must recheck rows after a successful dry run: %v", err)
 	}
 }
+
+func TestPostgresConstraintChangesRunAlone(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "slug", Type: schema.String}}, store.TableOpts{Constraints: []schema.Constraint{{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}}}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	for _, constraintOp := range []schema.Change{{Op: schema.OpDropConstraint, Name: "slug_key"}, {Op: schema.OpSetAcceptReferences, Value: &on}} {
+		for _, other := range []schema.Change{{Op: schema.OpSetEnum, Name: "slug", Enum: &[]string{"a"}}, {Op: schema.OpSetRowAccess, Value: &on}, {Op: schema.OpSetAcceptReferences, Value: &on}} {
+			_, err := s.Migrate(ctx, "ns", "notes", []schema.Change{constraintOp, other}, store.Embedder{}, store.Incarnation{Version: 1})
+			if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "its own migrate call") {
+				t.Fatalf("%s with %s: %v", constraintOp.Op, other.Op, err)
+			}
+		}
+	}
+}
+
+func TestPostgresForeignKeyDryRunChecksOrphansAndSelfReferences(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "nodes", []schema.Field{{Name: "parent_id", Type: schema.Number}}, store.TableOpts{AcceptReferences: true}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Insert(ctx, "ns", "nodes", []map[string]any{{"parent_id": 99}}, store.WriteOpts{}, store.Embedder{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	add := []schema.Change{{Op: schema.OpAddConstraint, Constraint: &schema.Constraint{Name: "parent_ref", Kind: schema.ConstraintForeignKey, Field: "parent_id", References: &schema.ConstraintReference{Table: "nodes", Field: "id"}}}}
+	if _, err := s.PlanMigration(ctx, "ns", "nodes", add, store.Embedder{}, store.Incarnation{}, nil, store.Incarnation{}); !errors.Is(err, derr.ErrConflict) {
+		t.Fatalf("orphan dry run: %v", err)
+	}
+	if _, err := s.Delete(ctx, "ns", "nodes", "id = 1", nil, store.DeleteOpts{}, nil, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Migrate(ctx, "ns", "nodes", add, store.Embedder{}, store.Incarnation{}); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	if _, err := s.Migrate(ctx, "ns", "nodes", []schema.Change{{Op: schema.OpSetAcceptReferences, Value: &off}}, store.Embedder{}, store.Incarnation{}); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "drop that constraint first") {
+		t.Fatalf("self reference: %v", err)
+	}
+}
+
+func TestPostgresMigrationKeepsStoredRelationForeignKeys(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "nodes", []schema.Field{{Name: "name", Type: schema.String}}, store.TableOpts{AcceptReferences: true}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	fields := []schema.Field{{Name: "src_id", Type: schema.Number, Required: true}, {Name: "dst_id", Type: schema.Number, Required: true}, {Name: "kind", Type: schema.String, Required: true}}
+	refs := []schema.Constraint{{Name: "src_ref", Kind: schema.ConstraintForeignKey, Field: "src_id", References: &schema.ConstraintReference{Table: "nodes", Field: "id"}}, {Name: "dst_ref", Kind: schema.ConstraintForeignKey, Field: "dst_id", References: &schema.ConstraintReference{Table: "nodes", Field: "id"}}}
+	if _, err := s.CreateTable(ctx, "ns", "links", fields, store.TableOpts{Constraints: refs}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(ctx, "UPDATE "+s.relation("tables")+` SET schema_json=jsonb_set(schema_json::jsonb,'{relation}','{"source":"src_id","target":"dst_id","type":"kind"}')::text WHERE namespace=$1 AND name=$2`, "ns", "links"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"src_ref", "dst_ref"} {
+		_, err := s.Migrate(ctx, "ns", "links", []schema.Change{{Op: schema.OpDropConstraint, Name: name}}, store.Embedder{}, store.Incarnation{})
+		if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "relation") {
+			t.Fatalf("relation endpoint %s: %v", name, err)
+		}
+	}
+	sc, _, err := s.DescribeTable(ctx, "ns", "links", nil, store.Incarnation{})
+	if err != nil || len(sc.Constraints) != 2 || sc.Relation == nil {
+		t.Fatalf("refusal changed schema: %+v %v", sc, err)
+	}
+}
+
+func TestPostgresAcceptReferencesRequiresValue(t *testing.T) {
+	s := openTest(t, testConfig(t))
+	ctx := t.Context()
+	if err := s.CreateNamespace(ctx, "ns", [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "slug", Type: schema.String}}, store.TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Migrate(ctx, "ns", "notes", []schema.Change{{Op: schema.OpSetAcceptReferences}}, store.Embedder{}, store.Incarnation{})
+	if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "explicit value") {
+		t.Fatalf("missing value: %v", err)
+	}
+}
