@@ -22,5 +22,10 @@ check search_fulltext '"title":"first bug"' "$(call search_fulltext '{"namespace
 check search_vector '"title":"first bug"' "$(call search_vector '{"namespace":"verify","table":"events","vector":[0.5,0.25,-0.5,0.0],"limit":1}')"
 check query '"n":2' "$(call query '{"namespace":"verify","sql":"SELECT count(*) AS n FROM events"}')"
 check typed_error '"code":"invalid_request"' "$(call insert '{"namespace":"verify","table":"events","records":[{"title":"x","score":"high"}]}')"
+claim='{"namespace":"verify","writes":[{"kind":"update","table":"events","filter":"title = ? AND score = ?","args":["second note",0.1],"set":{"score":0.2},"expected_rows":1},{"kind":"insert","table":"events","records":[{"title":"claimed"}]}]}'
+check batch_expected_rows '"updated":1' "$(call batch "$claim")"
+check batch_expected_rows_stale 'expected_rows mismatch' "$(call batch "$claim")"
+check batch_expected_rows_rolled_back '"n":1' "$(call query '{"namespace":"verify","sql":"SELECT count(*) AS n FROM events WHERE title = '"'"'claimed'"'"'"}')"
+check batch_expected_rows_null '"code":"invalid_request"' "$(call batch '{"namespace":"verify","writes":[{"kind":"delete","table":"events","filter":"1=1","expected_rows":null}]}')"
 check openapi '"openapi"' "$(curl -sS "$(cat "$W/url")/v1/openapi.json")"
 exit $fail

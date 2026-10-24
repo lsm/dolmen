@@ -153,6 +153,10 @@ func batchEngineWrite(i int, w BatchWrite) (store.BatchWrite, error) {
 		Args:    append([]any(nil), w.Args...),
 		Set:     w.Set,
 	}
+	if w.ExpectedRows != nil {
+		n := *w.ExpectedRows
+		ew.ExpectedRows = &n
+	}
 	switch w.Kind {
 	case BatchInsert, BatchUpdate, BatchDelete, BatchUpsert, BatchUpsertByKey:
 	default:

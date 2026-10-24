@@ -62,7 +62,7 @@ func TestBatchExpectedRowsOnTheWire(t *testing.T) {
 			if len(results) != 2 || results[0].(map[string]any)["updated"] != float64(1) {
 				t.Fatalf("claim results: %+v", out)
 			}
-			want := map[string]string{"http": "409 conflict", "mcp": "conflict"}[transport]
+			want := map[string]string{"http": "400 conflict", "mcp": "conflict"}[transport]
 			code, msg := wireError(t, h, transport, wireClaim(1))
 			if code != want || !strings.Contains(msg, "writes[0]: expected_rows mismatch") {
 				t.Fatalf("stale claim: %s %q, want %s naming writes[0]", code, msg, want)
