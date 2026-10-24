@@ -44,6 +44,9 @@ func TestLakehouseConstraintActivationAndDryRun(t *testing.T) {
 				if sc, _, err := s.DescribeTable(ctx, "app", "notes", nil, store.Incarnation{}); err != nil || sc.Version != 1 || len(sc.Constraints) != 0 {
 					t.Fatalf("refused dry run changed schema: %+v %v", sc, err)
 				}
+				if format := lakeFormat(t, s); format != catalogFormat {
+					t.Fatalf("refused dry run raised reader format: %d", format)
+				}
 				if _, err := s.Delete(ctx, "app", "notes", "id = 2", nil, store.DeleteOpts{}, nil, store.Incarnation{}); err != nil {
 					t.Fatal(err)
 				}

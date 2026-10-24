@@ -50,11 +50,11 @@ func TestLakehouseConstraintsCheckCommittedRowsPlusTheStagedWrite(t *testing.T) 
 				return err
 			}
 		}
-		tasks, err := loadTableDeclared(ctx, n, "app", "tasks")
+		tasks, err := loadTable(ctx, n, "app", "tasks")
 		if err != nil {
 			return err
 		}
-		projects, err := loadTableDeclared(ctx, n, "app", "projects")
+		projects, err := loadTable(ctx, n, "app", "projects")
 		if err != nil {
 			return err
 		}
@@ -108,7 +108,7 @@ func TestLakehouseEveryAppendChecksConstraints(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := s.withNamespace(ctx, "app", func(n *namespace) error {
-		state, err := loadTableDeclared(ctx, n, "app", "notes")
+		state, err := loadTable(ctx, n, "app", "notes")
 		if err != nil {
 			return err
 		}

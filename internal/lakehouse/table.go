@@ -76,17 +76,6 @@ type tableState struct {
 }
 
 func loadTable(ctx context.Context, n *namespace, ns, name string) (tableState, error) {
-	state, err := loadTableDeclared(ctx, n, ns, name)
-	if err != nil {
-		return state, err
-	}
-	if err := store.RefuseUnenforcedConstraints(state.schema); err != nil {
-		return tableState{}, err
-	}
-	return state, nil
-}
-
-func loadTableDeclared(ctx context.Context, n *namespace, ns, name string) (tableState, error) {
 	var state tableState
 	if err := schema.ValidateTableName(name); err != nil {
 		return state, store.TableNotFound(ns, name)
@@ -138,12 +127,12 @@ func checkExpected(state tableState, want store.Incarnation, version bool) error
 }
 
 func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schema.Field, opts store.TableOpts, expected [16]byte) (*schema.TableSchema, error) {
-	if err := store.RefuseConstraintOptions(opts); err != nil {
-		return nil, err
-	}
 	fields, err := store.ValidateTableDefinition(name, fields)
 	if err != nil {
 		return nil, err
+	}
+	if err := schema.ValidateConstraintDeclarations(ctx, fields, opts.Constraints); err != nil {
+		return nil, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
 	if err := store.ValidateEngineNames("duckdb", name, fields); err != nil {
 		return nil, err
@@ -162,7 +151,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 			return nil, err
 		}
 	}
-	sc := &schema.TableSchema{Namespace: ns, Name: name, Version: 1, Fields: fields, RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != ""}
+	sc := &schema.TableSchema{Namespace: ns, Name: name, Version: 1, Fields: fields, RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != "", Constraints: opts.Constraints, AcceptReferences: opts.AcceptReferences}
 	err = s.withNamespace(ctx, ns, func(n *namespace) error {
 		if expected != [16]byte{} && expected != n.generation {
 			return store.ScopeIncarnationChanged(ns, name)
@@ -173,6 +162,9 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 		}
 		if exists {
 			return fmt.Errorf("%w: table %s.%s already exists", store.ErrInvalid, ns, name)
+		}
+		if err := s.checkNewTable(ctx, n, sc); err != nil {
+			return err
 		}
 		var gen int64
 		err = n.db.QueryRowContext(ctx, `SELECT generation FROM _dolmen_lakehouse_tables WHERE name=?`, name).Scan(&gen)
@@ -188,7 +180,10 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 		if err != nil {
 			return err
 		}
-		return s.syncMetadata(native, n)
+		if err := s.syncMetadata(native, n); err != nil {
+			return err
+		}
+		return stampConstraintFormat(ctx, n, sc)
 	})
 	if err != nil {
 		return nil, err
@@ -257,6 +252,13 @@ func (s *Store) DropTable(ctx context.Context, ns, name string, expected store.I
 			return err
 		}
 		if err := checkExpected(state, expected, true); err != nil {
+			return err
+		}
+		referencing, err := s.referencing(ctx, n, ns, name)
+		if err != nil {
+			return err
+		}
+		if err := store.RefuseReferencedDrop(name, referencing); err != nil {
 			return err
 		}
 		tx, err := n.db.BeginTx(ctx, nil)
