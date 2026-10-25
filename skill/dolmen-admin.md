@@ -967,7 +967,7 @@ graph edges: declare required `number` source and target fields, each with a `fo
 required `string` type field, then name the roles with
 `"relation":{"source":"src","target":"dst","type":"kind"}`. Its other fields are the edge's
 properties. `describe_table` returns `constraints`, `accept_references` and `relation` as declared.
-`constraints` and `accept_references` work on SQLite and PostgreSQL, and `relation` on SQLite only so far; all three are refused while authentication is on.
+`constraints` and `accept_references` work on SQLite, PostgreSQL and lakehouse, and `relation` on SQLite only so far; all three are refused while authentication is on.
 
 ### Id, `created_at`, and stability
 

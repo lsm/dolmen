@@ -4,20 +4,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/lsm/dolmen/internal/store"
 )
-
-func declaringEngine(t *testing.T) {
-	t.Helper()
-	if testEngine(t) == store.EngineLakehouse {
-		t.Skip("lakehouse keeps no constraint declarations yet; remove this skip when its create slice lands")
-	}
-}
 
 func constraintTables(h *harness) {
 	h.t.Helper()
-	declaringEngine(h.t)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "projects", "accept_references": true,
 		"fields": []map[string]any{{"name": "slug", "type": "string"}}})

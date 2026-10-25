@@ -41,3 +41,16 @@ go test -race -count=1 ./internal/lakehouse
 go test -race -count=1 ./internal/conformance -run '^TestLakehouse'
 DOLMEN_ENGINE=lakehouse go test -count=1 ./internal/blackbox
 ```
+
+With that bundle, run the public Go-library constraint journey:
+
+```bash
+go run .claude/skills/verify/scripts/lakehouse-constraints.go "$DOLMEN_TEST_DUCKDB_SIDECAR" "$DOLMEN_TEST_DUCKDB_EXTENSIONS"
+```
+
+Expect six `PASS` lines: two declarations read back, partial-unique and orphan
+conflicts, RESTRICT on parent deletion, two rows and two constraints after reopen,
+and enforcement after reopen. It creates and removes its own synthetic data dir.
+The backend tests also cover migration dry-run conflicts/purity and revalidation;
+`TestConstraintMigrationBackendIsEnforcedOnHTTPAndMCP` covers both wire write
+transports after an engine migration.

@@ -678,6 +678,9 @@ func TestALakehouseServerServesDuckDBGuidance(t *testing.T) {
 				t.Fatalf("%s on a lakehouse server must say %q", name, want)
 			}
 		}
+		if name == "dolmen-admin" && !strings.Contains(string(out), "work on SQLite, PostgreSQL and lakehouse") {
+			t.Fatal("lakehouse admin guidance must include lakehouse constraint support")
+		}
 		if !strings.Contains(string(out), "`cafe` matches `café`") {
 			t.Fatalf("%s on a lakehouse server must say full-text folds accents, as the engine does", name)
 		}

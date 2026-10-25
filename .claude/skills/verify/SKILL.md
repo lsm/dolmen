@@ -43,6 +43,8 @@ $S/stop.sh "$W"
 ```
 
 Always run `stop.sh`, even after a failure. If a server dies, read `$W/server.log`.
+When a command runner reaps background children as its command exits, run
+`serve.sh`, the checks, and `stop.sh` in one shell invocation with an EXIT trap.
 
 ## Reporting
 
