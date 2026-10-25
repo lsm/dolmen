@@ -91,3 +91,45 @@ func TestLakehouseConstraintActivationAndDryRun(t *testing.T) {
 		})
 	}
 }
+
+func TestLakehouseReaderGuardFailureDoesNotPublishConstraints(t *testing.T) {
+	for _, migration := range []bool{false, true} {
+		t.Run(map[bool]string{false: "declaration", true: "migration"}[migration], func(t *testing.T) {
+			s := openStore(t, t.TempDir(), WithSharedFilter(true))
+			ctx := t.Context()
+			if err := s.CreateNamespace(ctx, "app", [16]byte{}); err != nil {
+				t.Fatal(err)
+			}
+			fields := []schema.Field{{Name: "slug", Type: schema.String}}
+			if migration {
+				if _, err := s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{}, [16]byte{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.withNamespace(ctx, "app", func(n *namespace) error {
+				_, err := n.db.ExecContext(ctx, `CREATE TRIGGER refuse_constraint_format BEFORE UPDATE OF format ON _dolmen_lakehouse_meta WHEN NEW.format > OLD.format BEGIN SELECT RAISE(FAIL,'synthetic format refusal'); END`)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			unique := schema.Constraint{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}
+			var err error
+			if migration {
+				_, err = s.Migrate(ctx, "app", "notes", []schema.Change{{Op: schema.OpAddConstraint, Constraint: &unique}}, store.Embedder{}, store.Incarnation{})
+			} else {
+				_, err = s.CreateTable(ctx, "app", "notes", fields, store.TableOpts{Constraints: []schema.Constraint{unique}}, [16]byte{})
+			}
+			if err == nil {
+				t.Fatal("reader guard failure was ignored")
+			}
+			sc, _, err := s.DescribeTable(ctx, "app", "notes", nil, store.Incarnation{})
+			if migration {
+				if err != nil || sc.Version != 1 || len(sc.Constraints) != 0 {
+					t.Fatalf("published constraints without reader guard: %+v %v", sc, err)
+				}
+			} else if !errors.Is(err, store.ErrNotFound) {
+				t.Fatalf("created constrained table without reader guard: %+v %v", sc, err)
+			}
+		})
+	}
+}
