@@ -1,9 +1,15 @@
 package conformance
 
 import (
+	"context"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/lsm/dolmen/internal/derr"
+	"github.com/lsm/dolmen/internal/schema"
+	"github.com/lsm/dolmen/internal/store"
 )
 
 func constraintAuthTables(t *testing.T) *harness {
@@ -201,5 +207,46 @@ func TestOptedInRowAccessChangeDoesNotRevealIncomingReferences(t *testing.T) {
 	grantTo(t, h, "principal", "editor", "plain", "notes", "schema", "admin", "read")
 	if res, out := h.asIdentity(t, "editor", "", "migrate", `{"namespace":"plain","table":"notes","changes":[{"op":"set_row_access","value":true}]}`); res.StatusCode != http.StatusOK {
 		t.Fatalf("ordinary table must not acquire a namespace-read gate: %d %v", res.StatusCode, out)
+	}
+}
+
+type constraintMetadataFault struct {
+	store.Engine
+	fail atomic.Bool
+}
+
+func (f *constraintMetadataFault) TableState(ctx context.Context, ns, table string, auth []store.AuthBinding) (*schema.TableSchema, store.Incarnation, error) {
+	if f.fail.Swap(false) {
+		return nil, store.Incarnation{}, derr.New(derr.StorageUnavailable, "synthetic metadata unavailable")
+	}
+	return f.Engine.TableState(ctx, ns, table, auth)
+}
+
+func TestConstraintMetadataFailuresNeverSkipReadGates(t *testing.T) {
+	for _, tc := range []struct{ op, body string }{
+		{"insert", `{"namespace":"acme","table":"tasks","records":[{"project_id":1,"slug":"blocked"}]}`},
+		{"migrate", `{"namespace":"acme","table":"tasks","changes":[{"op":"drop_constraint","name":"project_ref"}]}`},
+		{"migrate", `{"namespace":"acme","table":"projects","changes":[{"op":"set_row_access","value":true}]}`},
+		{"drop_table", `{"namespace":"acme","table":"projects","confirm":"projects"}`},
+	} {
+		h := constraintAuthTables(t)
+		grantTo(t, h, "principal", "writer", "acme", "tasks", "create", "schema", "admin")
+		grantTo(t, h, "principal", "writer", "acme", "projects", "schema", "admin", "read")
+		fault := &constraintMetadataFault{Engine: h.st}
+		h.st = fault
+		h.restart()
+		fault.fail.Store(true)
+		res, out := h.asIdentity(t, "writer", "", tc.op, tc.body)
+		if res.StatusCode != http.StatusServiceUnavailable || errCode(out) != "storage_unavailable" {
+			t.Errorf("%s must stop when its policy cannot be read: %d %v", tc.op, res.StatusCode, out)
+		}
+		desc := h.mustHTTP("describe_table", map[string]any{"namespace": "acme", "table": "tasks"})["table"].(map[string]any)
+		if cs, _ := desc["constraints"].([]any); len(cs) != 2 {
+			t.Errorf("a policy lookup failure let a schema change through: %v", desc)
+		}
+		rows := h.mustHTTP("read_rows", map[string]any{"namespace": "acme", "table": "tasks"})["rows"].([]any)
+		if len(rows) != 0 {
+			t.Errorf("a policy lookup failure let a write through: %v", rows)
+		}
 	}
 }
