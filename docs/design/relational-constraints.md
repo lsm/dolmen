@@ -74,7 +74,7 @@ do not relabel rows or relax these rules. NULL-owner children therefore cannot b
 a principal-owned parent's deletion; they do block their unowned parent under
 RESTRICT. Adding constraints rejects legacy rows violating these rules atomically.
 
-Under `auth: on`, authorization precedes existence and data checks. Every `delete` and `drop_table`
+Under `auth: on`, authorization precedes existence and data checks. Every `delete`, `drop_table` and `migrate set_row_access`
 on a table with `accept_references: true` requires namespace-wide `read`, whether
 or not it has incoming references, matching rows, or a foreign-key violation. Check
 this stable, caller-targeted schema policy before looking up referencing tables.

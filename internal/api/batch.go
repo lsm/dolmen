@@ -347,6 +347,9 @@ func (s *Server) authorizeBatch(ctx context.Context, ns string, writes []store.B
 		if err := s.authorizeVerbsOn(ctx, string(w.Kind), nil, batchTarget(ns, w.Table)); err != nil {
 			return indexed(i, err)
 		}
+		if err := s.authorizeConstrainedWrite(ctx, string(w.Kind), normNS(ns), normTable(w.Table)); err != nil {
+			return indexed(i, err)
+		}
 	}
 	return nil
 }

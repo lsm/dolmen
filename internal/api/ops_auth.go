@@ -68,9 +68,6 @@ func withRowAccessInput(def OpDef) OpDef {
 	for k, v := range props {
 		nextProps[k] = v
 	}
-	for _, refused := range []string{"constraints", "accept_references", "relation"} {
-		delete(nextProps, refused)
-	}
 	nextProps["row_access"] = map[string]any{
 		"type":        "string",
 		"enum":        []string{schema.RowAccessOwn},
