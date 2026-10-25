@@ -121,12 +121,12 @@ func graphEndpoint(sc *schema.TableSchema, field string) (string, error) {
 			continue
 		}
 		if table != "" && table != c.References.Table {
-			return "", invalidf("relation endpoint has ambiguous foreign keys; use one referenced table per endpoint")
+			return "", invalidf("relation table %q field %q has ambiguous foreign keys; use one referenced table per endpoint", sc.Name, field)
 		}
 		table = c.References.Table
 	}
 	if table == "" {
-		return "", invalidf("relation endpoint has no foreign key; declare a referenced table for each endpoint")
+		return "", invalidf("relation table %q field %q has no foreign key; declare a referenced table for each endpoint", sc.Name, field)
 	}
 	return table, nil
 }

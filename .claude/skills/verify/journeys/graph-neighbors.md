@@ -22,10 +22,11 @@ go test -race ./internal/store -run '^TestGraphSQLite'
 CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-sqlite
 ```
 
-Expect six PASS lines: a held read snapshot excludes a concurrent commit while a
+Expect seven PASS lines: a held read snapshot excludes a concurrent commit while a
 new one sees it; owner/table scope filtering; honest candidate truncation; indexed
 SEARCH plans in both directions; ordinary update maintenance; and reopen/rebuild
-with all owners' authoritative rows retained. Tests also cover denied endpoints,
+with all owners' authoritative rows retained; and a located endpoint diagnostic
+without revealing a denied relation table. Tests also cover denied endpoints,
 namespace-read side effects, canceled/failed opens and ambiguous role refusal.
 This proves the actual SQLite adapter, not live grants or public neighbors routing.
 

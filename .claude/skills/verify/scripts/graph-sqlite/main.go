@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -144,4 +145,21 @@ func main() {
 	must(err)
 	expect(reflect.DeepEqual(records.Rows, retained.Rows), "index rebuild changed another owner’s rows")
 	fmt.Println("PASS reopen rebuilds missing derived indexes without changing authoritative rows")
+	_, err = reopened.CreateTable(ctx, "verify", "other_nodes", []schema.Field{{Name: "label", Type: schema.String}}, store.TableOpts{RowAccess: "own", AcceptReferences: true}, [16]byte{})
+	must(err)
+	ambiguous := append(append([]schema.Constraint(nil), constraints...), schema.Constraint{Name: "extra_src", Kind: schema.ConstraintForeignKey, Field: "src", References: &schema.ConstraintReference{Table: "other_nodes", Field: "id"}})
+	_, err = reopened.CreateTable(ctx, "verify", "bad_links", fields, store.TableOpts{RowAccess: "own", Constraints: ambiguous, Relation: &schema.Relation{Source: "src", Target: "dst", Type: "kind"}}, [16]byte{})
+	must(err)
+	_, err = graph.Neighbors(ctx, reopened.GraphIndex(access), "verify", query(1))
+	expect(errors.Is(err, store.ErrInvalid) && strings.Contains(err.Error(), `table "bad_links" field "src"`) && !strings.Contains(err.Error(), "other_nodes"), "endpoint diagnostic lacks safe table/field location")
+	hiddenBad := reopened.GraphIndex(func(ctx context.Context, sc *schema.TableSchema) (*store.RowScope, error) {
+		if sc.Name == "bad_links" {
+			return &store.RowScope{Empty: true}, nil
+		}
+		return access(ctx, sc)
+	})
+	hiddenResult, err := graph.Neighbors(ctx, hiddenBad, "verify", query(1))
+	must(err)
+	expect(reflect.DeepEqual(before, hiddenResult), "denied relation table leaked its diagnostic")
+	fmt.Println("PASS endpoint diagnostic names the authorized relation/field; denied tables stay hidden")
 }
