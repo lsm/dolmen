@@ -95,8 +95,8 @@ func TestNeighborsGrantAndOwnerVisibility(t *testing.T) {
 			for _, e := range []struct {
 				who string
 				dst int
-			}{{"alice", 1}, {"alice", 2}, {"bob", 1}} {
-				h.mustHTTPAs(t, ids[e.who], "relate", map[string]any{"namespace": "acme", "table": "links", "source": 1, "target": e.dst, "type": "knows"})
+			}{{"alice", 1}, {"bob", 2}} {
+				h.mustHTTPAs(t, ids[e.who], "relate", map[string]any{"namespace": "acme", "table": "links", "source": e.dst, "target": e.dst, "type": "knows"})
 			}
 			h.mustHTTP("revoke", map[string]any{"subject": map[string]any{"type": "principal", "id": "alice"}, "object": map[string]any{"namespace": "acme"}, "verbs": []string{"read", "create"}})
 			body := map[string]any{"namespace": "acme", "node": map[string]any{"table": "nodes", "id": 1}}
@@ -114,6 +114,16 @@ func TestNeighborsGrantAndOwnerVisibility(t *testing.T) {
 			out, code = neighborsCall(t, h, transport, ids["alice"], body)
 			if code != "" || len(out["nodes"].([]any)) != 0 || len(out["edges"].([]any)) != 0 {
 				t.Fatalf("hidden seed: %v %s", out, code)
+			}
+			grantTo(t, h, "principal", "alice", "acme", "nodes", "read")
+			out, code = neighborsCall(t, h, transport, ids["alice"], body)
+			if code != "" || len(out["nodes"].([]any)) != 1 || len(out["edges"].([]any)) != 0 {
+				t.Fatalf("visible seed but hidden edge owner: %v %s", out, code)
+			}
+			grantTo(t, h, "principal", "alice", "acme", "links", "read")
+			out, code = neighborsCall(t, h, transport, ids["alice"], body)
+			if code != "" || len(out["edges"].([]any)) != 1 {
+				t.Fatalf("table-wide read: %v %s", out, code)
 			}
 			if _, code = neighborsCall(t, h, transport, ids["outsider"], body); code != "not_found" {
 				t.Fatalf("ungranted namespace: %s", code)
