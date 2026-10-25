@@ -781,3 +781,22 @@ func TestTheSkillsSayHowFileLinksEnd(t *testing.T) {
 		}
 	}
 }
+
+func TestConstraintGuidanceExplainsPortableKeysAndRepair(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "postgresql", "duckdb"} {
+		for name, rules := range map[string][]string{
+			"dolmen-admin": {"`1` equals `1.0`", "timestamps as stored", "no cascades", "stop them before you add one"},
+			"dolmen":       {"Repair the write rather than retrying it", "including the rest of a `batch`"},
+		} {
+			out, err := Render(name, Context{BaseURL: "http://h", MCPURL: "http://h/mcp", Version: "v", NamespaceHint: DefaultNamespaceHint, Dialect: dialect})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, rule := range rules {
+				if !strings.Contains(string(out), rule) {
+					t.Errorf("%s on %s must teach %q", name, dialect, rule)
+				}
+			}
+		}
+	}
+}
