@@ -102,14 +102,27 @@ func TestDeclarationsAreAdvertisedOnlyWhileAuthIsOff(t *testing.T) {
 	}
 }
 
-func TestUndeclaringEnginesNameTheEngineAsTheGap(t *testing.T) {
-	if testEngine(t) != store.EngineLakehouse {
-		t.Skip("only lakehouse still keeps no declarations")
+func TestNonSQLiteRelationsStayRefusedAfterConstraintActivation(t *testing.T) {
+	if testEngine(t) == store.EngineSQLite {
+		t.Skip("SQLite supports relations")
 	}
 	h := newHarness(t)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
-	code, out := h.httpCall("create_table", map[string]any{"namespace": "app", "table": "nodes", "accept_references": true, "fields": []map[string]any{{"name": "label", "type": "string"}}})
-	if code != http.StatusBadRequest || !strings.Contains(errMessage(out), "storage engine") {
-		t.Fatalf("%s: %d %v, want a refusal naming the storage engine", testEngine(t), code, out)
+	out := h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "nodes", "accept_references": true, "fields": []map[string]any{{"name": "label", "type": "string"}}, "constraints": []map[string]any{{"name": "label_key", "kind": "unique", "fields": []string{"label"}}}})
+	sc := out["table"].(map[string]any)
+	if sc["accept_references"] != true || len(sc["constraints"].([]any)) != 1 {
+		t.Fatalf("constraint declaration lost: %v", out)
+	}
+	body := relationTableBody("links")
+	code, out := h.httpCall("create_table", body)
+	message := errMessage(out)
+	if code != http.StatusBadRequest || errCode(out) != "invalid_request" || !strings.Contains(message, "relation") || !strings.Contains(message, "SQLite") {
+		t.Fatalf("%s relation refusal: %d %v", testEngine(t), code, out)
+	}
+	if env := h.mcpCall("create_table", body).toolError(); env == nil || env["code"] != "invalid_request" || env["message"] != message {
+		t.Fatalf("MCP relation refusal: %v", env)
+	}
+	if code, out := h.httpCall("describe_table", map[string]any{"namespace": "app", "table": "links"}); code != http.StatusNotFound {
+		t.Fatalf("refused relation created a table: %d %v", code, out)
 	}
 }
