@@ -1,7 +1,7 @@
 # Graph read core
 
-Internal build rung for #737. Public Go/HTTP/MCP operations and the SQLite adapter
-follow separately; this package does not enable a user-facing operation yet.
+Internal read core for #737. `internal/store` supplies the SQLite adapter; public
+Go/HTTP/MCP operations follow separately. There is no user-facing neighbors route yet.
 
 `Index.Snapshot` opens one namespace's consistent, read-your-writes view. It owns
 any storage pin/transaction until `Close`. `Visible` must apply that request's
@@ -34,3 +34,20 @@ adapter supplies defaults; this build rung does not settle wire defaults.
 Contract tests use controlled synthetic views. They prove the core's decisions,
 not SQLite consistency/indexing or public transport behavior; those proofs belong
 to the subsequent adapter and wire rungs.
+
+## SQLite adapter
+
+`internal/store.Store.GraphIndex` supplies the default table-backed implementation.
+The access callback returns a request-owned immutable RowScope for each snapshot
+schema, with Empty for a denied table and nil for trusted unrestricted access.
+It must not change schema metadata or call back into storage to resolve a different
+schema snapshot. Public transport admission and grants wiring follow separately.
+
+A first read prepares missing forward/reverse indexes under its work deadline,
+then opens a read-only transaction and resolves catalog/row scopes inside that view.
+Steady-state reads do not acquire the writer when indexes already exist. Indexes
+are derived from relation fields; ordinary table transactions maintain them, and
+missing indexes rebuild without copying/deleting authoritative rows. Ambiguous
+endpoint foreign-key targets are refused by the new reader rather than guessed;
+existing constraint declaration rules are unchanged. Candidate pages retain the
+existing read-byte bound, besides the graph's row and elapsed bounds.
