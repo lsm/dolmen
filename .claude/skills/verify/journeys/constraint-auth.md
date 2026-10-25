@@ -14,8 +14,8 @@ python3 "$S/constraint-auth.py" "$W"
 
 Expect five `PASS` lines. Through HTTP and MCP, writes require read on both
 constraint endpoints; a table-wide child read alone cannot replace parent read.
-Deleting from an opted-in parent has the identical namespace-read gate with zero
-or hidden incoming references. After that grant, RESTRICT still blocks deletion
+Deleting from an opted-in parent and changing its `row_access` each have an
+identical namespace-read gate with zero or hidden incoming references. After that grant, RESTRICT still blocks deletion
 of a referenced parent. Constraint migration planning requires all affected table
 reads. The conformance tests additionally cover standing own-row reads, wider
 mutations, imports, relation writes, batches and authenticated tool schemas.

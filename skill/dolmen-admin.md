@@ -973,8 +973,8 @@ constrained writes need `read` on each consulted table, including a foreign key'
 `row_access: own` tables, a standing own-row read (`read` or a data verb) on each endpoint is enough
 for own-row writes; a table-wide mutation needs table-wide read on every affected endpoint.
 Declaring or dropping a constraint requires `schema` plus `read` on the affected tables.
-Creating or changing `accept_references`, deleting from an opted-in table, and dropping one need
-namespace-wide `read`, even when no table references it. This stable rule does not reveal hidden
+Creating or changing `accept_references`, deleting from an opted-in table, dropping one, and
+changing its `row_access` need namespace-wide `read`, even when no table references it. This stable rule does not reveal hidden
 incoming references. The other operation permissions still apply.
 
 ### Id, `created_at`, and stability

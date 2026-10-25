@@ -63,13 +63,17 @@ body['records'][0]['slug'] = 'mcp'
 call('insert', body, 'writer', mcp=True)
 print('PASS HTTP/MCP writes require both endpoint reads, then deliver')
 messages = []
+domain_messages = []
 for table in ('parents', 'spare'):
     grant('remover', table, 'delete', 'read', 'schema', 'admin')
     for mcp in (False, True):
         refused = call('delete', {'namespace': ns, 'table': table, 'filter': 'id = 1'}, 'remover', 'forbidden', mcp)
         messages.append(refused['message'])
+        refused = call('migrate', {'namespace': ns, 'table': table, 'changes': [{'op': 'set_row_access', 'value': True}]}, 'remover', 'forbidden', mcp)
+        domain_messages.append(refused['message'])
 assert len(set(messages)) == 1, messages
-print('PASS identical parent-delete gate with hidden and zero incoming references')
+assert len(set(domain_messages)) == 1, domain_messages
+print('PASS identical delete/row-access gates with hidden and zero incoming references')
 grant('remover', '', 'read')
 call('delete', {'namespace': ns, 'table': 'parents', 'filter': 'id = 1'}, 'remover', 'conflict')
 call('delete', {'namespace': ns, 'table': 'spare', 'filter': 'id = 1'}, 'remover')

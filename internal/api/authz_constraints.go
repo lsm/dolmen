@@ -38,6 +38,12 @@ func (s *Server) authorizeConstraints(ctx context.Context, op string, body []byt
 				if err := s.requireRead(ctx, id, auth.Object{Namespace: ns}, parentReadMessage, "changing accept_references"); err != nil {
 					return err
 				}
+			case schema.OpSetRowAccess:
+				if sc := s.declaredSchema(ctx, ns, table); sc != nil && sc.AcceptReferences {
+					if err := s.requireRead(ctx, id, auth.Object{Namespace: ns}, parentReadMessage, "changing row_access"); err != nil {
+						return err
+					}
+				}
 			case schema.OpAddConstraint:
 				if c.Constraint != nil {
 					if err := s.requireConstraintReads(ctx, id, ns, table, []schema.Constraint{*c.Constraint}, "schema"); err != nil {
