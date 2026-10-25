@@ -484,11 +484,11 @@ func (s *Store) Migrate(ctx context.Context, ns, name string, changes []schema.C
 				retry = true
 				return nil
 			}
-			result, err = s.applyMigration(ctx, n, ns, state, changes, plan, tx, work, vectors, constant)
-			if err != nil {
+			if err := stampConstraintFormat(ctx, n, plan.Table); err != nil {
 				return err
 			}
-			return stampConstraintFormat(ctx, n, plan.Table)
+			result, err = s.applyMigration(ctx, n, ns, state, changes, plan, tx, work, vectors, constant)
+			return err
 		})
 		if err != nil {
 			return nil, err

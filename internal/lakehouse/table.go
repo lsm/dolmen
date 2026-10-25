@@ -176,14 +176,14 @@ func (s *Store) CreateTable(ctx context.Context, ns, name string, fields []schem
 			return err
 		}
 		directory := filepath.Join(n.dataDir, name+"-"+uuid.NewString())
+		if err := stampConstraintFormat(ctx, n, sc); err != nil {
+			return err
+		}
 		native, err := n.catalog.CreateTable(ctx, tableIdentifier(ns, name), nativeSchema(sc), catalog.WithLocation(fileLocation(directory)), catalog.WithProperties(iceberg.Properties{"format-version": "2", table.ManifestMergeEnabledKey: "true", table.ManifestMinMergeCountKey: "8", schemaProperty: string(raw), generationProperty: strconv.FormatInt(gen, 10), migrationsProperty: "[]"}))
 		if err != nil {
 			return err
 		}
-		if err := s.syncMetadata(native, n); err != nil {
-			return err
-		}
-		return stampConstraintFormat(ctx, n, sc)
+		return s.syncMetadata(native, n)
 	})
 	if err != nil {
 		return nil, err
