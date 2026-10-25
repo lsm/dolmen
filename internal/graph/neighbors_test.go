@@ -173,3 +173,27 @@ func TestNeighborsRejectsInvalidInputBeforeOpeningSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestNeighborsKeepsDistinctTablesAndDoesNotMutateSnapshot(t *testing.T) {
+	q := query()
+	q.Node = Ref{"people", 1}
+	v := &testView{edges: []Edge{
+		{Ref: Ref{"z_links", 1}, Source: q.Node, Target: Ref{"docs", 2}, Type: "k"},
+		{Ref: Ref{"a_links", 1}, Source: q.Node, Target: Ref{"docs", 1}, Type: "k"},
+	}}
+	original := append([]Edge(nil), v.edges...)
+	got, err := Neighbors(t.Context(), &testIndex{view: v}, "demo", q)
+	want := []Ref{{"docs", 1}, {"docs", 2}, {"people", 1}}
+	if err != nil || !reflect.DeepEqual(got.Nodes, want) || len(got.Edges) != 2 || got.Edges[0].Ref.Table != "a_links" {
+		t.Fatalf("references: %+v %v", got, err)
+	}
+	if !reflect.DeepEqual(v.edges, original) {
+		t.Fatal("query mutated the snapshot's candidate slice")
+	}
+	q.Limits.Nodes = 1
+	v = &testView{edges: []Edge{{Ref: Ref{"links", 1}, Source: q.Node, Target: q.Node, Type: "loop"}}}
+	got, err = Neighbors(t.Context(), &testIndex{view: v}, "demo", q)
+	if err != nil || got.Truncated || len(got.Nodes) != 1 || len(got.Edges) != 1 {
+		t.Fatalf("self-loop budget: %+v %v", got, err)
+	}
+}
