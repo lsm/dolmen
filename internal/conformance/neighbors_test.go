@@ -166,3 +166,15 @@ func TestNeighborsHiddenEndpointTable(t *testing.T) {
 		})
 	}
 }
+
+func TestNeighborsRequiresSQLite(t *testing.T) {
+	if testEngine(t) == "sqlite" {
+		t.Skip("other-engine refusal proof")
+	}
+	h := newHarness(t)
+	for _, transport := range []string{"http", "mcp"} {
+		if _, code := neighborsCall(t, h, transport, identity{}, map[string]any{"namespace": "missing", "node": map[string]any{"table": "nodes", "id": 1}}); code != "invalid_request" {
+			t.Fatalf("%s without a graph adapter: %s", transport, code)
+		}
+	}
+}

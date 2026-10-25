@@ -144,13 +144,15 @@ func relationParitySteps() []parityStep {
 		{"insert_nodes", "insert", map[string]any{"namespace": ns, "table": "nodes", "records": []map[string]any{{"label": "n1"}, {"label": "n2"}}}, false},
 		{"relate", "relate", map[string]any{"namespace": ns, "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"weight": 0.5}, "idempotency_key": "edge-1"}, false},
 		{"relate_replay", "relate", map[string]any{"namespace": ns, "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"weight": 0.5}, "idempotency_key": "edge-1"}, false},
+		{"neighbors", "neighbors", map[string]any{"namespace": ns, "node": map[string]any{"table": "nodes", "id": 1}}, false},
 		{"drop_relation", "drop_table", map[string]any{"namespace": ns, "table": "links", "confirm": "links"}, false},
 	}
 }
 
 var parityPinnedElsewhere = map[string]string{
-	"file_url": "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
-	"relate":   "TestRelateInsertsOneIdempotentEdge on engines that cannot declare relation tables",
+	"file_url":  "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
+	"neighbors": "TestNeighborsRequiresSQLite on engines without a graph adapter",
+	"relate":    "TestRelateInsertsOneIdempotentEdge on engines that cannot declare relation tables",
 }
 
 func TestTransportParityAllOperations(t *testing.T) {
