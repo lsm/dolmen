@@ -187,8 +187,8 @@ func TestGraphSQLiteRetainsDataAcrossReopenAndRefusesAmbiguousRoles(t *testing.T
 	if _, err := reopened.CreateTable(ctx, "ns", "ambiguous", relationFields(), opts, [16]byte{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := graph.Neighbors(ctx, reopened.GraphIndex(nil), "ns", graphQuery("alpha", 1)); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("ambiguous endpoint silently selected: %v", err)
+	if _, err := graph.Neighbors(ctx, reopened.GraphIndex(nil), "ns", graphQuery("alpha", 1)); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `table "ambiguous" field "src"`) {
+		t.Fatalf("ambiguous endpoint must identify its declaration: %v", err)
 	}
 }
 
@@ -257,5 +257,22 @@ func TestGraphSQLiteIndexNamesDoNotCollideAcrossTableFieldBoundaries(t *testing.
 		if !strings.Contains(plan, "SEARCH") || !strings.Contains(plan, "INDEX") {
 			t.Fatalf("%s.%s lost its index to a naming collision: %s", spec.table, spec.field, plan)
 		}
+	}
+}
+
+func TestGraphSQLiteMissingEndpointErrorLocatesLegacyDeclaration(t *testing.T) {
+	s := seedGraph(t)
+	n, err := s.ns("ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = n.rw.ExecContext(t.Context(), `UPDATE _dolmen_tables SET schema_json=json_set(schema_json,'$.constraints',json('[]')) WHERE name='links'`)
+	n.unpin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = graph.Neighbors(t.Context(), s.GraphIndex(nil), "ns", graphQuery("alpha", 1))
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `table "links" field "src"`) || !strings.Contains(err.Error(), "no foreign key") {
+		t.Fatalf("missing endpoint must identify its declaration: %v", err)
 	}
 }
