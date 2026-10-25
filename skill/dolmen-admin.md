@@ -1073,6 +1073,31 @@ itself is shared — so copy the exact shape per op:
   {"op": "set_file_constraints", "name": "recording", "max_bytes": 52428800, "media_types": ["audio/*"]}
   ```
 
+- `add_constraint` — a `constraint` object, with the same unique or foreign-key declaration
+  shape as `create_table`. Existing duplicates or orphans produce `conflict`, including in a dry run:
+
+  ```json
+  {"op": "add_constraint", "constraint": {"name": "slug_key", "kind": "unique", "fields": ["slug"]}}
+  ```
+
+- `drop_constraint` — the constraint's `name`. Remove a foreign key before dropping a field it
+  names or a table it references. A foreign key used by a relation cannot be dropped:
+
+  ```json
+  {"op": "drop_constraint", "name": "slug_key"}
+  ```
+
+- `set_accept_references` — an explicit boolean `value`, opting the table in or out as a foreign-key
+  target. Opting out is refused while any foreign key still references it:
+
+  ```json
+  {"op": "set_accept_references", "value": true}
+  ```
+
+Each of these three constraint operations must be the only entry in `changes`. They work on SQLite,
+PostgreSQL and lakehouse with authentication off; they are refused with `-auth on` until the
+constraint-aware authorization gates are available.
+
 Three top-level keys complete the request:
 
 - `expected_version` — the schema version from `describe_table` that the changes were planned
@@ -1187,7 +1212,8 @@ describe_table(namespace="research", table="findings")
     insert(namespace="research", table="findings", records=[{...}])
   → exists but wrong shape:
     use migrate for the supported changes (add_field/rename_field/drop_field/set_fulltext/
-    set_vectorize/set_enum/set_shape) — do not create a v2 table. add_field with a `default` can add a required
+    set_vectorize/set_enum/set_shape/set_file_constraints/add_constraint/drop_constraint/
+    set_accept_references) — do not create a v2 table. add_field with a `default` can add a required
     field to a populated table (backfilled as NOT NULL DEFAULT). If the mismatch is outside those
     operations (e.g., changing a field type, or adding a required field with no suitable default),
     stop and ask the user before rebuilding or backfilling.

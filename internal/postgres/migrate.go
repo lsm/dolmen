@@ -557,9 +557,6 @@ func (s *Store) planMigration(ctx context.Context, tx pgx.Tx, n namespace, state
 			f.Shape = shape
 			plan.Operations = append(plan.Operations, store.ShapeOperation(ch.Name, shape))
 		case schema.OpAddConstraint, schema.OpDropConstraint, schema.OpSetAcceptReferences:
-			if len(changes) != 1 {
-				return nil, invalidf("%s must run in its own migrate call", ch.Op)
-			}
 			if err := store.PlanConstraintChange(ctx, cur, ch, func() ([]string, error) { return s.referencing(ctx, tx, n, old.Name) }); err != nil {
 				return nil, err
 			}

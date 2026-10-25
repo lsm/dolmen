@@ -9,23 +9,9 @@ import (
 	"github.com/lsm/dolmen/internal/schema"
 )
 
-func RefuseConstraintOptions(opts TableOpts) error {
-	if len(opts.Constraints) > 0 || opts.AcceptReferences {
-		return fmt.Errorf("%w: constraints and accept_references are not available on this storage engine yet; omit them, or use a SQLite-backed server", ErrInvalid)
-	}
-	return nil
-}
-
 func RefuseRelationOptions(opts TableOpts) error {
 	if opts.Relation != nil {
 		return fmt.Errorf("%w: relation tables are available on the SQLite engine only so far; omit relation on this engine", ErrInvalid)
-	}
-	return nil
-}
-
-func RefuseUnenforcedConstraints(sc *schema.TableSchema) error {
-	if len(sc.Constraints) > 0 || sc.AcceptReferences || sc.Relation != nil {
-		return fmt.Errorf("%w: %w: this table requires constraint enforcement; upgrade dolmen to a binary that enforces constraints before using this table", ErrInvalid, ErrCatalogTooNew)
 	}
 	return nil
 }
@@ -120,6 +106,9 @@ func RefuseMixedConstraintChanges(changes []schema.Change) error {
 	}
 	if constraintOp != "" && fieldOp != "" {
 		return invalidf("%s cannot share a migration with %s; apply the field change first, then run %s in its own migrate call", constraintOp, fieldOp, constraintOp)
+	}
+	if constraintOp != "" && len(changes) != 1 {
+		return invalidf("%s must run in its own migrate call", constraintOp)
 	}
 	return nil
 }

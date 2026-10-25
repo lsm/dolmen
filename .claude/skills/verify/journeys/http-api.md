@@ -10,7 +10,9 @@ $S/http-smoke.sh "$W"
 $S/stop.sh "$W"
 ```
 
-The smoke covers `create_table`, `insert`, `read_rows`, `search_fulltext`,
+The smoke covers constraint migrations (duplicate conflict, `add_constraint`, enforcement,
+`set_accept_references`, refused combined constraint changes, `drop_constraint` and the next write),
+`create_table`, `insert`, `read_rows`, `search_fulltext`,
 `search_vector` (caller-supplied vector, no model), `query`, a typed-coercion
 error (`invalid_request`), a `batch` compare-and-set with `expected_rows` (the claim, the
 stale retry's conflict and its rollback, a refused `null`), `import_records` (a source id
