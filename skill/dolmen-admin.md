@@ -952,19 +952,39 @@ match, before ranking.
 
 ### Constraints and relation tables
 
-`create_table` takes `constraints`, managed checks applied on every write, batches included:
+`create_table` takes `constraints` and `accept_references`, and `migrate` adds or removes them
+later. Every write path enforces them against the write's whole result, so a violation is a
+`conflict` naming the constraint and nothing is written. Create the referenced `projects` table
+with `accept_references: true` before this child declaration:
 
-- `{"name":"open_slug","kind":"unique","fields":["slug"],"where":"done = FALSE"}` takes 1 to 8 scalar
-  fields. The optional `where` limits it to the rows where the predicate is true, and a key with a
-  NULL never conflicts.
-- `{"name":"project_ref","kind":"foreign_key","field":"project_id","references":{"table":"projects","field":"id"}}`
-  makes a number field hold another row's `id` in the same namespace. The referenced table must be
-  created with `"accept_references": true`. Deleting a referenced row is a `conflict`, and dropping a
-  referenced table is refused until the declaring table is gone.
+```json
+{"namespace": "acme", "table": "tasks",
+ "fields": [{"name": "project_id", "type": "number"}, {"name": "slug", "type": "string"}, {"name": "done", "type": "boolean"}],
+ "constraints": [
+   {"name": "project_ref", "kind": "foreign_key", "field": "project_id", "references": {"table": "projects", "field": "id"}},
+   {"name": "open_slug", "kind": "unique", "fields": ["slug"], "where": "done = FALSE"}]}
+```
 
-A violation is a `conflict` that names the constraint, and nothing is written. A **relation table** holds
-graph edges: declare required `number` source and target fields, each with a `foreign_key`, plus a
-required `string` type field, then name the roles with
+- `unique` names one to eight `string`, `text`, `number`, `boolean` or `timestamp` fields. A row
+  takes part only when `where` is true; a key with a NULL never conflicts. Text compares exactly
+  (case-sensitive), numbers exactly (`1` equals `1.0`), and timestamps as stored, so the same
+  instant at two offsets is two keys. `where` allows comparisons, `IS [NOT] NULL`, `AND`, `OR`,
+  `NOT` and parentheses only.
+- `foreign_key` names one `number` field holding another table's `id` in the same namespace, or
+  its own table's. The referenced table must be created with `"accept_references": true` (or get
+  it with `set_accept_references`); NULL is allowed unless the field is required. Deleting a
+  referenced row is refused, so delete children first. There are no cascades.
+- On `row_access` tables a key is unique per owner, and both ends of a foreign key must be
+  `row_access` tables, the child pointing only at a parent with the same owner.
+- At most 32 constraints per table. While a constraint names a field, that field cannot be
+  renamed or dropped; while a table is referenced, it cannot be dropped; and `set_row_access` is
+  refused on either. Drop the constraint first. A foreign key used by a relation endpoint cannot
+  be dropped while that declaration remains; drop the relation table instead.
+- The first constrained table in a namespace (on PostgreSQL, in the catalog) keeps older dolmen
+  binaries out; stop them before you add one.
+
+A **relation table** holds graph edges: declare required `number` source and target fields, each
+with a `foreign_key`, plus a required `string` type field, then name the roles with
 `"relation":{"source":"src","target":"dst","type":"kind"}`. Its other fields are the edge's
 properties. `describe_table` returns `constraints`, `accept_references` and `relation` as declared.
 `constraints` and `accept_references` work on SQLite, PostgreSQL and lakehouse, and `relation` on
@@ -974,8 +994,8 @@ constrained writes need `read` on each consulted table, including a foreign key'
 for own-row writes; a table-wide mutation needs table-wide read on every affected endpoint.
 Declaring or dropping a constraint requires `schema` plus `read` on the affected tables.
 Creating or changing `accept_references`, deleting from an opted-in table, dropping one, and
-changing its `row_access` need namespace-wide `read`, even when no table references it. This stable rule does not reveal hidden
-incoming references. The other operation permissions still apply.
+changing its `row_access` need namespace-wide `read`, even when no table references it. This stable
+rule does not reveal hidden incoming references. The other operation permissions still apply.
 
 ### Id, `created_at`, and stability
 

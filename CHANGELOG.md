@@ -4,9 +4,13 @@
 
 - `create_table` takes `constraints` (unique keys, partial with `where`, and foreign keys to
   another table's `id`), `accept_references` and `relation` over HTTP and MCP, and
-  `describe_table` returns them. They are checked on every write. Constraints work on SQLite and
-  PostgreSQL and relation tables on SQLite so far. Under `-auth on`, declarations and constraint
-  migrations require `schema` plus `read` on affected tables; writes require the endpoint reads
+  `describe_table` returns them. They are checked on every write. Constraints work on SQLite,
+  PostgreSQL and lakehouse, and relation tables on SQLite so far. `migrate` adds `add_constraint`,
+  `drop_constraint` and `set_accept_references`, each as the only change in its call, with existing
+  duplicates or orphans refused even in a dry run. The Go library exposes declarations through
+  `CreateTableWithOptions`. Activating constraints raises the namespace's minimum catalog reader
+  (the shared catalog on PostgreSQL), so stop older binaries before activation. Under `-auth on`,
+  declarations and constraint migrations require `schema` plus `read` on affected tables; writes require the endpoint reads
   their checks consult (standing own-row reads suffice for own-row operations, wider reads for
   wider mutations). Reference-policy changes, deleting or dropping a reference-accepting parent,
   and changing its `row_access` require namespace-wide `read`, independent of incoming references
