@@ -39,7 +39,11 @@ func (s *Server) authorizeConstraints(ctx context.Context, op string, body []byt
 					return err
 				}
 			case schema.OpSetRowAccess:
-				if sc := s.declaredSchema(ctx, ns, table); sc != nil && sc.AcceptReferences {
+				sc, err := s.declaredSchema(ctx, ns, table)
+				if err != nil {
+					return err
+				}
+				if sc.AcceptReferences {
 					if err := s.requireRead(ctx, id, auth.Object{Namespace: ns}, parentReadMessage, "changing row_access"); err != nil {
 						return err
 					}
@@ -51,13 +55,21 @@ func (s *Server) authorizeConstraints(ctx context.Context, op string, body []byt
 					}
 				}
 			case schema.OpDropConstraint:
-				if err := s.requireConstraintReads(ctx, id, ns, table, s.declaredNamed(ctx, ns, table, c.Name), "schema"); err != nil {
+				constraints, err := s.declaredNamed(ctx, ns, table, c.Name)
+				if err != nil {
+					return err
+				}
+				if err := s.requireConstraintReads(ctx, id, ns, table, constraints, "schema"); err != nil {
 					return err
 				}
 			}
 		}
 	case "drop_table":
-		if sc := s.declaredSchema(ctx, ns, table); sc != nil && sc.AcceptReferences {
+		sc, err := s.declaredSchema(ctx, ns, table)
+		if err != nil {
+			return err
+		}
+		if sc.AcceptReferences {
 			return s.requireRead(ctx, id, auth.Object{Namespace: ns}, parentReadMessage, "drop_table")
 		}
 	case "insert", "import_records", "relate", "update", "upsert", "upsert_by_key", "delete":
@@ -71,9 +83,9 @@ func (s *Server) authorizeConstrainedWrite(ctx context.Context, op, ns, table st
 	if id.Principal == auth.AdminPrincipal || s.grants == nil {
 		return nil
 	}
-	sc := s.declaredSchema(ctx, ns, table)
-	if sc == nil {
-		return nil
+	sc, err := s.declaredSchema(ctx, ns, table)
+	if err != nil {
+		return err
 	}
 	if op == "delete" && sc.AcceptReferences {
 		if err := s.requireRead(ctx, id, auth.Object{Namespace: ns}, parentReadMessage, "delete"); err != nil {
@@ -137,26 +149,23 @@ func (s *Server) requireRead(ctx context.Context, id auth.Identity, obj auth.Obj
 	return nil
 }
 
-func (s *Server) declaredSchema(ctx context.Context, ns, table string) *schema.TableSchema {
-	if table == "" {
-		return nil
-	}
+func (s *Server) declaredSchema(ctx context.Context, ns, table string) (*schema.TableSchema, error) {
 	sc, _, err := s.eng.TableState(ctx, ns, table, nil)
-	if err != nil || len(sc.Constraints) == 0 && !sc.AcceptReferences {
-		return nil
+	if err != nil {
+		return nil, wrapStoreErr(err)
 	}
-	return sc
+	return sc, nil
 }
 
-func (s *Server) declaredNamed(ctx context.Context, ns, table, name string) []schema.Constraint {
-	sc := s.declaredSchema(ctx, ns, table)
-	if sc == nil {
-		return nil
+func (s *Server) declaredNamed(ctx context.Context, ns, table, name string) ([]schema.Constraint, error) {
+	sc, err := s.declaredSchema(ctx, ns, table)
+	if err != nil {
+		return nil, err
 	}
 	for _, c := range sc.Constraints {
 		if c.Name == name {
-			return []schema.Constraint{c}
+			return []schema.Constraint{c}, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
