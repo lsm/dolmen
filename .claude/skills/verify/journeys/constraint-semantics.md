@@ -17,7 +17,16 @@ racing duplicates producing one commit and seven named conflicts. Event comparis
 retain every stable field and omit only the opaque `cursor`, which the server mints
 anew on each read; an unchanged-read control pins that comparison.
 
-Run the five `constraint_semantics_test.go` contracts on SQLite, PostgreSQL and
-lakehouse using the other-backends journey. They also reopen the store and verify
-enforcement persists. With the native bundle, the public Go-library
+Use the other-backends journey to prepare PostgreSQL and the native lakehouse
+bundle, then run all five contracts explicitly on each engine:
+
+```bash
+PATTERN='^Test(UniqueKeysCompareTypedValuesExactly|PartialUniqueKeysFollowPredicateTransitions|AViolationRollsBackTheWholeWriteAndBatch|ConcurrentDuplicatesCommitExactlyOne|ConstraintsSurviveARestart)$'
+DOLMEN_ENGINE=sqlite go test -race -count=1 -v ./internal/conformance -run "$PATTERN"
+DOLMEN_ENGINE=postgres go test -race -count=1 -v ./internal/conformance -run "$PATTERN"
+DOLMEN_ENGINE=lakehouse go test -race -count=1 -v ./internal/conformance -run "$PATTERN"
+```
+
+They also reopen the store and verify enforcement persists. With the native bundle,
+the public Go-library
 `lakehouse-constraints.go` journey additionally checks a real library reopen.
