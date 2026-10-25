@@ -5,7 +5,12 @@
 - `create_table` takes `constraints` (unique keys, partial with `where`, and foreign keys to
   another table's `id`), `accept_references` and `relation` over HTTP and MCP, and
   `describe_table` returns them. They are checked on every write. Constraints work on SQLite and
-  PostgreSQL and relation tables on SQLite so far; all are refused under `-auth on` until the permission gates land (#701, #735).
+  PostgreSQL and relation tables on SQLite so far. Under `-auth on`, declarations and constraint
+  migrations require `schema` plus `read` on affected tables; writes require the endpoint reads
+  their checks consult (standing own-row reads suffice for own-row operations, wider reads for
+  wider mutations). Reference-policy changes, deleting or dropping a reference-accepting parent,
+  and changing its `row_access` require namespace-wide `read`, independent of incoming references
+  (#701, #735).
 - `relate` writes one directed graph edge into a relation table on HTTP, MCP and the Go facade
   (`Store.Relate`), taking `source`, `target`, `type` and optional `properties`, with the same
   `idempotency_key` replay as `insert`. (#736).
