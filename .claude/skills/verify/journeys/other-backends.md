@@ -17,7 +17,7 @@ written with the available Docker context:
 ```bash
 eval "$(.claude/skills/verify/scripts/pg.sh start)"
 go test -count=1 -v ./internal/postgres -run 'TestPostgres(ConstraintMigrations|AddConstraintDryRun|ConstraintChangesRunAlone|ForeignKeyDryRun|MigrationKeepsStoredRelation|AcceptReferencesRequiresValue)'
-DOLMEN_ENGINE=postgres go test -count=1 -v ./internal/conformance -run '^TestConstraintMigrationBackendIsEnforcedOnHTTPAndMCP$'
+DOLMEN_ENGINE=postgres go test -count=1 -v ./internal/conformance -run '^TestConstraintMigration(sOnBothTransports|BackendIsEnforcedOnHTTPAndMCP)$'
 go test -race -count=1 ./internal/postgres
 DOLMEN_ENGINE=postgres go test -race -count=1 ./internal/conformance
 DOLMEN_ENGINE=postgres go test -race -count=1 ./internal/blackbox
@@ -27,9 +27,9 @@ DOLMEN_ENGINE=postgres go test -race -count=1 ./internal/blackbox
 Expect existing duplicates and orphans to produce `conflict` during planning and
 execution, a feasible dry run to leave schema and reader versions unchanged,
 execution to recheck rows after a dry run, and HTTP/MCP writes to enforce the
-committed constraint until it is dropped. This slice uses engine migrations to
-prepare the schema; wire migration declarations are verified separately when
-that API slice lands.
+committed constraint until it is dropped. The wire journey adds and drops constraints
+and opts a table into references through HTTP/MCP, checks conflicts and reads the
+migration history. Each constraint operation runs alone.
 
 Lakehouse (CI job `lakehouse-foundation`): build the DuckDB sidecar bundle with
 `sidecar/duckdb/package.sh <platform> ci <out>`, unpack it, set
@@ -53,4 +53,5 @@ conflicts, RESTRICT on parent deletion, two rows and two constraints after reope
 and enforcement after reopen. It creates and removes its own synthetic data dir.
 The backend tests also cover migration dry-run conflicts/purity and revalidation;
 `TestConstraintMigrationBackendIsEnforcedOnHTTPAndMCP` covers both wire write
-transports after an engine migration.
+transports after an engine migration. Run `TestConstraintMigrationsOnBothTransports`
+with `DOLMEN_ENGINE=lakehouse` for wire migrations and their history.

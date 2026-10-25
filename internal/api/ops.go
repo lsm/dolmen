@@ -133,7 +133,7 @@ func changeOutSchema(desc string) map[string]any {
 		"type":        "object",
 		"description": desc,
 		"properties": map[string]any{
-			"op": prop("string", "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_shape | set_file_constraints"),
+			"op": prop("string", "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_shape | set_file_constraints | add_constraint | drop_constraint | set_accept_references"),
 			"field": map[string]any{
 				"type":                 "object",
 				"description":          "Field definition (add_field)",
@@ -160,12 +160,13 @@ func changeOutSchema(desc string) map[string]any {
 				},
 				"required": []string{"name"},
 			},
-			"from":      prop("string", "Current name (rename_field)"),
-			"to":        prop("string", "New name (rename_field)"),
-			"name":      prop("string", "Field name (drop_field, set_fulltext, set_vectorize, set_enum, set_shape)"),
-			"value":     prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
-			"shape":     prop("string", "The json field's new required shape (set_shape); empty removes the constraint"),
-			"max_bytes": prop("integer", "The file field's new largest file in bytes (set_file_constraints); 0 removes the limit"),
+			"from":       prop("string", "Current name (rename_field)"),
+			"to":         prop("string", "New name (rename_field)"),
+			"name":       prop("string", "Field name (drop_field, set_fulltext, set_vectorize, set_enum, set_shape), or the constraint name (drop_constraint)"),
+			"value":      prop("boolean", "Flag value (set_fulltext, set_vectorize, set_accept_references)"),
+			"constraint": constraintSchema("Constraint added (add_constraint)"),
+			"shape":      prop("string", "The json field's new required shape (set_shape); empty removes the constraint"),
+			"max_bytes":  prop("integer", "The file field's new largest file in bytes (set_file_constraints); 0 removes the limit"),
 			"media_types": map[string]any{
 				"type":        "array",
 				"description": "The file field's new accepted media types (set_file_constraints); an empty array removes the constraint",
@@ -268,14 +269,17 @@ const fileWriteHint = "A file field takes {\"part\": \"<form name>\"} only in a 
 	"enabled), {\"copy_from\": {\"table\", \"id\", \"field\"}} reuses a stored file, and null clears it."
 
 var migrateChangeKeys = map[string][]string{
-	schema.OpAddField:           {"op", "field", "default"},
-	schema.OpRenameField:        {"op", "from", "to"},
-	schema.OpDropField:          {"op", "name"},
-	schema.OpSetFulltext:        {"op", "name", "value"},
-	schema.OpSetVectorize:       {"op", "name", "value"},
-	schema.OpSetEnum:            {"op", "name", "enum"},
-	schema.OpSetShape:           {"op", "name", "shape"},
-	schema.OpSetFileConstraints: {"op", "name", "max_bytes", "media_types"},
+	schema.OpAddField:            {"op", "field", "default"},
+	schema.OpRenameField:         {"op", "from", "to"},
+	schema.OpDropField:           {"op", "name"},
+	schema.OpSetFulltext:         {"op", "name", "value"},
+	schema.OpSetVectorize:        {"op", "name", "value"},
+	schema.OpSetEnum:             {"op", "name", "enum"},
+	schema.OpSetShape:            {"op", "name", "shape"},
+	schema.OpSetFileConstraints:  {"op", "name", "max_bytes", "media_types"},
+	schema.OpAddConstraint:       {"op", "constraint"},
+	schema.OpDropConstraint:      {"op", "name"},
+	schema.OpSetAcceptReferences: {"op", "value"},
 }
 
 var migrateAuthChangeKeys = map[string][]string{
@@ -292,7 +296,7 @@ var migrateFieldDefKeys = map[string]bool{
 }
 
 func validateMigrateChanges(changes []map[string]any, authOn bool) error {
-	valid := "add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints"
+	valid := "add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, add_constraint, drop_constraint, set_accept_references"
 	if authOn {
 		valid += ", set_row_access"
 	}
@@ -303,6 +307,9 @@ func validateMigrateChanges(changes []map[string]any, authOn bool) error {
 			return badRequest("changes[%d]: op must be a non-empty string naming the change (%s)", i, valid)
 		}
 		keys, known := migrateChangeKeys[op]
+		if authOn && (op == schema.OpAddConstraint || op == schema.OpDropConstraint || op == schema.OpSetAcceptReferences) {
+			return badRequest("changes[%d]: %s is not available with -auth on yet", i, op)
+		}
 		if !known && authOn {
 			keys, known = migrateAuthChangeKeys[op]
 		}
@@ -2080,7 +2087,7 @@ var Ops = map[string]OpDef{
 		},
 	},
 	"migrate": {
-		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints. " +
+		Description: "Evolve a table schema: add_field, rename_field, drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints, add_constraint, drop_constraint, set_accept_references. " +
 			"Bumps the schema version and records the change. Adding fulltext rebuilds the search index; " +
 			"re-asserting set_fulltext ... = true on an already-indexed field also rebuilds it (the reindex path for " +
 			"tables created before stemming became the default); " +
@@ -2089,7 +2096,11 @@ var Ops = map[string]OpDef{
 			"when a row still stores a dropped value, naming the value and its row count. set_shape sets or clears a json field's " +
 			"required shape (object, array, array<string>, array<number>, array<boolean>, array<object>) and rejects when stored " +
 			"values do not fit it, naming how many rows and their ids. set_file_constraints changes a file field's max_bytes and media_types " +
-			"and rejects when stored files break the new constraints, naming how many rows and their ids. add_field accepts a default that is " +
+			"and rejects when stored files break the new constraints, naming how many rows and their ids. add_constraint adds a unique or foreign_key " +
+			"declaration (same shape as create_table's constraints) and rejects with a conflict when existing rows break it. Each constraint change must be the sole change in a migrate call. " +
+			"drop_constraint removes one by name; set_accept_references toggles whether other tables may " +
+			"reference this one and cannot be turned off while a foreign key still does. A field a constraint names cannot be renamed or dropped, nor a referenced table dropped, " +
+			"until the constraint is removed. add_field accepts a default that is " +
 			"coerced to the field's type and backfilled into existing rows; it is required for adding a " +
 			"required field to a populated table (the column then carries NOT NULL DEFAULT — dolmen inserts " +
 			"must still supply the field). For optional fields the default is a one-time backfill: later " +
@@ -2115,13 +2126,14 @@ var Ops = map[string]OpDef{
 						"properties": map[string]any{
 							"op": map[string]any{
 								"type":        "string",
-								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_shape | set_file_constraints",
-								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize", "set_enum", "set_shape", "set_file_constraints"},
+								"description": "add_field | rename_field | drop_field | set_fulltext | set_vectorize | set_enum | set_shape | set_file_constraints | add_constraint | drop_constraint | set_accept_references",
+								"enum":        []string{"add_field", "rename_field", "drop_field", "set_fulltext", "set_vectorize", "set_enum", "set_shape", "set_file_constraints", "add_constraint", "drop_constraint", "set_accept_references"},
 							},
-							"field": fieldItemSchema("Field definition for add_field (its backfill default is the change's default, not a field property)", false),
-							"from":  existingFieldNameProp("Current name (rename_field)"),
-							"to":    fieldNameProp("New name (rename_field)"),
-							"name":  existingFieldNameProp("Field name (drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints)"),
+							"constraint": constraintSchema("Constraint to add (add_constraint only)"),
+							"field":      fieldItemSchema("Field definition for add_field (its backfill default is the change's default, not a field property)", false),
+							"from":       existingFieldNameProp("Current name (rename_field)"),
+							"to":         fieldNameProp("New name (rename_field)"),
+							"name":       existingFieldNameProp("Field name (drop_field, set_fulltext, set_vectorize, set_enum, set_shape, set_file_constraints), or the constraint name (drop_constraint)"),
 							"max_bytes": map[string]any{
 								"type":        "integer",
 								"minimum":     0,
@@ -2133,7 +2145,7 @@ var Ops = map[string]OpDef{
 								"items":       map[string]any{"type": "string", "minLength": 3},
 								"uniqueItems": true,
 							},
-							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize)"),
+							"value": prop("boolean", "Flag value (set_fulltext, set_vectorize, set_accept_references)"),
 							"enum": map[string]any{
 								"type":        "array",
 								"description": "The field's complete new vocabulary (set_enum only) — not a delta; exact-match string values stored as written. An empty array removes the constraint. Values still stored by rows must all be kept, or the change is rejected naming them and their row counts",
@@ -2184,6 +2196,27 @@ var Ops = map[string]OpDef{
 								"then": map[string]any{"required": []string{"name", "shape"}},
 							},
 							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "add_constraint"}}},
+								"then": map[string]any{"required": []string{"constraint"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "drop_constraint"}}},
+								"then": map[string]any{"required": []string{"name"}},
+							},
+							map[string]any{
+								"if":   map[string]any{"properties": map[string]any{"op": map[string]any{"const": "set_accept_references"}}},
+								"then": map[string]any{"required": []string{"value"}},
+							},
+							map[string]any{
+								"if": map[string]any{
+									"properties": map[string]any{
+										"op": map[string]any{"not": map[string]any{"const": "add_constraint"}},
+									},
+									"required": []string{"op"},
+								},
+								"then": map[string]any{"not": map[string]any{"required": []string{"constraint"}}},
+							},
+							map[string]any{
 								"if": map[string]any{
 									"properties": map[string]any{
 										"op": map[string]any{"not": map[string]any{"const": "set_shape"}},
@@ -2204,7 +2237,7 @@ var Ops = map[string]OpDef{
 							map[string]any{
 								"if": map[string]any{
 									"properties": map[string]any{
-										"op": map[string]any{"not": map[string]any{"enum": []string{"set_fulltext", "set_vectorize"}}},
+										"op": map[string]any{"not": map[string]any{"enum": []string{"set_fulltext", "set_vectorize", "set_accept_references"}}},
 									},
 									"required": []string{"op"},
 								},

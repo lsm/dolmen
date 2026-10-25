@@ -129,3 +129,53 @@ func TestConstraintMigrationsOnBothTransports(t *testing.T) {
 		t.Fatalf("list_migrations must record the added constraint: %v", history)
 	}
 }
+
+func TestConstraintMigrationValidationLeavesSchemaUnchanged(t *testing.T) {
+	h := newHarness(t)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
+	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "notes", "fields": []map[string]any{{"name": "slug", "type": "string"}}})
+	for label, changes := range map[string][]any{
+		"missing constraint":     {map[string]any{"op": "add_constraint"}},
+		"unknown constraint key": {map[string]any{"op": "add_constraint", "constraint": map[string]any{"name": "slug_key", "kind": "unique", "fields": []string{"slug"}, "typo": true}}},
+		"missing name":           {map[string]any{"op": "drop_constraint"}},
+		"missing value":          {map[string]any{"op": "set_accept_references"}},
+		"null value":             {map[string]any{"op": "set_accept_references", "value": nil}},
+		"irrelevant key":         {map[string]any{"op": "drop_constraint", "name": "slug_key", "value": true}},
+		"mixed changes":          {map[string]any{"op": "set_accept_references", "value": true}, map[string]any{"op": "set_enum", "name": "slug", "enum": []string{"a"}}},
+	} {
+		body := map[string]any{"namespace": "app", "table": "notes", "changes": changes}
+		if code, out := h.httpCall("migrate", body); code != http.StatusBadRequest || errCode(out) != "invalid_request" {
+			t.Fatalf("http %s: %d %v", label, code, out)
+		}
+		if env := h.mcpCall("migrate", body).toolError(); env["code"] != "invalid_request" {
+			t.Fatalf("mcp %s: %v", label, env)
+		}
+	}
+	dry := map[string]any{"namespace": "app", "table": "notes", "dry_run": true, "changes": []any{map[string]any{"op": "add_constraint", "constraint": map[string]any{"name": "slug_key", "kind": "unique", "fields": []string{"slug"}}}}}
+	h.mustHTTP("migrate", dry)
+	h.mustMCP("migrate", dry)
+	desc := h.mustHTTP("describe_table", map[string]any{"namespace": "app", "table": "notes"})["table"].(map[string]any)
+	cs, _ := desc["constraints"].([]any)
+	if int64val(t, "version", desc["version"]) != 1 || desc["accept_references"] == true || len(cs) != 0 {
+		t.Fatalf("refusals or dry runs changed the schema: %v", desc)
+	}
+}
+
+func TestConstraintMigrationsStayRefusedWithAuthOn(t *testing.T) {
+	h := newHarnessMode(t, authAdminKey)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
+	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "notes", "fields": []map[string]any{{"name": "slug", "type": "string"}}})
+	for _, change := range []map[string]any{
+		{"op": "add_constraint", "constraint": map[string]any{"name": "slug_key", "kind": "unique", "fields": []string{"slug"}}},
+		{"op": "drop_constraint", "name": "slug_key"},
+		{"op": "set_accept_references", "value": true},
+	} {
+		body := map[string]any{"namespace": "app", "table": "notes", "changes": []any{change}}
+		if code, out := h.httpCall("migrate", body); code != http.StatusBadRequest || errCode(out) != "invalid_request" || !strings.Contains(errMessage(out), "-auth on") {
+			t.Fatalf("http %v: %d %v", change, code, out)
+		}
+		if env := h.mcpCall("migrate", body).toolError(); env["code"] != "invalid_request" || !strings.Contains(env["message"].(string), "-auth on") {
+			t.Fatalf("mcp %v: %v", change, env)
+		}
+	}
+}
