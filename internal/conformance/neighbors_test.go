@@ -77,7 +77,12 @@ func TestNeighborsGrantAndOwnerVisibility(t *testing.T) {
 	}
 	for _, transport := range []string{"http", "mcp"} {
 		t.Run(transport, func(t *testing.T) {
-			h := newHarnessMode(t, authGateway)
+			h := newHarnessMode(t, authAdminKey)
+			ids := map[string]identity{}
+			for _, p := range []string{"alice", "bob", "outsider"} {
+				_, key := mintKey(t, h, p, p)
+				ids[p] = identity{bearer: key}
+			}
 			h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
 			h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "nodes", "row_access": "own", "accept_references": true, "fields": []any{map[string]any{"name": "label", "type": "string"}}})
 			h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "links", "row_access": "own", "fields": []any{map[string]any{"name": "src", "type": "number", "required": true}, map[string]any{"name": "dst", "type": "number", "required": true}, map[string]any{"name": "kind", "type": "string", "required": true}}, "constraints": []any{map[string]any{"name": "src_ref", "kind": "foreign_key", "field": "src", "references": map[string]any{"table": "nodes", "field": "id"}}, map[string]any{"name": "dst_ref", "kind": "foreign_key", "field": "dst", "references": map[string]any{"table": "nodes", "field": "id"}}}, "relation": map[string]any{"source": "src", "target": "dst", "type": "kind"}})
@@ -85,32 +90,32 @@ func TestNeighborsGrantAndOwnerVisibility(t *testing.T) {
 				grantTo(t, h, "principal", principal, "acme", "", "read", "create")
 			}
 			for _, principal := range []string{"alice", "bob"} {
-				h.mustHTTPAs(t, identity{principal: principal}, "insert", map[string]any{"namespace": "acme", "table": "nodes", "records": []any{map[string]any{"label": principal}}})
+				h.mustHTTPAs(t, ids[principal], "insert", map[string]any{"namespace": "acme", "table": "nodes", "records": []any{map[string]any{"label": principal}}})
 			}
 			for _, e := range []struct {
 				who string
 				dst int
 			}{{"alice", 1}, {"alice", 2}, {"bob", 1}} {
-				h.mustHTTPAs(t, identity{principal: e.who}, "relate", map[string]any{"namespace": "acme", "table": "links", "source": 1, "target": e.dst, "type": "knows"})
+				h.mustHTTPAs(t, ids[e.who], "relate", map[string]any{"namespace": "acme", "table": "links", "source": 1, "target": e.dst, "type": "knows"})
 			}
 			h.mustHTTP("revoke", map[string]any{"subject": map[string]any{"type": "principal", "id": "alice"}, "object": map[string]any{"namespace": "acme"}, "verbs": []string{"read", "create"}})
 			body := map[string]any{"namespace": "acme", "node": map[string]any{"table": "nodes", "id": 1}}
 			grantTo(t, h, "principal", "alice", "acme", "nodes", "update")
-			out, code := neighborsCall(t, h, transport, identity{principal: "alice"}, body)
+			out, code := neighborsCall(t, h, transport, ids["alice"], body)
 			if code != "" || len(out["nodes"].([]any)) != 1 || len(out["edges"].([]any)) != 0 {
 				t.Fatalf("denied edge table: %v %s", out, code)
 			}
 			grantTo(t, h, "principal", "alice", "acme", "links", "update")
-			out, code = neighborsCall(t, h, transport, identity{principal: "alice"}, body)
+			out, code = neighborsCall(t, h, transport, ids["alice"], body)
 			if code != "" || len(out["edges"].([]any)) != 1 || len(out["nodes"].([]any)) != 1 {
 				t.Fatalf("owner scopes: %v %s", out, code)
 			}
 			body["node"] = map[string]any{"table": "nodes", "id": 2}
-			out, code = neighborsCall(t, h, transport, identity{principal: "alice"}, body)
+			out, code = neighborsCall(t, h, transport, ids["alice"], body)
 			if code != "" || len(out["nodes"].([]any)) != 0 || len(out["edges"].([]any)) != 0 {
 				t.Fatalf("hidden seed: %v %s", out, code)
 			}
-			if _, code = neighborsCall(t, h, transport, identity{principal: "outsider"}, body); code != "not_found" {
+			if _, code = neighborsCall(t, h, transport, ids["outsider"], body); code != "not_found" {
 				t.Fatalf("ungranted namespace: %s", code)
 			}
 		})
