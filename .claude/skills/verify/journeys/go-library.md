@@ -8,7 +8,7 @@ example builds against this checkout through `replace => ../..`:
 ```
 
 Expect exit 0, printed search results, and `declared relation table and related edge 1
-with 2 foreign keys` (one output line). The example uses only public types to opt a
+with 2 foreign keys`, then `neighbors returned 2 nodes and 1 edge: complete`. The example uses only public types to opt a
 parent into references, declare a relation through `CreateTableWithOptions`, call
 `Relate`, and read back its role fields/constraints. This is SQLite-only; the
 existing PostgreSQL/lakehouse refusal remains in force. For facade behavior, add the

@@ -17,7 +17,7 @@ The smoke covers constraint migrations (duplicate conflict, `add_constraint`, en
 error (`invalid_request`), a `batch` compare-and-set with `expected_rows` (the claim, the
 stale retry's conflict and its rollback, a refused `null`), `import_records` (a source id
 above 2^53, its `created_at` read back, replay, a differing-content `conflict`, and the next
-ordinary id above it), `relate` refusing a table that is not a relation table, declaring a relation table (`accept_references`, two `foreign_key` constraints and `relation` on `create_table`), a dangling edge refused as a conflict naming its constraint, then `relate` end to end: an edge, its idempotent replay, a missing endpoint refused, and deleting a referenced row refused, and `/v1/openapi.json`. Expect every line `PASS` and
+ordinary id above it), `relate` refusing a table that is not a relation table, declaring a relation table (`accept_references`, two `foreign_key` constraints and `relation` on `create_table`), a dangling edge refused as a conflict naming its constraint, then `neighbors` with visible references and explicit node truncation, and `relate` end to end: an edge, its idempotent replay, a missing endpoint refused, and deleting a referenced row refused, and `/v1/openapi.json`. Expect every line `PASS` and
 exit 0.
 
 Then exercise the operation you changed with `call.sh` and read the full

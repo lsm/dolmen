@@ -131,3 +131,37 @@ func TestNeighborsGrantAndOwnerVisibility(t *testing.T) {
 		})
 	}
 }
+
+func TestNeighborsHiddenEndpointTable(t *testing.T) {
+	if testEngine(t) != "sqlite" {
+		t.Skip("SQLite graph adapter")
+	}
+	for _, transport := range []string{"http", "mcp"} {
+		t.Run(transport, func(t *testing.T) {
+			h := newHarnessMode(t, authAdminKey)
+			_, key := mintKey(t, h, "reader", "reader")
+			id := identity{bearer: key}
+			h.mustHTTP("create_namespace", map[string]any{"namespace": "acme"})
+			for _, table := range []string{"nodes", "private_nodes"} {
+				h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": table, "accept_references": true, "fields": []any{map[string]any{"name": "label", "type": "string"}}})
+				h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": table, "records": []any{map[string]any{"label": "synthetic"}}})
+			}
+			h.mustHTTP("create_table", map[string]any{"namespace": "acme", "table": "links", "fields": []any{map[string]any{"name": "src", "type": "number", "required": true}, map[string]any{"name": "dst", "type": "number", "required": true}, map[string]any{"name": "kind", "type": "string", "required": true}}, "constraints": []any{map[string]any{"name": "src_ref", "kind": "foreign_key", "field": "src", "references": map[string]any{"table": "nodes", "field": "id"}}, map[string]any{"name": "dst_ref", "kind": "foreign_key", "field": "dst", "references": map[string]any{"table": "private_nodes", "field": "id"}}}, "relation": map[string]any{"source": "src", "target": "dst", "type": "kind"}})
+			h.mustHTTP("relate", map[string]any{"namespace": "acme", "table": "links", "source": 1, "target": 1, "type": "knows"})
+			for _, table := range []string{"nodes", "links"} {
+				grantTo(t, h, "principal", "reader", "acme", table, "read")
+			}
+			grantTo(t, h, "principal", "reader", "acme", "private_nodes", "update")
+			body := map[string]any{"namespace": "acme", "node": map[string]any{"table": "nodes", "id": 1}}
+			out, code := neighborsCall(t, h, transport, id, body)
+			if code != "" || len(out["nodes"].([]any)) != 1 || len(out["edges"].([]any)) != 0 {
+				t.Fatalf("unreadable plain endpoint: %v %s", out, code)
+			}
+			grantTo(t, h, "principal", "reader", "acme", "private_nodes", "read")
+			out, code = neighborsCall(t, h, transport, id, body)
+			if code != "" || len(out["nodes"].([]any)) != 2 || len(out["edges"].([]any)) != 1 {
+				t.Fatalf("readable endpoint: %v %s", out, code)
+			}
+		})
+	}
+}

@@ -50,6 +50,8 @@ check create_relation '"relation":{"source":"src","target":"dst","type":"kind"}'
 check dangling_edge 'src_ref' "$(call insert '{"namespace":"verify","table":"links","records":[{"src":1,"dst":1,"kind":"k"}]}')"
 check relate_nodes '"inserted":2' "$(call insert '{"namespace":"verify","table":"nodes","records":[{"label":"n1"},{"label":"n2"}]}')"
 check relate '"id":1,"replayed":false' "$(call relate '{"namespace":"verify","table":"links","source":1,"target":2,"type":"k","idempotency_key":"edge-1"}')"
+check neighbors '"stop_reason":"complete"' "$(call neighbors '{"namespace":"verify","node":{"table":"nodes","id":1},"direction":"out"}')"
+check neighbors_bounded '"stop_reason":"nodes"' "$(call neighbors '{"namespace":"verify","node":{"table":"nodes","id":1},"max_nodes":1}')"
 check relate_replay '"id":1,"replayed":true' "$(call relate '{"namespace":"verify","table":"links","source":1,"target":2,"type":"k","idempotency_key":"edge-1"}')"
 check relate_dangling 'dst_ref' "$(call relate '{"namespace":"verify","table":"links","source":1,"target":9,"type":"k"}')"
 check endpoint_delete_refused '"code":"conflict"' "$(call delete '{"namespace":"verify","table":"nodes","filter":"id = 2"}')"

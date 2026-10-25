@@ -2,7 +2,7 @@
 
 `internal/graph` owns the bounded one-hop algorithm. The SQLite adapter now reads
 authoritative relation tables with forward/reverse indexes and request-bound row
-scopes. No public neighbors operation is wired yet.
+scopes. Public `Neighbors` and HTTP/MCP `neighbors` use this adapter.
 
 ```bash
 go test -race ./internal/graph
@@ -30,8 +30,28 @@ without revealing a denied relation table. Tests also cover denied endpoints,
 namespace-read side effects, canceled/failed opens and ambiguous role refusal.
 This proves the actual SQLite adapter, not live grants or public neighbors routing.
 
-Run the existing public baselines using SKILL.md:
-`go-library.md`, `http-api.md`, `mcp-stdio.md` and `test-suites.md`. Report those as
-unchanged-surface baselines. When public wiring lands, add real neighbors calls to
-the HTTP/MCP scripts and public example;
-only then may the end-to-end #737 acceptance be marked verified.
+Run the Go example and both compiled-daemon transports using SKILL.md:
+`go-library.md`, `http-api.md`, `mcp-stdio.md` and `test-suites.md`.
+The example prints `neighbors returned 2 nodes and 1 edge: complete`;
+HTTP and MCP stdio scripts declare relations and call neighbors, including a
+bounded HTTP result. Defaults are both directions, 1000 nodes, 1000 examined
+edges and one second; explicit wire zero budgets are refused, while Go zero
+options select defaults. Bounds cannot exceed 1000 nodes/edges or 30 seconds.
+
+For actual grants and owner visibility on a separately spawned compiled daemon:
+
+```bash
+S=.claude/skills/verify/scripts
+W=$($S/serve.sh)
+trap '$S/stop.sh "$W"' EXIT
+$S/http-smoke.sh "$W"
+$S/mcp-stdio.sh "$W"
+$S/graph-neighbors.py "$W" "$W/graph-neighbors.json"
+```
+
+The last script uses its own synthetic DB, ephemeral loopback port, generated
+bootstrap key and API keys. It checks HTTP and MCP-over-HTTP: hidden endpoint
+suppression (a plain-table update grant is not read), stable visible references,
+explicit node truncation, and owner-filtered seeds/edges. It stops its child in a
+finally block; retain the JSON evidence before stop.sh removes W.
+No PostgreSQL/lakehouse graph adapter is advertised as implemented.

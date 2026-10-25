@@ -102,6 +102,14 @@ func main() {
 		log.Fatalf("relation schema: %+v %v", linkSchema, err)
 	}
 	fmt.Println("declared relation table and related edge", edge.ID, "with", len(linkSchema.Constraints), "foreign keys")
+	neighbors, err := st.Neighbors(ctx, "demo", dolmen.NodeRef{Table: "notes", ID: ins.Ids[0]}, dolmen.NeighborsOptions{})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(neighbors.Edges) != 1 || len(neighbors.Nodes) != 2 || neighbors.Truncated {
+		log.Fatalf("unexpected neighbors: %+v", neighbors)
+	}
+	fmt.Println("neighbors returned", len(neighbors.Nodes), "nodes and", len(neighbors.Edges), "edge:", neighbors.StopReason)
 
 	_, err = st.Insert(ctx, "demo", "notes", []map[string]any{
 		{"body": "different body"},
