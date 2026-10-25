@@ -32,18 +32,19 @@ func insertItems(h *harness, recs ...map[string]any) (int, map[string]any) {
 
 func TestUniqueKeysCompareTypedValuesExactly(t *testing.T) {
 	h := newHarness(t)
-	keyTable(h, []map[string]any{{"name": "n", "type": "number"}, {"name": "at", "type": "timestamp"}, {"name": "tag", "type": "string"}}, []string{"n", "at", "tag"}, "")
+	keyTable(h, []map[string]any{{"name": "n", "type": "number"}, {"name": "observed_at", "type": "timestamp"}, {"name": "tag", "type": "string"}}, []string{"n", "observed_at", "tag"}, "")
 	h.mustHTTP("insert", map[string]any{"namespace": "app", "table": "items", "records": []map[string]any{
-		{"n": json.Number("9223372036854775807"), "at": "2026-10-23T12:00:00Z", "tag": "a"},
-		{"n": json.Number("9223372036854775806"), "at": "2026-10-23T12:00:00Z", "tag": "a"},
-		{"n": 1, "at": "2026-10-23T08:00:00-04:00", "tag": "a"},
-		{"n": 1, "at": "2026-10-23T12:00:00.000Z", "tag": "a"},
-		{"n": 1, "at": "2026-10-23T12:00:00Z", "tag": "A"},
-		{"n": 1, "at": "2026-10-23T12:00:00Z", "tag": nil},
-		{"n": 1, "at": "2026-10-23T12:00:00Z", "tag": nil},
+		{"n": json.Number("9223372036854775807"), "observed_at": "2026-10-23T12:00:00Z", "tag": "a"},
+		{"n": json.Number("9223372036854775806"), "observed_at": "2026-10-23T12:00:00Z", "tag": "a"},
+		{"n": 1, "observed_at": "2026-10-23T08:00:00-04:00", "tag": "a"},
+		{"n": 1, "observed_at": "2026-10-23T12:00:00.000Z", "tag": "a"},
+		{"n": 1, "observed_at": "2026-10-23T12:00:00Z", "tag": "a"},
+		{"n": 1, "observed_at": "2026-10-23T12:00:00Z", "tag": "A"},
+		{"n": 1, "observed_at": "2026-10-23T12:00:00Z", "tag": nil},
+		{"n": 1, "observed_at": "2026-10-23T12:00:00Z", "tag": nil},
 	}})
-	h.mustConflict("insert", map[string]any{"namespace": "app", "table": "items", "records": []map[string]any{{"n": json.Number("1.0"), "at": "2026-10-23T08:00:00-04:00", "tag": "a"}}}, "row_key")
-	h.mustConflict("insert", map[string]any{"namespace": "app", "table": "items", "records": []map[string]any{{"n": json.Number("9223372036854775807"), "at": "2026-10-23T12:00:00Z", "tag": "a"}}}, "row_key")
+	h.mustConflict("insert", map[string]any{"namespace": "app", "table": "items", "records": []map[string]any{{"n": json.Number("1.0"), "observed_at": "2026-10-23T08:00:00-04:00", "tag": "a"}}}, "row_key")
+	h.mustConflict("insert", map[string]any{"namespace": "app", "table": "items", "records": []map[string]any{{"n": json.Number("9223372036854775807"), "observed_at": "2026-10-23T12:00:00Z", "tag": "a"}}}, "row_key")
 }
 
 func TestPartialUniqueKeysFollowPredicateTransitions(t *testing.T) {
