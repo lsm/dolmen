@@ -34,6 +34,7 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 | `scripts/http-smoke.sh W` | HTTP journey, PASS/FAIL per step. |
 | `scripts/mcp-stdio.sh W` | MCP-over-stdio journey using `$W/dolmen`, PASS/FAIL per step. |
 | `scripts/source-import.py W CONTAINER` | Synthetic SQLite/Postgres export-to-CLI migration proof; uses the disposable `pg.sh` container with `DOCKER_CONTEXT=colima`. |
+| `scripts/graph-neighbors.py W OUTPUT_JSON` | Compiled-daemon HTTP/MCP neighbors with synthetic API keys, table visibility, owner scopes and budget evidence; owns and stops its separate auth daemon. |
 | `scripts/graph-sqlite/` | Standalone Go consumer of the SQLite graph adapter; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-sqlite`. |
 
 ```bash
