@@ -161,7 +161,7 @@ func TestConstraintMigrationValidationLeavesSchemaUnchanged(t *testing.T) {
 	}
 }
 
-func TestConstraintMigrationsStayRefusedWithAuthOn(t *testing.T) {
+func TestConstraintMigrationsAvailableWithAuthOn(t *testing.T) {
 	h := newHarnessMode(t, authAdminKey)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "notes", "fields": []map[string]any{{"name": "slug", "type": "string"}}})
@@ -171,11 +171,9 @@ func TestConstraintMigrationsStayRefusedWithAuthOn(t *testing.T) {
 		{"op": "set_accept_references", "value": true},
 	} {
 		body := map[string]any{"namespace": "app", "table": "notes", "changes": []any{change}}
-		if code, out := h.httpCall("migrate", body); code != http.StatusBadRequest || errCode(out) != "invalid_request" || !strings.Contains(errMessage(out), "-auth on") {
-			t.Fatalf("http %v: %d %v", change, code, out)
-		}
-		if env := h.mcpCall("migrate", body).toolError(); env["code"] != "invalid_request" || !strings.Contains(env["message"].(string), "-auth on") {
-			t.Fatalf("mcp %v: %v", change, env)
-		}
+		body["dry_run"] = true
+		h.mustHTTP("migrate", body)
+		body["dry_run"] = false
+		h.mustMCP("migrate", body)
 	}
 }

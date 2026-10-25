@@ -967,7 +967,15 @@ graph edges: declare required `number` source and target fields, each with a `fo
 required `string` type field, then name the roles with
 `"relation":{"source":"src","target":"dst","type":"kind"}`. Its other fields are the edge's
 properties. `describe_table` returns `constraints`, `accept_references` and `relation` as declared.
-`constraints` and `accept_references` work on SQLite, PostgreSQL and lakehouse, and `relation` on SQLite only so far; all three are refused while authentication is on.
+`constraints` and `accept_references` work on SQLite, PostgreSQL and lakehouse, and `relation` on
+SQLite only so far. With authentication on they require the reads their checks consult. On plain tables,
+constrained writes need `read` on each consulted table, including a foreign key's parent. On
+`row_access: own` tables, a standing own-row read (`read` or a data verb) on each endpoint is enough
+for own-row writes; a table-wide mutation needs table-wide read on every affected endpoint.
+Declaring or dropping a constraint requires `schema` plus `read` on the affected tables.
+Creating or changing `accept_references`, deleting from an opted-in table, and dropping one need
+namespace-wide `read`, even when no table references it. This stable rule does not reveal hidden
+incoming references. The other operation permissions still apply.
 
 ### Id, `created_at`, and stability
 
@@ -1095,8 +1103,7 @@ itself is shared — so copy the exact shape per op:
   ```
 
 Each of these three constraint operations must be the only entry in `changes`. They work on SQLite,
-PostgreSQL and lakehouse with authentication off; they are refused with `-auth on` until the
-constraint-aware authorization gates are available.
+PostgreSQL and lakehouse. With authentication on, the constraint-aware read gates above apply.
 
 Three top-level keys complete the request:
 

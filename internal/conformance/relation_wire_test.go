@@ -59,22 +59,14 @@ func TestRelationTablesAreDeclaredOnBothTransports(t *testing.T) {
 	}
 }
 
-func TestDeclarationsAreRefusedWhileAuthIsOn(t *testing.T) {
+func TestDeclarationsAreAvailableWhileAuthIsOn(t *testing.T) {
 	h := newHarnessMode(t, authAdminKey)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
 	plain := []map[string]any{{"name": "label", "type": "string"}}
-	for label, body := range map[string]map[string]any{
-		"accept_references": {"namespace": "app", "table": "nodes", "accept_references": true, "fields": plain},
-		"constraints":       {"namespace": "app", "table": "nodes", "fields": plain, "constraints": []map[string]any{{"name": "label_key", "kind": "unique", "fields": []string{"label"}}}},
-		"relation":          relationTableBody("links"),
-	} {
-		code, out := h.httpCall("create_table", body)
-		if code != http.StatusBadRequest || !strings.Contains(errMessage(out), "-auth on") {
-			t.Fatalf("%s under -auth on: %d %v", label, code, out)
-		}
-		if env := h.mcpCall("create_table", body).toolError(); env == nil || !strings.Contains(env["message"].(string), "-auth on") {
-			t.Fatalf("mcp %s under -auth on: %v", label, env)
-		}
+	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "nodes", "accept_references": true, "fields": plain})
+	h.mustMCP("create_table", map[string]any{"namespace": "app", "table": "keys", "fields": plain, "constraints": []map[string]any{{"name": "label_key", "kind": "unique", "fields": []string{"label"}}}})
+	if testEngine(t) == store.EngineSQLite {
+		h.mustMCP("create_table", relationTableBody("links"))
 	}
 }
 
@@ -91,12 +83,12 @@ func createTableInputProps(t *testing.T, h *harness) map[string]any {
 	return nil
 }
 
-func TestDeclarationsAreAdvertisedOnlyWhileAuthIsOff(t *testing.T) {
+func TestDeclarationsAreAdvertisedInBothAuthModes(t *testing.T) {
 	for _, mode := range []harnessMode{authOff, authAdminKey} {
 		props := createTableInputProps(t, newHarnessMode(t, mode))
 		for _, name := range []string{"constraints", "accept_references", "relation"} {
-			if _, ok := props[name]; ok != mode.off() {
-				t.Fatalf("auth %s: create_table advertises %s = %v, want %v", mode.name, name, ok, mode.off())
+			if _, ok := props[name]; !ok {
+				t.Fatalf("auth %s: create_table advertises %s = %v, want %v", mode.name, name, ok, true)
 			}
 		}
 	}

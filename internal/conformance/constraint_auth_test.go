@@ -53,8 +53,9 @@ func TestConstrainedWritesNeedReadOnEveryTableTheirChecksConsult(t *testing.T) {
 
 func TestDeletingFromATableThatAcceptsReferencesNeedsNamespaceRead(t *testing.T) {
 	h := constraintAuthTables(t)
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "tasks", "records": []map[string]any{{"project_id": 1, "slug": "linked"}}})
 	for _, table := range []string{"projects", "orphans"} {
-		grantTo(t, h, "principal", "dave", "acme", table, "delete", "read", "schema")
+		grantTo(t, h, "principal", "dave", "acme", table, "delete", "read", "schema", "admin")
 	}
 	var outcomes []string
 	for _, table := range []string{"projects", "orphans"} {
@@ -67,8 +68,12 @@ func TestDeletingFromATableThatAcceptsReferencesNeedsNamespaceRead(t *testing.T)
 	if outcomes[0] != outcomes[1] {
 		t.Fatalf("the refusal must not depend on whether the table is referenced: %q vs %q", outcomes[0], outcomes[1])
 	}
-	if res, out := h.asIdentity(t, "dave", "", "drop_table", `{"namespace":"acme","table":"orphans","confirm":"orphans"}`); res.StatusCode != http.StatusForbidden {
+	if res, out := h.asIdentity(t, "dave", "", "drop_table", `{"namespace":"acme","table":"orphans","confirm":"orphans"}`); res.StatusCode != http.StatusForbidden || !strings.Contains(errMessage(out), "read on the whole namespace") {
 		t.Fatalf("drop_table without namespace read: %d %v", res.StatusCode, out)
+	}
+	grantTo(t, h, "principal", "dave", "acme", "tasks", "read")
+	if res, out := h.asIdentity(t, "dave", "", "delete", `{"namespace":"acme","table":"projects","filter":"id = 1"}`); res.StatusCode != http.StatusForbidden || errMessage(out) != outcomes[0] {
+		t.Fatalf("readable and hidden incoming tables must have the same gate: %d %v", res.StatusCode, out)
 	}
 	grantTo(t, h, "principal", "dave", "acme", "", "read")
 	if res, out := h.asIdentity(t, "dave", "", "delete", `{"namespace":"acme","table":"orphans","filter":"id = 1"}`); res.StatusCode != http.StatusOK {
@@ -86,6 +91,10 @@ func TestDeclaringReferencesNeedsNamespaceRead(t *testing.T) {
 	migrate := `{"namespace":"acme","table":"tasks","changes":[{"op":"set_accept_references","value":true}]}`
 	if res, out := h.asIdentity(t, "erin", "", "migrate", migrate); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("set_accept_references with schema only: %d %v", res.StatusCode, out)
+	}
+	grantTo(t, h, "principal", "erin", "acme", "tasks", "read")
+	if res, out := h.asIdentity(t, "erin", "", "migrate", migrate); res.StatusCode != http.StatusForbidden || !strings.Contains(errMessage(out), "read on the whole namespace") {
+		t.Fatalf("table read is not namespace read: %d %v", res.StatusCode, out)
 	}
 	grantTo(t, h, "principal", "erin", "acme", "", "read")
 	if res, out := h.asIdentity(t, "erin", "", "create_table", create); res.StatusCode != http.StatusOK {
