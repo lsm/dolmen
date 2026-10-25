@@ -61,6 +61,7 @@ func TestNeighborsTransports(t *testing.T) {
 					t.Fatalf("%s: %s", field, code)
 				}
 			}
+			h.mustHTTP("import_records", map[string]any{"namespace": "acme", "table": "nodes", "idempotency_key": "large-node", "records": []any{map[string]any{"id": int64(9007199254740992), "created_at": "2026-01-02T03:04:05.123Z", "label": "nearest exact id"}}})
 			body["node"] = map[string]any{"table": "nodes", "id": 9007199254740993}
 			delete(body, "direction")
 			absent, code := neighborsCall(t, h, transport, identity{}, body)
