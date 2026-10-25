@@ -191,3 +191,71 @@ func TestGraphSQLiteRetainsDataAcrossReopenAndRefusesAmbiguousRoles(t *testing.T
 		t.Fatalf("ambiguous endpoint silently selected: %v", err)
 	}
 }
+
+func TestGraphSQLiteReadRefusesMissingNamespaceAndCanceledWork(t *testing.T) {
+	s := seedGraph(t)
+	if _, err := s.GraphIndex(nil).Snapshot(t.Context(), "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing namespace: %v", err)
+	}
+	names, err := s.ListNamespaces(t.Context(), "", nil)
+	if err != nil || !reflect.DeepEqual(names, []string{"ns"}) {
+		t.Fatalf("read created namespace: %v %v", names, err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := s.GraphIndex(nil).Snapshot(ctx, "ns"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled snapshot: %v", err)
+	}
+	failure := errors.New("synthetic access failure")
+	if _, err := s.GraphIndex(func(context.Context, *schema.TableSchema) (*RowScope, error) { return nil, failure }).Snapshot(t.Context(), "ns"); !errors.Is(err, failure) {
+		t.Fatalf("access failure: %v", err)
+	}
+	if _, err := graph.Neighbors(t.Context(), s.GraphIndex(nil), "ns", graphQuery("alpha", 1)); err != nil {
+		t.Fatalf("failed open leaked resources: %v", err)
+	}
+}
+
+func TestGraphSQLiteIndexNamesDoNotCollideAcrossTableFieldBoundaries(t *testing.T) {
+	s := seedGraph(t)
+	ctx := t.Context()
+	for _, spec := range []struct{ table, field string }{{"a", "b_c"}, {"a_b", "c"}} {
+		fields := relationFields()
+		fields[0].Name = spec.field
+		opts := relationOpts("alpha", "beta")
+		opts.Relation.Source = spec.field
+		opts.Constraints[0].Field = spec.field
+		if _, err := s.CreateTable(ctx, "ns", spec.table, fields, opts, [16]byte{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := graph.Neighbors(ctx, s.GraphIndex(nil), "ns", graphQuery("alpha", 1)); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.ns("ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.unpin()
+	for _, spec := range []struct{ table, field string }{{"a", "b_c"}, {"a_b", "c"}} {
+		rows, err := n.ro.QueryContext(ctx, "EXPLAIN QUERY PLAN SELECT id FROM "+q(spec.table)+" WHERE "+q(spec.field)+"=1 ORDER BY id LIMIT 1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan := ""
+		for rows.Next() {
+			var a, b, c int
+			var detail string
+			if err := rows.Scan(&a, &b, &c, &detail); err != nil {
+				t.Fatal(err)
+			}
+			plan += detail
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		rows.Close()
+		if !strings.Contains(plan, "SEARCH") || !strings.Contains(plan, "INDEX") {
+			t.Fatalf("%s.%s lost its index to a naming collision: %s", spec.table, spec.field, plan)
+		}
+	}
+}
