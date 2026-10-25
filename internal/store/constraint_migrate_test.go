@@ -145,3 +145,35 @@ func TestDropConstraintKeepsTheForeignKeysARelationUses(t *testing.T) {
 		t.Fatalf("a refused drop_constraint changed the schema: %+v %v", sc, err)
 	}
 }
+
+func TestSQLiteConstraintOperationsRunAloneAcrossChanges(t *testing.T) {
+	s := openRowAccessStore(t)
+	ctx := t.Context()
+	if _, err := s.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "slug", Type: schema.String}}, TableOpts{Constraints: []schema.Constraint{{Name: "slug_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}}}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	add := schema.Constraint{Name: "another_key", Kind: schema.ConstraintUnique, Fields: []string{"slug"}}
+	for _, constraintOp := range []schema.Change{{Op: schema.OpAddConstraint, Constraint: &add}, {Op: schema.OpDropConstraint, Name: "slug_key"}, {Op: schema.OpSetAcceptReferences, Value: &on}} {
+		for _, other := range []schema.Change{{Op: schema.OpSetEnum, Name: "slug", Enum: &[]string{"a"}}, {Op: schema.OpSetFulltext, Name: "slug", Value: &on}, {Op: schema.OpSetRowAccess, Value: &on}, {Op: schema.OpSetAcceptReferences, Value: &on}} {
+			t.Run(constraintOp.Op+"/"+other.Op, func(t *testing.T) {
+				_, err := s.PlanMigration(ctx, "ns", "notes", []schema.Change{constraintOp, other}, Embedder{}, Incarnation{Version: 1}, nil, Incarnation{})
+				if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "its own migrate call") {
+					t.Fatalf("constraint operation must run alone: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSQLiteAcceptReferencesRequiresValue(t *testing.T) {
+	s := openRowAccessStore(t)
+	ctx := t.Context()
+	if _, err := s.CreateTable(ctx, "ns", "notes", []schema.Field{{Name: "slug", Type: schema.String}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.Migrate(ctx, "ns", "notes", []schema.Change{{Op: schema.OpSetAcceptReferences}}, Embedder{}, Incarnation{})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "explicit value") {
+		t.Fatalf("missing value: %v", err)
+	}
+}
