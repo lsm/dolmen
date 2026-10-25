@@ -159,3 +159,47 @@ func TestImportAndRelationWritesTakeConstraintReadGates(t *testing.T) {
 		t.Fatalf("relate with endpoint reads: %d %v", res.StatusCode, out)
 	}
 }
+
+func TestOptedInRowAccessChangeDoesNotRevealIncomingReferences(t *testing.T) {
+	var outcomes []string
+	for _, reach := range []string{"none", "readable", "hidden"} {
+		h := newHarnessMode(t, authGateway)
+		h.mustHTTP("create_namespace", map[string]any{"namespace": "policy"})
+		h.mustHTTP("create_table", map[string]any{"namespace": "policy", "table": "parent", "accept_references": true, "fields": []map[string]any{{"name": "slug", "type": "string"}}})
+		if reach != "none" {
+			h.mustHTTP("create_table", map[string]any{"namespace": "policy", "table": "child", "fields": []map[string]any{{"name": "ref", "type": "number"}}, "constraints": []map[string]any{{"name": "parent_ref", "kind": "foreign_key", "field": "ref", "references": map[string]any{"table": "parent", "field": "id"}}}})
+		}
+		grantTo(t, h, "principal", "editor", "policy", "parent", "schema", "admin", "read")
+		if reach == "readable" {
+			grantTo(t, h, "principal", "editor", "policy", "child", "read")
+		}
+		for _, value := range []string{"true", "false"} {
+			res, out := h.asIdentity(t, "editor", "", "migrate", `{"namespace":"policy","table":"parent","changes":[{"op":"set_row_access","value":`+value+`}]}`)
+			if res.StatusCode != http.StatusForbidden || errCode(out) != "forbidden" {
+				t.Errorf("%s value=%s: without namespace read: %d %v", reach, value, res.StatusCode, out)
+			}
+			outcomes = append(outcomes, errMessage(out))
+		}
+		grantTo(t, h, "principal", "editor", "policy", "", "read")
+		res, out := h.asIdentity(t, "editor", "", "migrate", `{"namespace":"policy","table":"parent","changes":[{"op":"set_row_access","value":true}]}`)
+		want := http.StatusBadRequest
+		if reach == "none" {
+			want = http.StatusOK
+		}
+		if res.StatusCode != want {
+			t.Errorf("%s: namespace read admits the unchanged backend policy: %d %v", reach, res.StatusCode, out)
+		}
+	}
+	for _, outcome := range outcomes {
+		if outcome != outcomes[0] {
+			t.Fatalf("incoming reference visibility changed the gate: %v", outcomes)
+		}
+	}
+	h := newHarnessMode(t, authGateway)
+	h.mustHTTP("create_namespace", map[string]any{"namespace": "plain"})
+	h.mustHTTP("create_table", map[string]any{"namespace": "plain", "table": "notes", "fields": []map[string]any{{"name": "slug", "type": "string"}}})
+	grantTo(t, h, "principal", "editor", "plain", "notes", "schema", "admin", "read")
+	if res, out := h.asIdentity(t, "editor", "", "migrate", `{"namespace":"plain","table":"notes","changes":[{"op":"set_row_access","value":true}]}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("ordinary table must not acquire a namespace-read gate: %d %v", res.StatusCode, out)
+	}
+}
