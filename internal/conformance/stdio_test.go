@@ -29,8 +29,17 @@ import (
 var (
 	stdioBinOnce sync.Once
 	stdioBinPath string
+	stdioBinDir  string
 	stdioBinErr  error
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if stdioBinDir != "" {
+		os.RemoveAll(stdioBinDir)
+	}
+	os.Exit(code)
+}
 
 func dolmenBinary(t *testing.T) string {
 	t.Helper()
@@ -46,6 +55,7 @@ func dolmenBinary(t *testing.T) string {
 			return
 		}
 		stdioBinPath = filepath.Join(dir, "dolmen")
+		stdioBinDir = dir
 		build := exec.Command("go", "build", "-ldflags", "-X github.com/lsm/dolmen/internal/version.Version="+version.Version, "-o", stdioBinPath, "./cmd/dolmen")
 		build.Dir = root
 		if out, err := build.CombinedOutput(); err != nil {
