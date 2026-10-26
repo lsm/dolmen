@@ -76,7 +76,15 @@ func TestStdioBinaryBuildDirRemovedAfterPackageRun(t *testing.T) {
 	tmp := t.TempDir()
 	cmd := exec.Command("go", "test", "-count=1", "-run", "^TestStdioInitializeHandshake$", "./internal/conformance")
 	cmd.Dir = root
-	cmd.Env = stdioEnv("TMPDIR=" + tmp)
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "DOLMEN_") || strings.HasPrefix(kv, "TMPDIR=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "DOLMEN_EMBED_PROVIDER=none", "TMPDIR="+tmp)
+	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go test: %v: %s", err, out)
 	}
