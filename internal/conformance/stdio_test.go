@@ -29,8 +29,17 @@ import (
 var (
 	stdioBinOnce sync.Once
 	stdioBinPath string
+	stdioBinDir  string
 	stdioBinErr  error
 )
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if stdioBinDir != "" {
+		os.RemoveAll(stdioBinDir)
+	}
+	os.Exit(code)
+}
 
 func dolmenBinary(t *testing.T) string {
 	t.Helper()
@@ -46,6 +55,7 @@ func dolmenBinary(t *testing.T) string {
 			return
 		}
 		stdioBinPath = filepath.Join(dir, "dolmen")
+		stdioBinDir = dir
 		build := exec.Command("go", "build", "-ldflags", "-X github.com/lsm/dolmen/internal/version.Version="+version.Version, "-o", stdioBinPath, "./cmd/dolmen")
 		build.Dir = root
 		if out, err := build.CombinedOutput(); err != nil {
@@ -56,6 +66,35 @@ func dolmenBinary(t *testing.T) string {
 		t.Fatalf("build dolmen binary: %v", stdioBinErr)
 	}
 	return stdioBinPath
+}
+
+func TestStdioBinaryBuildDirRemovedAfterPackageRun(t *testing.T) {
+	root := filepath.Join("..", "..")
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Skipf("repo root not found at %s: %v", root, err)
+	}
+	tmp := t.TempDir()
+	cmd := exec.Command("go", "test", "-count=1", "-run", "^TestStdioInitializeHandshake$", "./internal/conformance")
+	cmd.Dir = root
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "DOLMEN_") || strings.HasPrefix(kv, "TMPDIR=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "DOLMEN_EMBED_PROVIDER=none", "TMPDIR="+tmp)
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go test: %v: %s", err, out)
+	}
+	left, err := filepath.Glob(filepath.Join(tmp, "dolmen-stdio-bin-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("package test run left %d dolmen-stdio-bin-* dir(s) in TMPDIR: %v", len(left), left)
+	}
 }
 
 type stdioProc struct {
