@@ -58,6 +58,27 @@ func dolmenBinary(t *testing.T) string {
 	return stdioBinPath
 }
 
+func TestStdioBinaryBuildDirRemovedAfterPackageRun(t *testing.T) {
+	root := filepath.Join("..", "..")
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		t.Skipf("repo root not found at %s: %v", root, err)
+	}
+	tmp := t.TempDir()
+	cmd := exec.Command("go", "test", "-count=1", "-run", "^TestStdioInitializeHandshake$", "./internal/conformance")
+	cmd.Dir = root
+	cmd.Env = stdioEnv("TMPDIR=" + tmp)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go test: %v: %s", err, out)
+	}
+	left, err := filepath.Glob(filepath.Join(tmp, "dolmen-stdio-bin-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("package test run left %d dolmen-stdio-bin-* dir(s) in TMPDIR: %v", len(left), left)
+	}
+}
+
 type stdioProc struct {
 	t      *testing.T
 	cmd    *exec.Cmd
