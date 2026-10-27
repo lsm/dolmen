@@ -10,7 +10,15 @@ import (
 	"github.com/lsm/dolmen/internal/store"
 )
 
-type GraphSearchResult = store.GraphSearchResult
+type GraphSeed struct {
+	Ref   NodeRef
+	Score float64
+}
+type GraphSearchResult struct {
+	GraphResult
+	Seeds          []GraphSeed
+	SkippedVectors int
+}
 
 func (s *Store) SearchGraph(ctx context.Context, namespace string, tables []string, query VectorQuery, topK int, search SearchOptions, expansion TraversalOptions) (out GraphSearchResult, err error) {
 	ctx, span := s.startOp(ctx, "search_graph", namespace, "")
@@ -54,6 +62,13 @@ func (s *Store) SearchGraph(ctx context.Context, namespace string, tables []stri
 		topK = 10
 	}
 	expansion = expansion.defaults()
-	out, err = eng.SearchGraph(ctx, ops.NormalizeNamespace(namespace), tables, vq, topK, graph.TraversalQuery{Direction: expansion.Direction, RelationTypes: expansion.RelationTypes, MaxHops: expansion.MaxHops, MaxWork: expansion.MaxWork, Limits: graph.Limits{Nodes: expansion.MaxNodes, Edges: expansion.MaxEdges, Elapsed: expansion.MaxElapsed}}, nil)
-	return out, facadeErr(ctx, err)
+	res, err := eng.SearchGraph(ctx, ops.NormalizeNamespace(namespace), tables, vq, topK, graph.TraversalQuery{Direction: expansion.Direction, RelationTypes: expansion.RelationTypes, MaxHops: expansion.MaxHops, MaxWork: expansion.MaxWork, Limits: graph.Limits{Nodes: expansion.MaxNodes, Edges: expansion.MaxEdges, Elapsed: expansion.MaxElapsed}}, nil)
+	if err != nil {
+		return out, facadeErr(ctx, err)
+	}
+	out = GraphSearchResult{GraphResult: graphResult(res.Result), Seeds: make([]GraphSeed, 0, len(res.Seeds)), SkippedVectors: res.SkippedVectors}
+	for _, seed := range res.Seeds {
+		out.Seeds = append(out.Seeds, GraphSeed{Ref: NodeRef(seed.Ref), Score: seed.Score})
+	}
+	return out, nil
 }

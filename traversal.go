@@ -53,14 +53,18 @@ func (s *Store) traverse(ctx context.Context, name, namespace string, seeds []No
 	if err != nil {
 		return out, facadeErr(ctx, err)
 	}
-	out = GraphResult{Nodes: make([]NodeRef, 0, len(res.Nodes)), Edges: make([]NeighborEdge, 0, len(res.Edges)), Truncated: res.Truncated, StopReason: res.StopReason}
+	return graphResult(res), nil
+}
+
+func graphResult(res graph.Result) GraphResult {
+	out := GraphResult{Nodes: make([]NodeRef, 0, len(res.Nodes)), Edges: make([]NeighborEdge, 0, len(res.Edges)), Truncated: res.Truncated, StopReason: res.StopReason}
 	for _, n := range res.Nodes {
 		out.Nodes = append(out.Nodes, NodeRef(n))
 	}
 	for _, e := range res.Edges {
 		out.Edges = append(out.Edges, NeighborEdge{Ref: NodeRef(e.Ref), Source: NodeRef(e.Source), Target: NodeRef(e.Target), Type: e.Type})
 	}
-	return out, nil
+	return out
 }
 
 func (opts TraversalOptions) defaults() TraversalOptions {
