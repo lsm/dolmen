@@ -67,4 +67,13 @@ func main() {
 	must(err)
 	expect(!out.Truncated && len(out.Nodes) == 1 && len(out.Edges) == 0, "relation filter")
 	fmt.Println("PASS SQLite SearchGraph: property/type filters preserve the seed and exclude connections")
+	expansion.Limits.Elapsed = time.Millisecond
+	out, err = s.SearchGraph(ctx, "verify", []string{"nodes"}, q, 1, expansion, func(ctx context.Context, _ *schema.TableSchema) (*store.RowScope, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	must(err)
+	expect(out.Truncated && out.StopReason == "elapsed", "elapsed bound during snapshot setup")
+	fmt.Println("PASS SQLite SearchGraph: blocked snapshot setup returns truncated/elapsed")
+
 }

@@ -8,9 +8,11 @@ CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-core
 go test -race ./internal/store ./internal/graph -run 'TestSearchGraph|TestTraversal'
 ```
 
-Expect three PASS lines: own-row semantic seed id=1 score=1 with two visible
+Expect four PASS lines: own-row semantic seed id=1 score=1 with two visible
 nodes and one edge; truncated/nodes at max_nodes=1 without a dangling edge;
-and seed property/relation-type filters excluding connections. The consumer
+seed property/relation-type filters excluding connections; and an elapsed stop
+while snapshot access waits for the deadline. This avoids assumptions about
+sub-millisecond timer scheduling on Windows. The consumer
 creates and removes its own synthetic database and never downloads a model.
 The tests also pin global table/id ties, empty search, hidden seeds/edges/endpoints,
 elapsed stops and seed/expansion snapshot consistency across a committed write.

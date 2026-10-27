@@ -105,8 +105,11 @@ func TestSearchGraphAccessAndElapsed(t *testing.T) {
 		}
 	}
 	ex := searchExpansion()
-	ex.Limits.Elapsed = time.Nanosecond
-	out, err := s.SearchGraph(t.Context(), "ns", []string{"alpha"}, VectorQuery{Vec: []float32{1, 0}}, 1, ex, nil)
+	ex.Limits.Elapsed = time.Millisecond
+	out, err := s.SearchGraph(t.Context(), "ns", []string{"alpha"}, VectorQuery{Vec: []float32{1, 0}}, 1, ex, func(ctx context.Context, _ *schema.TableSchema) (*RowScope, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
 	if err != nil || !out.Truncated || out.StopReason != "elapsed" {
 		t.Fatalf("elapsed: %+v %v", out, err)
 	}
