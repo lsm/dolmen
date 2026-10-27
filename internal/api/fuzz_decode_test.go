@@ -41,6 +41,8 @@ func decodeTargets() []decodeTarget {
 		{op: "import_records", new: func() any { return new(importReq) }},
 		{op: "relate", new: func() any { return new(relateReq) }},
 		{op: "neighbors", new: func() any { return new(neighborsReq) }},
+		{op: "find_path", new: func() any { return new(traversalReq) }},
+		{op: "subgraph", new: func() any { return new(traversalReq) }},
 		{op: "upsert_by_key", new: func() any { return new(upsertReq) }},
 		{op: "read_rows", new: func() any { return new(readRowsReq) }},
 		{op: "file_url", new: func() any { return new(fileURLReq) }},

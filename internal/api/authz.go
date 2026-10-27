@@ -38,6 +38,8 @@ var authRules = map[string]authRule{
 	"capabilities":    {Scope: scopeNone},
 	"describe_server": {Scope: scopeNone},
 	"infer_schema":    {Scope: scopeNone},
+	"find_path":       {Scope: scopeNone},
+	"subgraph":        {Scope: scopeNone},
 	"neighbors":       {Scope: scopeNone},
 	"list_namespaces": {Scope: scopeNone},
 	"list_tables":     {Scope: scopeNone},

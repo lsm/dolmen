@@ -77,7 +77,7 @@ The first slice exposes these operation families:
 | Namespace lifecycle | `CreateNamespace`, `ListNamespaces`, `DropNamespace` | Names and list options |
 | Table lifecycle | `CreateTable`, `CreateTableWithOptions`, `ListTables`, `DescribeTable`, `DropTable` | `Field`, `FieldType`, `TableSchema`, `CreateTableOptions` (row access, constraints, reference opt-in, relation), `Constraint`, `UniqueConstraint`, `ForeignKeyConstraint`, `Relation` |
 | Writes | `Insert`, `Update`, `Delete`, `UpsertByKey`, `ImportRecords`, `Relate` | Operation-specific options and write results |
-| Reads | `GetRows`, `Query`, `Neighbors` | Query options and `QueryResult`; `NodeRef`, `NeighborEdge`, `NeighborsOptions`, `NeighborsResult` (SQLite) |
+| Reads | `GetRows`, `Query`, `Neighbors`, `FindPath`, `Subgraph` | Query options and `QueryResult`; `NodeRef`, `NeighborEdge`, `NeighborsOptions`, `NeighborsResult`, `TraversalOptions`, `GraphResult` (SQLite) |
 | Search | `SearchFulltext`, `SearchVector` | Search options, `VectorQuery`, `SearchResult` |
 
 Use named options structs for filters, arguments, limits, offsets, hidden-column

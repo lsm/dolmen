@@ -110,6 +110,15 @@ func main() {
 		log.Fatalf("unexpected neighbors: %+v", neighbors)
 	}
 	fmt.Println("neighbors returned", len(neighbors.Nodes), "nodes and", len(neighbors.Edges), "edge:", neighbors.StopReason)
+	path, err := st.FindPath(ctx, "demo", dolmen.NodeRef{Table: "notes", ID: ins.Ids[0]}, dolmen.NodeRef{Table: "notes", ID: ins.Ids[1]}, dolmen.TraversalOptions{})
+	if err != nil || path.Truncated || len(path.Nodes) != 2 || len(path.Edges) != 1 {
+		log.Fatalf("path: %+v %v", path, err)
+	}
+	sub, err := st.Subgraph(ctx, "demo", []dolmen.NodeRef{{Table: "notes", ID: ins.Ids[0]}}, dolmen.TraversalOptions{})
+	if err != nil || sub.Truncated || len(sub.Nodes) != 2 || len(sub.Edges) != 1 {
+		log.Fatalf("subgraph: %+v %v", sub, err)
+	}
+	fmt.Println("find_path and subgraph returned 2 nodes and 1 edge: complete")
 
 	_, err = st.Insert(ctx, "demo", "notes", []map[string]any{
 		{"body": "different body"},

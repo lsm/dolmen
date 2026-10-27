@@ -70,6 +70,8 @@ var toolAnnotations = map[string]map[string]any{
 	"upsert_by_key":   {"title": "Upsert by natural key", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
 	"query":           {"title": "Query", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"file_url":        {"title": "Get a file download URL", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+	"find_path":       {"title": "Find a bounded graph path", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"subgraph":        {"title": "Read a bounded subgraph", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"neighbors":       {"title": "Read graph neighbors", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"read_rows":       {"title": "Read rows by id", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
