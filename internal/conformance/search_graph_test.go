@@ -59,7 +59,7 @@ func TestSearchGraphExpansionAndBounds(t *testing.T) {
 			if code != "" || len(out["nodes"].([]any)) != 1 || len(out["edges"].([]any)) != 0 {
 				t.Fatalf("type: %+v %s", out, code)
 			}
-			for _, bad := range []map[string]any{{"direction": "invalid"}, {"max_hops": 33}, {"max_elapsed_ms": 0}, {"max_work": 0}} {
+			for _, bad := range []map[string]any{{"direction": "invalid"}, {"max_hops": 33}, {"max_elapsed_ms": 0}, {"max_work": 0}, {"source": map[string]any{}}, {"seeds": []any{}}, {"namespace": ""}} {
 				body["expansion"] = bad
 				if _, code = traversalCall(t, h, transport, "search_graph", identity{}, body); code != "invalid_request" {
 					t.Fatalf("invalid expansion %+v: %s", bad, code)

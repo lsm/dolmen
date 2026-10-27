@@ -42,6 +42,7 @@ func decodeTargets() []decodeTarget {
 		{op: "relate", new: func() any { return new(relateReq) }},
 		{op: "neighbors", new: func() any { return new(neighborsReq) }},
 		{op: "find_path", new: func() any { return new(traversalReq) }},
+		{op: "search_graph", new: func() any { return new(searchGraphReq) }},
 		{op: "subgraph", new: func() any { return new(traversalReq) }},
 		{op: "upsert_by_key", new: func() any { return new(upsertReq) }},
 		{op: "read_rows", new: func() any { return new(readRowsReq) }},

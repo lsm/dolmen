@@ -143,7 +143,7 @@ the whole server. What each operation needs:
 | `delete` | `delete` |
 | `upsert`, `upsert_by_key` | `create` and `update` |
 | `query` | `read` on the whole namespace, since SQL can reach any table in it |
-| `neighbors`, `find_path`, `subgraph` (SQLite) | `read` on each edge and endpoint table, or a data verb on an own-row table for your own rows; hidden rows never connect results |
+| `neighbors`, `find_path`, `subgraph`, `search_graph` (SQLite) | `read` on each edge and endpoint table, or a data verb on an own-row table for your own rows; hidden rows never connect results |
 | `describe_table`, `tokenize` | any verb on the table |
 | `whoami` (exists only when authentication is on), `list_namespaces`, `list_tables`, `describe_server`, `capabilities`, `infer_schema` | nothing |
 
@@ -786,3 +786,5 @@ populated-table migrations, version guards, dry-run plans and migration history.
 support the same multipart, URL and `copy_from` values, downloads and vacuum sweeping as SQLite.
 Schema and native Iceberg evolution publish together; stale incarnations cannot drop a
 recreated table on either backend.
+
+- `search_graph(namespace, tables, text|vector, top_k=10, expansion={...})` ranks visible semantic seeds globally (cosine descending, then table/id), then expands SQLite adjacency in the same snapshot. `filter`/`args` restrict seed properties before ranking; `expansion` accepts subgraph direction, relation_types and bounds. Returns `seeds=[{ref,score}]` separately from `nodes`/`edges`, plus traversal `truncated`/`stop_reason` and `skipped_vectors`. Use 1–100 seed tables and top_k 1–200. Text queries require the configured vectorize space; raw vectors use the chosen vector column.

@@ -152,11 +152,12 @@ func relationParitySteps() []parityStep {
 }
 
 var parityPinnedElsewhere = map[string]string{
-	"file_url":  "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
-	"neighbors": "TestNeighborsRequiresSQLite on engines without a graph adapter",
-	"find_path": "TestGraphTraversalRequiresSQLite on engines without a graph adapter",
-	"subgraph":  "TestGraphTraversalRequiresSQLite on engines without a graph adapter",
-	"relate":    "TestRelateInsertsOneIdempotentEdge on engines that cannot declare relation tables",
+	"search_graph": "TestSearchGraph",
+	"file_url":     "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
+	"neighbors":    "TestNeighborsRequiresSQLite on engines without a graph adapter",
+	"find_path":    "TestGraphTraversalRequiresSQLite on engines without a graph adapter",
+	"subgraph":     "TestGraphTraversalRequiresSQLite on engines without a graph adapter",
+	"relate":       "TestRelateInsertsOneIdempotentEdge on engines that cannot declare relation tables",
 }
 
 func TestTransportParityAllOperations(t *testing.T) {

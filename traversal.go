@@ -41,24 +41,7 @@ func (s *Store) traverse(ctx context.Context, name, namespace string, seeds []No
 	if !ok {
 		return out, derr.New(derr.InvalidRequest, "graph traversal requires the SQLite graph adapter")
 	}
-	if opts.Direction == "" {
-		opts.Direction = "both"
-	}
-	if opts.MaxHops == 0 {
-		opts.MaxHops = 4
-	}
-	if opts.MaxNodes == 0 {
-		opts.MaxNodes = 1000
-	}
-	if opts.MaxEdges == 0 {
-		opts.MaxEdges = 1000
-	}
-	if opts.MaxWork == 0 {
-		opts.MaxWork = 1000
-	}
-	if opts.MaxElapsed == 0 {
-		opts.MaxElapsed = time.Second
-	}
+	opts = opts.defaults()
 	q := graph.TraversalQuery{Seeds: make([]graph.Ref, len(seeds)), Direction: opts.Direction, RelationTypes: opts.RelationTypes, MaxHops: opts.MaxHops, MaxWork: opts.MaxWork, Limits: graph.Limits{Nodes: opts.MaxNodes, Edges: opts.MaxEdges, Elapsed: opts.MaxElapsed}}
 	for i, n := range seeds {
 		q.Seeds[i] = graph.Ref{Table: ops.NormalizeTable(n.Table), ID: n.ID}
@@ -78,4 +61,26 @@ func (s *Store) traverse(ctx context.Context, name, namespace string, seeds []No
 		out.Edges = append(out.Edges, NeighborEdge{Ref: NodeRef(e.Ref), Source: NodeRef(e.Source), Target: NodeRef(e.Target), Type: e.Type})
 	}
 	return out, nil
+}
+
+func (opts TraversalOptions) defaults() TraversalOptions {
+	if opts.Direction == "" {
+		opts.Direction = "both"
+	}
+	if opts.MaxHops == 0 {
+		opts.MaxHops = 4
+	}
+	if opts.MaxNodes == 0 {
+		opts.MaxNodes = 1000
+	}
+	if opts.MaxEdges == 0 {
+		opts.MaxEdges = 1000
+	}
+	if opts.MaxWork == 0 {
+		opts.MaxWork = 1000
+	}
+	if opts.MaxElapsed == 0 {
+		opts.MaxElapsed = time.Second
+	}
+	return opts
 }

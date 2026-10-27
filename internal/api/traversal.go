@@ -58,24 +58,10 @@ func traversalFunc(name string) func(context.Context, *Server, []byte) (any, err
 		if (name == "find_path" && seedsPresent) || (name == "subgraph" && (sourcePresent || targetPresent)) {
 			return nil, badRequest("find_path accepts source/target; subgraph accepts seeds")
 		}
-		limits := []int{4, 1000, 1000, 1000, 1000}
-		for i, p := range []struct {
-			raw  json.RawMessage
-			name string
-			max  int
-		}{{req.MaxHops, "max_hops", 32}, {req.MaxNodes, "max_nodes", 1000}, {req.MaxEdges, "max_edges", 1000}, {req.MaxWork, "max_work", 1000}, {req.MaxElapsed, "max_elapsed_ms", 30000}} {
-			n, err := parseOptPosInt(p.raw, p.name)
-			if err != nil {
-				return nil, err
-			}
-			if n > p.max {
-				return nil, badRequest("%s must be at most %d", p.name, p.max)
-			}
-			if n != 0 {
-				limits[i] = n
-			}
+		q, err := req.query()
+		if err != nil {
+			return nil, err
 		}
-		q := graph.TraversalQuery{Seeds: req.Seeds, Direction: req.Direction, RelationTypes: req.RelationTypes, MaxHops: limits[0], MaxWork: limits[3], Limits: graph.Limits{Nodes: limits[1], Edges: limits[2], Elapsed: time.Duration(limits[4]) * time.Millisecond}}
 		if name == "find_path" {
 			q.Seeds = []graph.Ref{req.Source}
 			q.Target = &req.Target
@@ -102,4 +88,26 @@ func traversalFunc(name string) func(context.Context, *Server, []byte) (any, err
 		}
 		return out, nil
 	}
+}
+
+func (req traversalReq) query() (graph.TraversalQuery, error) {
+	limits := []int{4, 1000, 1000, 1000, 1000}
+	for i, p := range []struct {
+		raw  json.RawMessage
+		name string
+		max  int
+	}{{req.MaxHops, "max_hops", 32}, {req.MaxNodes, "max_nodes", 1000}, {req.MaxEdges, "max_edges", 1000}, {req.MaxWork, "max_work", 1000}, {req.MaxElapsed, "max_elapsed_ms", 30000}} {
+		n, err := parseOptPosInt(p.raw, p.name)
+		if err != nil {
+			return graph.TraversalQuery{}, err
+		}
+		if n > p.max {
+			return graph.TraversalQuery{}, badRequest("%s must be at most %d", p.name, p.max)
+		}
+		if n != 0 {
+			limits[i] = n
+		}
+	}
+	q := graph.TraversalQuery{Seeds: req.Seeds, Direction: req.Direction, RelationTypes: req.RelationTypes, MaxHops: limits[0], MaxWork: limits[3], Limits: graph.Limits{Nodes: limits[1], Edges: limits[2], Elapsed: time.Duration(limits[4]) * time.Millisecond}}
+	return q, nil
 }

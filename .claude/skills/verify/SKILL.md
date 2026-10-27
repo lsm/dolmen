@@ -39,6 +39,8 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 | `scripts/graph-traversal.py W OUTPUT_JSON` | Compiled HTTP, MCP-over-HTTP and MCP stdio find_path/subgraph, each truncation reason, and deterministic blocked-snapshot elapsed proof; owns/stops its stdio child. |
 | `scripts/graph-checks.sh OUTPUT_PREFIX` | Runs every test-suites.md tier and a source-run vulnerability scan, preserving a log per check at OUTPUT_PREFIX-*.log. Use a patched GOTOOLCHAIN when needed. |
 | `scripts/graph-search-core/` | Standalone SQLite graph search consumer with synthetic own-row seeds, properties, relation types and bounds; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-core`. |
+| `scripts/graph-search.py W OUTPUT_JSON` | Compiled HTTP, MCP HTTP and stdio seeds, global ranking, filters, expansion and bounds. |
+| `scripts/graph-search-go/` | Public Go SearchGraph consumer with synthetic vectors; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-go`. |
 | `scripts/graph-sqlite/` | Standalone Go consumer of the SQLite graph adapter; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-sqlite`. |
 
 ```bash
