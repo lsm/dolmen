@@ -1,6 +1,12 @@
 package conformance
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"github.com/lsm/dolmen"
+	"math"
+	"testing"
+)
 
 func TestSearchGraph(t *testing.T) {
 	if testEngine(t) != "sqlite" {
@@ -95,5 +101,36 @@ func TestSearchGraphTextAndAccess(t *testing.T) {
 				t.Fatalf("empty search must validate expansion: %s", code)
 			}
 		})
+	}
+}
+
+func TestSearchGraphFacade(t *testing.T) {
+	if testEngine(t) != "sqlite" {
+		t.Skip("SQLite graph adapter")
+	}
+	h := newHarness(t)
+	h.seedTable("acme", "docs", []map[string]any{{"name": "body", "type": "text", "vectorize": true}})
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "docs", "records": []any{map[string]any{"body": "synthetic seed"}}})
+	s, err := dolmen.Open(h.dir, dolmen.WithEmbedding(h.emb))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	out, err := s.SearchGraph(t.Context(), "acme", []string{" Docs "}, dolmen.VectorQuery{Text: "synthetic seed"}, 0, dolmen.SearchOptions{}, dolmen.TraversalOptions{})
+	if err != nil || len(out.Seeds) != 1 || out.Seeds[0].Ref != (dolmen.NodeRef{Table: "docs", ID: 1}) || len(out.Nodes) != 1 || out.Truncated {
+		t.Fatalf("Go seed: %+v %v", out, err)
+	}
+	sub, err := s.Subgraph(t.Context(), "acme", []dolmen.NodeRef{out.Seeds[0].Ref}, dolmen.TraversalOptions{})
+	if err != nil || len(sub.Nodes) != 1 {
+		t.Fatalf("Go seed not reusable in graph calls: %+v %v", sub, err)
+	}
+	bad := math.NaN()
+	if _, err = s.SearchGraph(t.Context(), "acme", []string{"docs"}, dolmen.VectorQuery{Text: "synthetic seed", MinScore: &bad}, 1, dolmen.SearchOptions{}, dolmen.TraversalOptions{}); !errors.Is(err, dolmen.ErrInvalidRequest) {
+		t.Fatalf("non-finite min_score: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err = s.SearchGraph(ctx, "acme", []string{"docs"}, dolmen.VectorQuery{Text: "synthetic seed"}, 1, dolmen.SearchOptions{}, dolmen.TraversalOptions{}); !errors.Is(err, dolmen.ErrCanceled) {
+		t.Fatalf("cancellation: %v", err)
 	}
 }
