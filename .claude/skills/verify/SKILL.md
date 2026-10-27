@@ -14,7 +14,8 @@ ones your change touches; every change also runs `journeys/test-suites.md`.
 All state is synthetic and lives in a fresh temp dir; nothing touches `./data`,
 your real `DOLMEN_*` env, or a downloaded embedding model.
 
-- Go: the version in `go.mod`. No cgo (`CGO_ENABLED=0` for builds).
+- Go: at least the version in `go.mod`, with automatic toolchain selection for dependencies. No cgo (`CGO_ENABLED=0` for builds).
+- Vulnerability scans: use a patched Go toolchain and source-run `go run golang.org/x/vuln/cmd/govulncheck@latest ./...` if the installed scanner was built with an older Go parser. The Go 1.27 standard-library certificate advisory requires 1.27.3 or later.
 - macOS: resolve the temp dir before running Go tests, or three root-package
   symlink tests fail spuriously (see CLAUDE.md):
   `export TMPDIR="$(cd "$TMPDIR" && pwd -P)"`
@@ -36,6 +37,8 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 | `scripts/source-import.py W CONTAINER` | Synthetic SQLite/Postgres export-to-CLI migration proof; uses the disposable `pg.sh` container with `DOCKER_CONTEXT=colima`. |
 | `scripts/graph-neighbors.py W OUTPUT_JSON` | Compiled-daemon HTTP/MCP neighbors with synthetic API keys, table visibility, owner scopes and budget evidence; owns and stops its separate auth daemon. |
 | `scripts/graph-traversal.py W OUTPUT_JSON` | Compiled HTTP, MCP-over-HTTP and MCP stdio find_path/subgraph, each truncation reason, and deterministic blocked-snapshot elapsed proof; owns/stops its stdio child. |
+| `scripts/graph-checks.sh OUTPUT_PREFIX` | Runs every test-suites.md tier and a source-run vulnerability scan, preserving a log per check at OUTPUT_PREFIX-*.log. Use a patched GOTOOLCHAIN when needed. |
+| `scripts/graph-search-core/` | Standalone SQLite graph search consumer with synthetic own-row seeds, properties, relation types and bounds; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-core`. |
 | `scripts/graph-sqlite/` | Standalone Go consumer of the SQLite graph adapter; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-sqlite`. |
 
 ```bash

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lsm/dolmen/internal/derr"
 	"github.com/lsm/dolmen/internal/graph"
 	"github.com/lsm/dolmen/internal/schema"
 )
@@ -58,7 +59,7 @@ func TestSearchGraphCore(t *testing.T) {
 		t.Fatalf("empty: %+v %v", out, err)
 	}
 	ex.Direction = "invalid"
-	if _, err = s.SearchGraph(t.Context(), "ns", []string{"alpha"}, q, 1, ex, nil); !errors.Is(err, ErrInvalid) {
+	if _, err = s.SearchGraph(t.Context(), "ns", []string{"alpha"}, q, 1, ex, nil); !errors.Is(err, derr.ErrInvalidRequest) {
 		t.Fatalf("empty validates bounds: %v", err)
 	}
 }
@@ -90,7 +91,10 @@ func TestSearchGraphAccessAndElapsed(t *testing.T) {
 	s := searchGraphFixture(t)
 	for _, hidden := range []string{"alpha", "links", "beta"} {
 		out, err := s.SearchGraph(t.Context(), "ns", []string{"alpha"}, VectorQuery{Vec: []float32{1, 0}}, 1, searchExpansion(), func(_ context.Context, sc *schema.TableSchema) (*RowScope, error) {
-			return &RowScope{Empty: sc.Name == hidden}, nil
+			if sc.Name == hidden {
+				return &RowScope{Empty: true}, nil
+			}
+			return nil, nil
 		})
 		n := 1
 		if hidden == "alpha" {

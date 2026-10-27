@@ -45,8 +45,8 @@ func Traverse(ctx context.Context, index Index, namespace string, q TraversalQue
 			return result, derr.New(derr.InvalidRequest, "traversal references require a valid table and positive int64 id")
 		}
 	}
-	if q.MaxHops < 1 || q.MaxHops > 32 || q.MaxWork < 1 || q.MaxWork > 1000 || q.Limits.Nodes < 1 || q.Limits.Nodes > 1000 || q.Limits.Edges < 1 || q.Limits.Edges > 1000 || q.Limits.Elapsed <= 0 || q.Limits.Elapsed > 30*time.Second || len(q.RelationTypes) > 1000 || (q.Direction != "out" && q.Direction != "in" && q.Direction != "both") {
-		return result, derr.New(derr.InvalidRequest, "traversal requires max_hops 1 to 32, node/edge/work limits 1 to 1000, elapsed at most 30 seconds, at most 1000 relation types and direction out, in or both")
+	if err := ValidateTraversalLimits(q); err != nil {
+		return result, err
 	}
 	work, cancel := context.WithTimeout(ctx, q.Limits.Elapsed)
 	defer cancel()
@@ -188,4 +188,12 @@ func Traverse(ctx context.Context, index Index, namespace string, q TraversalQue
 		}
 	}
 	return finish("complete")
+}
+
+func ValidateTraversalLimits(q TraversalQuery) error {
+	if q.MaxHops < 1 || q.MaxHops > 32 || q.MaxWork < 1 || q.MaxWork > 1000 || q.Limits.Nodes < 1 || q.Limits.Nodes > 1000 || q.Limits.Edges < 1 || q.Limits.Edges > 1000 || q.Limits.Elapsed <= 0 || q.Limits.Elapsed > 30*time.Second || len(q.RelationTypes) > 1000 || (q.Direction != "out" && q.Direction != "in" && q.Direction != "both") {
+		return derr.New(derr.InvalidRequest, "traversal requires max_hops 1 to 32, node/edge/work limits 1 to 1000, elapsed at most 30 seconds, at most 1000 relation types and direction out, in or both")
+	}
+
+	return nil
 }
