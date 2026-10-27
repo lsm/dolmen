@@ -20,6 +20,7 @@ func init() {
 		OutputSchema: outSchema(map[string]any{"nodes": map[string]any{"type": "array", "items": ref}, "edges": map[string]any{"type": "array", "items": outSchema(map[string]any{"ref": ref, "source": ref, "target": ref, "type": prop("string", "Relation type")}, "ref", "source", "target", "type")}, "truncated": prop("boolean", "True when a work budget stopped the read"), "stop_reason": map[string]any{"type": "string", "enum": []string{"complete", "nodes", "edges", "elapsed"}}}, "nodes", "edges", "truncated", "stop_reason"),
 		Func:         neighborsFunc,
 	}
+	registerTraversals(ref, budget)
 }
 
 type neighborsReq struct {

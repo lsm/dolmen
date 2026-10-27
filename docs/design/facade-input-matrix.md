@@ -175,3 +175,12 @@ timeout)`, the façade's `-files-fetch-hosts` and `-files-fetch-timeout`; the ti
 or 0 for the default. Literal `{"url": …}` and `{"copy_from": …}` maps are refused like a literal
 `{"part": …}` map: only the typed values give the engine a file store to work with.
 
+
+## Bounded graph traversal
+
+`FindPath` and `Subgraph` normalize complete table/id references and share the
+SQLite graph core with HTTP/MCP. Zero Go `TraversalOptions` fields select
+defaults (4 hops, 1000 nodes/edges/work, one second); explicit wire zero budgets
+are invalid, as for neighbors. Negative/over-cap budgets reject on every surface.
+`TestGraphTraversalFacade` and `TestGraphTraversalWireBudgets` pin these contracts.
+The facade does not expose raw adjacency or bypass per-snapshot visibility.

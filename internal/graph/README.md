@@ -1,7 +1,7 @@
 # Graph read core
 
-Internal read core for #737. `internal/store` supplies the SQLite adapter; public
-Go/HTTP/MCP operations follow separately. There is no user-facing neighbors route yet.
+Shared graph read core. `internal/store` supplies the SQLite adapter; neighbors,
+find_path and subgraph are exposed through Go, HTTP and MCP.
 
 `Index.Snapshot` opens one namespace's consistent, read-your-writes view. It owns
 any storage pin/transaction until `Close`. `Visible` must apply that request's
@@ -51,3 +51,21 @@ missing indexes rebuild without copying/deleting authoritative rows. Ambiguous
 endpoint foreign-key targets are refused by the new reader rather than guessed;
 existing constraint declaration rules are unchanged. Candidate pages retain the
 existing read-byte bound, besides the graph's row and elapsed bounds.
+
+## Multi-hop traversal
+
+`Traverse` performs BFS over the existing visibility-checked one-hop reader,
+borrowing one snapshot for the entire request and closing the underlying view
+once. It never reconnects snapshots per hop. Seeds deduplicate by table/id.
+`find_path` uses one source and target, returns a shortest unweighted path in
+traversal order, and returns empty arrays for an unestablished path (including a
+bounded miss). `subgraph` returns sorted references and complete edges.
+
+Traversal bounds: 1–32 hops, 1–1000 visited nodes, 1–1000 distinct returned edges,
+1–1000 examined adjacency candidates (`max_work`), and at most 30 seconds including
+snapshot setup. Candidate work counts filtered/hidden/repeated edges. Seed checks
+are additionally capped at 1000. A remaining frontier at the hop bound stops
+conservatively, without another adjacency probe. Exactly reaching a budget is
+not proof that unseen adjacency is empty. Reasons are `hops`, `nodes`, `edges`,
+`work`, `elapsed` or `complete`; caller cancellation and backend faults remain
+errors. A found shortest path is complete even when unrelated branches remain.

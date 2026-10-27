@@ -145,6 +145,8 @@ func relationParitySteps() []parityStep {
 		{"relate", "relate", map[string]any{"namespace": ns, "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"weight": 0.5}, "idempotency_key": "edge-1"}, false},
 		{"relate_replay", "relate", map[string]any{"namespace": ns, "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"weight": 0.5}, "idempotency_key": "edge-1"}, false},
 		{"neighbors", "neighbors", map[string]any{"namespace": ns, "node": map[string]any{"table": "nodes", "id": 1}}, false},
+		{"find_path", "find_path", map[string]any{"namespace": ns, "source": map[string]any{"table": "nodes", "id": 1}, "target": map[string]any{"table": "nodes", "id": 2}}, false},
+		{"subgraph", "subgraph", map[string]any{"namespace": ns, "seeds": []any{map[string]any{"table": "nodes", "id": 1}}}, false},
 		{"drop_relation", "drop_table", map[string]any{"namespace": ns, "table": "links", "confirm": "links"}, false},
 	}
 }
@@ -152,6 +154,8 @@ func relationParitySteps() []parityStep {
 var parityPinnedElsewhere = map[string]string{
 	"file_url":  "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
 	"neighbors": "TestNeighborsRequiresSQLite on engines without a graph adapter",
+	"find_path": "TestGraphTraversalRequiresSQLite on engines without a graph adapter",
+	"subgraph":  "TestGraphTraversalRequiresSQLite on engines without a graph adapter",
 	"relate":    "TestRelateInsertsOneIdempotentEdge on engines that cannot declare relation tables",
 }
 
