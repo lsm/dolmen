@@ -7,14 +7,18 @@ S=.claude/skills/verify/scripts
 W=$(env -u DOLMEN_ADMIN_KEY $S/serve.sh)
 trap '$S/stop.sh "$W"' EXIT
 $S/graph-search.py "$W" "$W/graph-search.json"
+$S/graph-search-auth.py "$W" "$W/graph-search-auth.json"
 CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-go
 ```
 
 Expect three `PASS compiled` lines for HTTP, MCP over HTTP and MCP stdio,
-and one `PASS Go SearchGraph` line. The wire journey checks cross-table tie
+four authenticated HTTP/MCP PASS lines, and one `PASS Go SearchGraph` line.
+The auth journey proves hidden and absent seed tables both return forbidden
+before revealing vector metadata, and update-only own-row grants score only
+the caller's seed. It uses fresh synthetic keys and stops its separate daemon. The wire journey checks cross-table tie
 ordering, separate cosine seed scores, property predicates before ranking,
 relation-type filtering, adjacency expansion, node/hop stops and empty search.
-Save the JSON and logs before stop.sh removes W. Run test-suites.md as well.
+Save both JSON files and server/stdio/auth logs before stop.sh removes W. Run test-suites.md as well.
 
 `tables` supplies 1–100 seed tables; `top_k` defaults to 10 and caps at 200.
 Use `text` with a configured embedding provider or `vector` for caller-managed

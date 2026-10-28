@@ -62,10 +62,13 @@ func searchGraphFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 	if !ok {
 		return nil, badRequest("search_graph requires the SQLite graph adapter")
 	}
-	var query store.VectorQuery
 	for i, table := range req.Tables {
 		table = normTable(table)
 		req.Tables[i] = table
+		authBody, _ := json.Marshal(grantObjectRaw{Namespace: ns, Table: table})
+		if err := s.authorizeOp(ctx, "search_vector", authBody); err != nil {
+			return nil, err
+		}
 		_, _, sc, err := s.resolveScopeState(ctx, ns, table)
 		if err != nil {
 			return nil, err
@@ -73,14 +76,12 @@ func searchGraphFunc(ctx context.Context, s *Server, body []byte) (any, error) {
 		if err := s.checkFilter(ctx, sc, req.Filter, req.Args); err != nil {
 			return nil, err
 		}
-		if i != 0 {
-			continue
-		}
-		query, err = ops.PrepareVectorQuery(ctx, s.eng, ns, table, ops.VectorQuery{Text: req.Text, Vec: req.Vector, Column: req.Column, Filter: req.Filter, Args: req.Args, MinScore: req.MinScore}, s.tracedEmbedder(), embedProviderHelp)
-		if err != nil {
-			return nil, wrapStoreErr(err)
-		}
 	}
+	query, err := ops.PrepareVectorQuery(ctx, s.eng, ns, req.Tables[0], ops.VectorQuery{Text: req.Text, Vec: req.Vector, Column: req.Column, Filter: req.Filter, Args: req.Args, MinScore: req.MinScore}, s.tracedEmbedder(), embedProviderHelp)
+	if err != nil {
+		return nil, wrapStoreErr(err)
+	}
+
 	out, err := eng.SearchGraph(ctx, ns, req.Tables, query, req.TopK, q, s.graphScope)
 	if err != nil {
 		return nil, wrapStoreErr(err)
