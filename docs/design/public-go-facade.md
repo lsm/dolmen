@@ -87,7 +87,7 @@ namespace and table strings (a table list for `SearchGraph`); do not introduce l
 binding to a table incarnation. Each call resolves the current named resource.
 
 `SearchGraph(ctx, namespace, tables, query, topK, search, expansion)` selects
-semantic seeds across 1–100 tables, then expands visible SQLite connections in
+semantic seeds across 1–100 unique normalized tables, then expands visible SQLite connections in
 one snapshot. `GraphSearchResult` carries `GraphResult`, separately scored
 `[]GraphSeed` values and `SkippedVectors`; every reference is a public `NodeRef`.
 Go `topK=0` selects 10; otherwise use 1–200. Zero `TraversalOptions` select the

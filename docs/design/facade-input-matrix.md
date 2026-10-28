@@ -189,7 +189,7 @@ The facade does not expose raw adjacency or bypass per-snapshot visibility.
 ## Semantic graph search
 
 `SearchGraph` uses the SQLite search/traversal core. Table names are normalized;
-1–100 tables and `topK` 1–200 are accepted. Go `topK=0` selects 10, while an
+1–100 unique tables and `topK` 1–200 are accepted. Duplicate normalized table names return `invalid_request` on every surface (`TestSearchGraphDuplicateTables`). Go `topK=0` selects 10, while an
 explicit wire `top_k=0` is `invalid_request`; omission selects 10 on the wire.
 Negative/over-cap values reject. Zero Go expansion fields select the defaults
 recorded above; explicit wire zero bounds reject. The vector bound is counted

@@ -13,11 +13,13 @@ CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-go
 ```
 
 Expect three `PASS compiled` lines for HTTP, MCP over HTTP and MCP stdio,
-six authenticated HTTP/MCP PASS lines, three strict schema-discovery PASS lines,
-and three `PASS Go SearchGraph` lines.
+eight authenticated HTTP/MCP PASS lines, three strict schema-discovery PASS lines,
+and four `PASS Go SearchGraph` lines.
 The auth journey proves hidden and absent seed tables both return forbidden
 before revealing vector metadata, and update-only own-row grants score only
 the caller's seed, and that vector size is bounded before typed element decoding.
+Duplicate table names, including normalization collisions and nonadjacent repeats,
+return invalid_request on HTTP/MCP and the Go facade before vector scanning.
 It uses fresh synthetic keys and stops its separate daemon. The Go consumer
 checks empty managed spaces and a text query using a synthetic provider. The wire journey checks cross-table tie
 ordering, separate cosine seed scores, property predicates before ranking,
