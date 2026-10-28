@@ -81,6 +81,18 @@ with (work / 'graph-search-auth.log').open('w') as log:
             evidence[f'vector_bound_{mcp}'] = data
             assert code == 'invalid_request' and 'vector has more than 4096 numbers' in data['message'], (code, data)
             print(f'PASS compiled {"MCP" if mcp else "HTTP"}: vector bound precedes typed element decoding')
+        duplicate_failures = []
+        must('insert', {'namespace': 'verify', 'table': 'visible', 'records': [{'v': [1, 0]}, {'v': [0, 0]}]})
+        for mcp in (False, True):
+            baseline, code = call('search_graph', {'namespace': 'verify', 'tables': ['visible'], 'vector': [1, 0]}, mcp=mcp)
+            assert not code and len(baseline['seeds']) == 2, (code, baseline)
+            for tables in (['visible', 'visible'], ['visible', ' Visible '], ['visible', 'own_nodes', 'visible']):
+                data, code = call('search_graph', {'namespace': 'verify', 'tables': tables, 'vector': [1, 0]}, mcp=mcp)
+                evidence[f'duplicate_{mcp}_{tables}'] = {'code': code, 'data': data, 'baseline': baseline}
+                if code != 'invalid_request':
+                    duplicate_failures.append((mcp, tables, code, data))
+            print(f'{"FAIL" if duplicate_failures else "PASS"} compiled {"MCP" if mcp else "HTTP"}: duplicate normalized seed tables return invalid_request')
+        assert not duplicate_failures, duplicate_failures
         for principal in ('alice', 'bob'):
             grant(principal, '', ['read', 'create'])
             must('insert', {'namespace': 'verify', 'table': 'own_nodes', 'records': [{'v': [1, 0]}]}, keys[principal])

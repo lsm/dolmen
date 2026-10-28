@@ -248,3 +248,29 @@ func TestSearchGraphDiscoverySchema(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchGraphDuplicateTables(t *testing.T) {
+	if testEngine(t) != "sqlite" {
+		t.Skip("SQLite graph adapter")
+	}
+	h := newHarness(t)
+	h.seedTable("acme", "docs", []map[string]any{{"name": "v", "type": "vector", "dim": 2}})
+	h.seedTable("acme", "other", []map[string]any{{"name": "v", "type": "vector", "dim": 2}})
+	for _, tables := range [][]string{{"docs", "docs"}, {"docs", " Docs "}, {"docs", "other", "docs"}} {
+		for _, transport := range []string{"http", "mcp"} {
+			_, code := traversalCall(t, h, transport, "search_graph", identity{}, map[string]any{"namespace": "acme", "tables": tables, "vector": []float64{1, 0}})
+			if code != "invalid_request" {
+				t.Errorf("%s duplicate tables %v: %s", transport, tables, code)
+			}
+		}
+	}
+	s, err := dolmen.Open(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, err = s.SearchGraph(t.Context(), "acme", []string{"docs", " Docs "}, dolmen.VectorQuery{Vec: []float32{1, 0}}, 1, dolmen.SearchOptions{}, dolmen.TraversalOptions{})
+	if !errors.Is(err, dolmen.ErrInvalidRequest) {
+		t.Fatalf("Go duplicate tables: %v", err)
+	}
+}

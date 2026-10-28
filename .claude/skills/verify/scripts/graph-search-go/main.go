@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/lsm/dolmen"
 	"os"
@@ -46,6 +47,11 @@ func main() {
 		panic(fmt.Sprintf("unexpected result: %+v", out))
 	}
 	fmt.Printf("PASS Go SearchGraph: seed id=%d score=%g, %d node, complete\n", out.Seeds[0].Ref.ID, out.Seeds[0].Score, len(out.Nodes))
+	_, err = s.SearchGraph(ctx, "demo", []string{"nodes", " Nodes "}, dolmen.VectorQuery{Vec: []float32{1, 0}}, 1, dolmen.SearchOptions{}, dolmen.TraversalOptions{})
+	if !errors.Is(err, dolmen.ErrInvalidRequest) {
+		panic(fmt.Sprintf("duplicate tables must be invalid: %v", err))
+	}
+	fmt.Println("PASS Go SearchGraph: duplicate normalized seed tables return invalid_request")
 	_, err = s.CreateTable(ctx, "demo", "empty_docs", []dolmen.Field{{Name: "body", Type: dolmen.Text, Vectorize: true}})
 	must(err)
 	baseline, err := s.SearchVector(ctx, "demo", "empty_docs", dolmen.VectorQuery{Vec: []float32{1, 0}}, dolmen.SearchOptions{})
