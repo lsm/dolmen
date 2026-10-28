@@ -50,6 +50,7 @@ func (s *Store) SearchGraph(ctx context.Context, ns string, tables []string, q V
 		}
 		return out, e
 	}
+	q.Filter = strings.TrimSpace(q.Filter)
 	for i, arg := range q.Args {
 		q.Args[i] = normalizeArg(arg)
 	}
