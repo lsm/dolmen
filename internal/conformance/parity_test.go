@@ -152,7 +152,7 @@ func relationParitySteps() []parityStep {
 }
 
 var parityPinnedElsewhere = map[string]string{
-	"search_graph": "TestSearchGraph",
+	"search_graph": "TestSearchGraphRequiresSQLite on engines without a graph adapter",
 	"file_url":     "TestFileURLAgreesAcrossTransportsAndBoundsItsTTL",
 	"neighbors":    "TestNeighborsRequiresSQLite on engines without a graph adapter",
 	"find_path":    "TestGraphTraversalRequiresSQLite on engines without a graph adapter",

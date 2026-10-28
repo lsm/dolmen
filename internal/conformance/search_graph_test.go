@@ -134,3 +134,16 @@ func TestSearchGraphFacade(t *testing.T) {
 		t.Fatalf("cancellation: %v", err)
 	}
 }
+
+func TestSearchGraphRequiresSQLite(t *testing.T) {
+	if testEngine(t) == "sqlite" {
+		t.Skip("other-engine refusal proof")
+	}
+	h := newHarness(t)
+	for _, transport := range []string{"http", "mcp"} {
+		_, code := traversalCall(t, h, transport, "search_graph", identity{}, map[string]any{"namespace": "missing", "tables": []string{"nodes"}, "vector": []float64{1, 0}})
+		if code != "invalid_request" {
+			t.Fatalf("%s unsupported adapter: %s", transport, code)
+		}
+	}
+}
