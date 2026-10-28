@@ -65,8 +65,10 @@ with (work / 'graph-search-stdio.log').open('w') as log:
                 evidence[surface + '_' + reason] = out
             out = call(surface, 'search_graph', {**body, 'expansion': {'relation_types': ['other']}})
             assert len(out['nodes']) == 1 and not out['edges'] and not out['truncated'], out
+            evidence[surface + '_type_filter'] = out
             out = call(surface, 'search_graph', {**body, 'args': ['absent']})
             assert out['seeds'] == [] and out['nodes'] == [] and not out['truncated'], out
+            evidence[surface + '_empty'] = out
             print(f'PASS compiled {surface}: global seed ranking, scores, property/type filters, expansion, node/hop bounds, empty search')
     finally:
         proc.terminate()
