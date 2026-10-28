@@ -41,6 +41,33 @@ func (s *Store) traverse(ctx context.Context, name, namespace string, seeds []No
 	if !ok {
 		return out, derr.New(derr.InvalidRequest, "graph traversal requires the SQLite graph adapter")
 	}
+	opts = opts.defaults()
+	q := graph.TraversalQuery{Seeds: make([]graph.Ref, len(seeds)), Direction: opts.Direction, RelationTypes: opts.RelationTypes, MaxHops: opts.MaxHops, MaxWork: opts.MaxWork, Limits: graph.Limits{Nodes: opts.MaxNodes, Edges: opts.MaxEdges, Elapsed: opts.MaxElapsed}}
+	for i, n := range seeds {
+		q.Seeds[i] = graph.Ref{Table: ops.NormalizeTable(n.Table), ID: n.ID}
+	}
+	if target != nil {
+		q.Target = &graph.Ref{Table: ops.NormalizeTable(target.Table), ID: target.ID}
+	}
+	res, err := graph.Traverse(ctx, index.GraphIndex(nil), ops.NormalizeNamespace(namespace), q)
+	if err != nil {
+		return out, facadeErr(ctx, err)
+	}
+	return graphResult(res), nil
+}
+
+func graphResult(res graph.Result) GraphResult {
+	out := GraphResult{Nodes: make([]NodeRef, 0, len(res.Nodes)), Edges: make([]NeighborEdge, 0, len(res.Edges)), Truncated: res.Truncated, StopReason: res.StopReason}
+	for _, n := range res.Nodes {
+		out.Nodes = append(out.Nodes, NodeRef(n))
+	}
+	for _, e := range res.Edges {
+		out.Edges = append(out.Edges, NeighborEdge{Ref: NodeRef(e.Ref), Source: NodeRef(e.Source), Target: NodeRef(e.Target), Type: e.Type})
+	}
+	return out
+}
+
+func (opts TraversalOptions) defaults() TraversalOptions {
 	if opts.Direction == "" {
 		opts.Direction = "both"
 	}
@@ -59,23 +86,5 @@ func (s *Store) traverse(ctx context.Context, name, namespace string, seeds []No
 	if opts.MaxElapsed == 0 {
 		opts.MaxElapsed = time.Second
 	}
-	q := graph.TraversalQuery{Seeds: make([]graph.Ref, len(seeds)), Direction: opts.Direction, RelationTypes: opts.RelationTypes, MaxHops: opts.MaxHops, MaxWork: opts.MaxWork, Limits: graph.Limits{Nodes: opts.MaxNodes, Edges: opts.MaxEdges, Elapsed: opts.MaxElapsed}}
-	for i, n := range seeds {
-		q.Seeds[i] = graph.Ref{Table: ops.NormalizeTable(n.Table), ID: n.ID}
-	}
-	if target != nil {
-		q.Target = &graph.Ref{Table: ops.NormalizeTable(target.Table), ID: target.ID}
-	}
-	res, err := graph.Traverse(ctx, index.GraphIndex(nil), ops.NormalizeNamespace(namespace), q)
-	if err != nil {
-		return out, facadeErr(ctx, err)
-	}
-	out = GraphResult{Nodes: make([]NodeRef, 0, len(res.Nodes)), Edges: make([]NeighborEdge, 0, len(res.Edges)), Truncated: res.Truncated, StopReason: res.StopReason}
-	for _, n := range res.Nodes {
-		out.Nodes = append(out.Nodes, NodeRef(n))
-	}
-	for _, e := range res.Edges {
-		out.Edges = append(out.Edges, NeighborEdge{Ref: NodeRef(e.Ref), Source: NodeRef(e.Source), Target: NodeRef(e.Target), Type: e.Type})
-	}
-	return out, nil
+	return opts
 }

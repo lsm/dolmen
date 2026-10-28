@@ -72,6 +72,7 @@ var toolAnnotations = map[string]map[string]any{
 	"file_url":        {"title": "Get a file download URL", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
 	"find_path":       {"title": "Find a bounded graph path", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"subgraph":        {"title": "Read a bounded subgraph", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+	"search_graph":    {"title": "Search and expand graph", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 	"neighbors":       {"title": "Read graph neighbors", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"read_rows":       {"title": "Read rows by id", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
 	"search_fulltext": {"title": "Full-text search", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},

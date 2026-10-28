@@ -21,6 +21,7 @@ func init() {
 		Func:         neighborsFunc,
 	}
 	registerTraversals(ref, budget)
+	registerSearchGraph(ref, budget)
 }
 
 type neighborsReq struct {

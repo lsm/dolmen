@@ -10,19 +10,25 @@ import (
 )
 
 func TestAnOversizedQueryVectorIsRefusedBeforeItIsDecoded(t *testing.T) {
-	for _, key := range []string{"vector", "Vector", "VECTOR"} {
-		t.Run(key, func(t *testing.T) {
-			refusesBeforeDecoding(t, []byte(`{"namespace":"ns","table":"t","`+key+`":[`+strings.Repeat("0.5,", 2_000_000)+`0.5]}`))
-		})
+	for _, op := range []string{"search_vector", "search_graph"} {
+		for _, key := range []string{"vector", "Vector", "VECTOR"} {
+			t.Run(op+"/"+key, func(t *testing.T) {
+				target := `"table":"t"`
+				if op == "search_graph" {
+					target = `"tables":["t"]`
+				}
+				refusesBeforeDecoding(t, op, []byte(`{"namespace":"ns",`+target+`,"`+key+`":[`+strings.Repeat("0.5,", 2_000_000)+`0.5]}`))
+			})
+		}
 	}
 }
 
-func refusesBeforeDecoding(t *testing.T, body []byte) {
+func refusesBeforeDecoding(t *testing.T, op string, body []byte) {
 	t.Helper()
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	_, err := Ops["search_vector"].Func(context.Background(), New(nil, nil), body)
+	_, err := Ops[op].Func(context.Background(), New(nil, nil), body)
 	runtime.ReadMemStats(&after)
 	got := WrapError(err)
 	if got.Code != ErrCodeInvalid || !strings.Contains(got.Message, "vector has more than 4096 numbers") {

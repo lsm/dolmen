@@ -31,8 +31,8 @@ func (v searchGraphIndex) Snapshot(context.Context, string) (graph.Snapshot, err
 
 func (s *Store) SearchGraph(ctx context.Context, ns string, tables []string, q VectorQuery, topK int, expansion graph.TraversalQuery, access GraphAccess) (out GraphSearchResult, err error) {
 	out = GraphSearchResult{Result: graph.Result{Nodes: []graph.Ref{}, Edges: []graph.Edge{}, StopReason: "complete"}, Seeds: []GraphSeed{}}
-	if len(tables) == 0 || len(tables) > 100 || topK < 1 || topK > 200 {
-		return out, invalidf("search_graph requires 1 to 100 tables and top_k 1 to 200")
+	if len(tables) == 0 || len(tables) > 100 || topK < 1 || topK > 200 || len(slices.Compact(slices.Sorted(slices.Values(tables)))) != len(tables) {
+		return out, invalidf("search_graph requires 1 to 100 unique tables and top_k 1 to 200")
 	}
 	if err := graph.ValidateTraversalLimits(expansion); err != nil {
 		return out, err
@@ -72,7 +72,7 @@ func (s *Store) SearchGraph(ctx context.Context, ns string, tables []string, q V
 		if e != nil {
 			return out, e
 		}
-		if len(q.Vec) != dim || !allFinite(q.Vec) {
+		if (dim > 0 && len(q.Vec) != dim) || !allFinite(q.Vec) {
 			return out, invalidf("query vector must be finite and match column dimension")
 		}
 		threshold := math.Inf(-1)

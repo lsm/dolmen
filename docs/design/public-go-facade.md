@@ -77,14 +77,30 @@ The first slice exposes these operation families:
 | Namespace lifecycle | `CreateNamespace`, `ListNamespaces`, `DropNamespace` | Names and list options |
 | Table lifecycle | `CreateTable`, `CreateTableWithOptions`, `ListTables`, `DescribeTable`, `DropTable` | `Field`, `FieldType`, `TableSchema`, `CreateTableOptions` (row access, constraints, reference opt-in, relation), `Constraint`, `UniqueConstraint`, `ForeignKeyConstraint`, `Relation` |
 | Writes | `Insert`, `Update`, `Delete`, `UpsertByKey`, `ImportRecords`, `Relate` | Operation-specific options and write results |
-| Reads | `GetRows`, `Query`, `Neighbors`, `FindPath`, `Subgraph` | Query options and `QueryResult`; `NodeRef`, `NeighborEdge`, `NeighborsOptions`, `NeighborsResult`, `TraversalOptions`, `GraphResult` (SQLite) |
+| Reads | `GetRows`, `Query`, `Neighbors`, `FindPath`, `Subgraph`, `SearchGraph` | Query options and `QueryResult`; `NodeRef`, `NeighborEdge`, `NeighborsOptions`, `NeighborsResult`, `TraversalOptions`, `GraphResult`, `GraphSeed`, `GraphSearchResult`, `SearchOptions`, `VectorQuery` (SQLite graph methods) |
 | Search | `SearchFulltext`, `SearchVector` | Search options, `VectorQuery`, `SearchResult` |
 
 Use named options structs for filters, arguments, limits, offsets, hidden-column
 selection, and idempotency where the corresponding operation supports them. Avoid
 copying the engine's long positional signatures. Required coordinates remain
-namespace and table strings; do not introduce long-lived table handles that imply
+namespace and table strings (a table list for `SearchGraph`); do not introduce long-lived table handles that imply
 binding to a table incarnation. Each call resolves the current named resource.
+
+`SearchGraph(ctx, namespace, tables, query, topK, search, expansion)` selects
+semantic seeds across 1–100 unique normalized tables, then expands visible SQLite connections in
+one snapshot. `GraphSearchResult` carries `GraphResult`, separately scored
+`[]GraphSeed` values and `SkippedVectors`; every reference is a public `NodeRef`.
+Go `topK=0` selects 10; otherwise use 1–200. Zero `TraversalOptions` select the
+same defaults as `Subgraph`. Empty managed embedding spaces return no seeds,
+matching `SearchVector` before the first vectorized write establishes a dimension.
+
+`SearchOptions` is intentionally reused for `Filter` and `Args` only. `Limit`,
+`Offset`, `IncludeHidden` and `Reveal` do not affect graph results: `topK` selects
+seeds, expansion options bound connections, and results contain references and
+scores rather than row columns. The common `SearchOptions` validation still
+runs, including its limit/offset range checks. Leave irrelevant fields zero when
+constructing options specifically for graph search. The input matrix records
+wire defaults and the explicit-zero differences.
 
 Public schema/result types must be nameable without importing `internal` packages.
 Keep public definitions deliberate and convert at the boundary; do not alias the
