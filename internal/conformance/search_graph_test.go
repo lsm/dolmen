@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/lsm/dolmen"
 	"math"
@@ -217,5 +218,33 @@ func TestSearchGraphSeedTableAuthorization(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSearchGraphDiscoverySchema(t *testing.T) {
+	h := newHarness(t)
+	var spec map[string]any
+	if err := json.Unmarshal([]byte(h.mustHTTPGet(t, "/v1/openapi.json")), &spec); err != nil {
+		t.Fatal(err)
+	}
+	openapi := spec["paths"].(map[string]any)["/v1/search_graph"].(map[string]any)["post"].(map[string]any)["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	reply := h.rpc(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	schemas := map[string]map[string]any{"openapi": openapi}
+	for _, raw := range reply.result["tools"].([]any) {
+		tool := raw.(map[string]any)
+		if tool["name"] == "search_graph" {
+			schemas["mcp"] = tool["inputSchema"].(map[string]any)
+		}
+	}
+	if len(schemas) != 2 {
+		t.Fatal("search_graph missing from discovery")
+	}
+	for surface, input := range schemas {
+		expansion := input["properties"].(map[string]any)["expansion"].(map[string]any)
+		if required, present := expansion["required"]; present {
+			if _, ok := required.([]any); !ok {
+				t.Errorf("%s optional expansion publishes invalid required keyword: %#v", surface, required)
+			}
+		}
 	}
 }
