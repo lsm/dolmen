@@ -20,7 +20,7 @@ func registerSearchGraph(ref map[string]any, budget func(int) map[string]any) {
 	expansion := maps.Clone(Ops["subgraph"].InputSchema["properties"].(map[string]any))
 	delete(expansion, "namespace")
 	delete(expansion, "seeds")
-	props["expansion"] = outSchema(expansion)
+	props["expansion"] = objectSchema(false, expansion, nil)
 	outputs := maps.Clone(Ops["subgraph"].OutputSchema["properties"].(map[string]any))
 	outputs["seeds"] = map[string]any{"type": "array", "items": outSchema(map[string]any{"ref": ref, "score": prop("number", "Semantic seed cosine similarity")}, "ref", "score")}
 	outputs["skipped_vectors"] = prop("integer", "Unscorable vectors")

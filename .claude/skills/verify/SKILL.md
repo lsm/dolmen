@@ -16,6 +16,7 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 
 - Go: at least the version in `go.mod`, with automatic toolchain selection for dependencies. No cgo (`CGO_ENABLED=0` for builds).
 - Vulnerability scans: use a patched Go toolchain and source-run `go run golang.org/x/vuln/cmd/govulncheck@latest ./...` if the installed scanner was built with an older Go parser. The Go 1.27 standard-library certificate advisory requires 1.27.3 or later.
+- The graph schema-discovery proof needs Python `jsonschema` with `Draft202012Validator`: check with `python3 -c "from jsonschema import Draft202012Validator"`. If missing, install `jsonschema` in a disposable virtual environment and activate it before running the scripts; no Go dependency is added.
 - macOS: resolve the temp dir before running Go tests, or three root-package
   symlink tests fail spuriously (see CLAUDE.md):
   `export TMPDIR="$(cd "$TMPDIR" && pwd -P)"`
@@ -40,6 +41,7 @@ your real `DOLMEN_*` env, or a downloaded embedding model.
 | `scripts/graph-checks.sh OUTPUT_PREFIX` | Runs every test-suites.md tier and a source-run vulnerability scan, preserving a log per check at OUTPUT_PREFIX-*.log. Use a patched GOTOOLCHAIN when needed. |
 | `scripts/graph-search-core/` | Standalone SQLite graph search consumer with synthetic own-row seeds, properties, relation types and bounds; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-core`. |
 | `scripts/graph-search.py W OUTPUT_JSON` | Compiled HTTP, MCP HTTP and stdio seeds, global ranking, filters, expansion and bounds. |
+| `scripts/graph-search-schema.py W OUTPUT_JSON` | Strict Draft 2020-12 meta-validation of compiled OpenAPI and MCP HTTP/stdio graph input schemas; accepts optional empty expansion. |
 | `scripts/graph-search-auth.py W OUTPUT_JSON` | Authenticated compiled HTTP/MCP seed-table authorization and own-row scoring, with synthetic keys; owns/stops its auth daemon. |
 | `scripts/graph-search-go/` | Public Go SearchGraph consumer with synthetic vectors; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-search-go`. |
 | `scripts/graph-sqlite/` | Standalone Go consumer of the SQLite graph adapter; run with `CGO_ENABLED=0 go run ./.claude/skills/verify/scripts/graph-sqlite`. |
