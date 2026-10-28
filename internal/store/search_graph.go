@@ -72,7 +72,7 @@ func (s *Store) SearchGraph(ctx context.Context, ns string, tables []string, q V
 		if e != nil {
 			return out, e
 		}
-		if len(q.Vec) != dim || !allFinite(q.Vec) {
+		if (dim > 0 && len(q.Vec) != dim) || !allFinite(q.Vec) {
 			return out, invalidf("query vector must be finite and match column dimension")
 		}
 		threshold := math.Inf(-1)

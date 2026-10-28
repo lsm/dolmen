@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/lsm/dolmen"
 	"math"
+	"reflect"
 	"testing"
 )
 
@@ -132,6 +133,55 @@ func TestSearchGraphFacade(t *testing.T) {
 	cancel()
 	if _, err = s.SearchGraph(ctx, "acme", []string{"docs"}, dolmen.VectorQuery{Text: "synthetic seed"}, 1, dolmen.SearchOptions{}, dolmen.TraversalOptions{}); !errors.Is(err, dolmen.ErrCanceled) {
 		t.Fatalf("cancellation: %v", err)
+	}
+}
+
+func TestSearchGraphTransportsTopK(t *testing.T) {
+	if testEngine(t) != "sqlite" {
+		t.Skip("SQLite graph adapter")
+	}
+	h := newHarness(t)
+	h.seedTable("acme", "docs", []map[string]any{{"name": "v", "type": "vector", "dim": 2}})
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "docs", "records": []any{map[string]any{"v": []float64{1, 0}}, map[string]any{"v": []float64{0, 1}}}})
+	for _, transport := range []string{"http", "mcp"} {
+		body := map[string]any{"namespace": "acme", "tables": []string{"docs"}, "vector": []float64{1, 0}}
+		out, code := traversalCall(t, h, transport, "search_graph", identity{}, body)
+		if code != "" || len(out["seeds"].([]any)) != 2 {
+			t.Fatalf("%s default: %+v %s", transport, out, code)
+		}
+		for _, k := range []int{0, -1, 201} {
+			body["top_k"] = k
+			if _, code = traversalCall(t, h, transport, "search_graph", identity{}, body); code != "invalid_request" {
+				t.Fatalf("%s top_k=%d: %s", transport, k, code)
+			}
+		}
+	}
+}
+
+func TestSearchGraphFacadeOptionsReuse(t *testing.T) {
+	if testEngine(t) != "sqlite" {
+		t.Skip("SQLite graph adapter")
+	}
+	h := newHarness(t)
+	h.seedTable("acme", "docs", []map[string]any{{"name": "v", "type": "vector", "dim": 2}})
+	h.mustHTTP("insert", map[string]any{"namespace": "acme", "table": "docs", "records": []any{map[string]any{"v": []float64{1, 0}}, map[string]any{"v": []float64{0, 1}}}})
+	s, err := dolmen.Open(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	query := dolmen.VectorQuery{Vec: []float32{1, 0}}
+	baseline, err := s.SearchGraph(t.Context(), "acme", []string{"docs"}, query, 0, dolmen.SearchOptions{}, dolmen.TraversalOptions{})
+	if err != nil || len(baseline.Seeds) != 2 {
+		t.Fatalf("Go topK default: %+v %v", baseline, err)
+	}
+	reused, err := s.SearchGraph(t.Context(), "acme", []string{"docs"}, query, 0, dolmen.SearchOptions{Limit: 1, Offset: 1, IncludeHidden: true, Reveal: []string{"v"}}, dolmen.TraversalOptions{})
+	if err != nil || !reflect.DeepEqual(reused, baseline) {
+		t.Fatalf("irrelevant shared options affected graph result: %+v %v", reused, err)
+	}
+	_, err = s.SearchGraph(t.Context(), "acme", []string{"docs"}, query, 0, dolmen.SearchOptions{Limit: 201}, dolmen.TraversalOptions{})
+	if !errors.Is(err, dolmen.ErrInvalidRequest) {
+		t.Fatalf("common options validation: %v", err)
 	}
 }
 

@@ -108,6 +108,5 @@ func (req traversalReq) query() (graph.TraversalQuery, error) {
 			limits[i] = n
 		}
 	}
-	q := graph.TraversalQuery{Seeds: req.Seeds, Direction: req.Direction, RelationTypes: req.RelationTypes, MaxHops: limits[0], MaxWork: limits[3], Limits: graph.Limits{Nodes: limits[1], Edges: limits[2], Elapsed: time.Duration(limits[4]) * time.Millisecond}}
-	return q, nil
+	return graph.TraversalQuery{Seeds: req.Seeds, Direction: req.Direction, RelationTypes: req.RelationTypes, MaxHops: limits[0], MaxWork: limits[3], Limits: graph.Limits{Nodes: limits[1], Edges: limits[2], Elapsed: time.Duration(limits[4]) * time.Millisecond}}, nil
 }

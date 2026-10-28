@@ -42,7 +42,7 @@ default of 10, anything above 200 becomes 200) rather than refusing it. A client
 against the schemas never sends what the server would normalize; one that does not gets the same
 answer on either transport. `TestTransportParityOnInputTheSchemasWouldRefuse` pins that
 agreement case by case. The one bound the server enforces before decoding is the query vector's
-length (`maxItems` = 4096 on `search_vector.vector`), because an unbounded array is expanded in
+length (`maxItems` = 4096 on `search_vector.vector` and `search_graph.vector`), because an unbounded array is expanded in
 memory before any dimension check can reject it; the façade applies the same bound through
 `ops.PrepareVectorQuery`.
 
@@ -71,7 +71,7 @@ table they never created. Both surfaces now agree, pinned in `TestEmbeddedParity
 | Limit | Value | MCP schema | Engine runtime | Façade |
 | --- | --- | --- | --- | --- |
 | Fields per table | `store.MaxFieldsPerTable` = 100 | `create_table` `fields.maxItems` | `CreateTable` (`internal/store/store.go:498`) | Same bound via engine |
-| Query vector length | `schema.MaxVectorDim` = 4096 | `search_vector` `vector.maxItems` | Streaming count before the body is decoded (`internal/api/ops.go`), then `ops.PrepareVectorQuery` | Same bound via `ops.PrepareVectorQuery` |
+| Query vector length | `schema.MaxVectorDim` = 4096 | `search_vector` / `search_graph` `vector.maxItems` | Streaming count before the typed body is decoded (`internal/api/ops.go`, `internal/api/search_graph.go`), then `ops.PrepareVectorQuery` | Same bound via `ops.PrepareVectorQuery` |
 | Records per insert | `store.MaxRecordsPerInsert` = 1000 | `insert` `records.maxItems` | `Insert` (`internal/store/insert.go:45`) | Same bound via engine |
 | Records per upsert | `store.MaxRecordsPerInsert` = 1000 | `upsert_by_key` `records.maxItems` | `UpsertByKey` (`internal/store/upsert_key.go:19`) | Same bound via engine |
 | Records per import | `store.MaxRecordsPerInsert` = 1000 | `import_records` `records.maxItems` | `store.ImportIdentities` (`internal/store/import.go`), shared by every engine with the id, `created_at` and key checks | Same bound via engine; like the wire, the façade never creates the namespace, so an absent one is `not_found` |
@@ -106,7 +106,7 @@ before the shared dispatch table sees the arguments.
 | Search `Offset` above 1,000,000,000 | `invalid_request` | accepted; the bound is schema-only | accepted |
 | Blank but non-empty search `Filter` | `invalid_request` | treated as no filter | treated as no filter |
 | Empty `IdempotencyKey` | treated as no key | `invalid_request` | `invalid_request` |
-| Empty query vector | `vector must have at least one element` | `pass either text or vector` | same as `/v1` |
+| Empty query vector (`SearchVector`) | `vector must have at least one element` | `pass either text or vector` | same as `/v1` |
 | Body that is not a JSON object | — | `400 invalid_request`, naming the object requirement | **intended difference:** JSON-RPC `-32602`, `tools/call arguments must be an object` |
 | `null` body | — | `400 invalid_request`, naming the object requirement, as any other non-object body | JSON-RPC `-32602` |
 | Empty or whitespace-only body | — | treated as `{}` | absent `arguments` are treated as `{}` |
@@ -184,3 +184,36 @@ defaults (4 hops, 1000 nodes/edges/work, one second); explicit wire zero budgets
 are invalid, as for neighbors. Negative/over-cap budgets reject on every surface.
 `TestGraphTraversalFacade` and `TestGraphTraversalWireBudgets` pin these contracts.
 The facade does not expose raw adjacency or bypass per-snapshot visibility.
+
+
+## Semantic graph search
+
+`SearchGraph` uses the SQLite search/traversal core. Table names are normalized;
+1–100 tables and `topK` 1–200 are accepted. Go `topK=0` selects 10, while an
+explicit wire `top_k=0` is `invalid_request`; omission selects 10 on the wire.
+Negative/over-cap values reject. Zero Go expansion fields select the defaults
+recorded above; explicit wire zero bounds reject. The vector bound is counted
+before typed wire decoding, as for `search_vector`; the Go vector is bounded by
+`PrepareVectorQuery`. An empty vectorized table has no established dimension and
+returns empty seeds/connections, matching `SearchVector` rather than treating its
+uninitialized dimension as a mismatch.
+
+Only `SearchOptions.Filter` and `Args` affect graph seed selection. `Limit`,
+`Offset`, `IncludeHidden` and `Reveal` are intentionally ignored: this method's
+`topK` and `TraversalOptions` supply its bounds, and no row columns are returned.
+The existing common options validation still runs (including limit/offset range
+checks); a valid irrelevant value has no effect, an invalid one still rejects.
+Blank/non-empty filters are rejected on Go as for other searches; wire filters
+are trimmed by the engine. Query text/raw-vector selection uses the shared
+`PrepareVectorQuery`, and `MinScore` must be finite. Scores describe seeds only.
+
+`TestSearchGraphFacade` and `TestSearchGraphFacadeOptionsReuse` pin options reuse,
+public reference reuse and defaults;
+`TestSearchGraphTransportsTopK` pins explicit wire-zero refusal and defaulting.
+`TestAnOversizedQueryVectorIsRefusedBeforeItIsDecoded` pins both operations'
+pre-decode allocation bound. `TestSearchGraphEmptyManagedVectorTable` and the
+standalone public Go consumer pin the empty managed-space case. Authenticated
+seed tables use the existing vector-search read/own-row authorization before
+query preparation, pinned on both transports by
+`TestSearchGraphSeedTableAuthorization`; hidden and absent tables return the same
+forbidden response without revealing vector metadata.

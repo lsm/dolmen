@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/lsm/dolmen/internal/graph"
 	"github.com/lsm/dolmen/internal/ops"
+	"github.com/lsm/dolmen/internal/schema"
 	"github.com/lsm/dolmen/internal/store"
 	"maps"
 )
@@ -28,6 +29,9 @@ func registerSearchGraph(ref map[string]any, budget func(int) map[string]any) {
 	Ops["search_graph"] = OpDef{Description: "Semantic seeds ranked across tables, then bounded SQLite adjacency expansion in the same snapshot. query text uses text; raw vectors use vector. filter/args restrict seed properties before ranking; relation_types restrict expansion. top_k defaults to 10. Seeds retain cosine scores separately from connections; expansion uses subgraph bounds and defaults.", InputSchema: input, OutputSchema: outSchema(outputs, "seeds", "nodes", "edges", "truncated", "stop_reason", "skipped_vectors"), Func: searchGraphFunc}
 }
 func searchGraphFunc(ctx context.Context, s *Server, body []byte) (any, error) {
+	if longestVector(body, schema.MaxVectorDim) > schema.MaxVectorDim {
+		return nil, wrapStoreErr(ops.QueryVectorTooLong())
+	}
 	req := searchGraphReq{TopK: 10, Expansion: json.RawMessage(`{}`)}
 	if err := decodeAllowNullArgs(body, &req); err != nil {
 		return nil, err
