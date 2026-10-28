@@ -122,3 +122,19 @@ func TestSearchGraphAccessAndElapsed(t *testing.T) {
 		t.Fatalf("elapsed: %+v %v", out, err)
 	}
 }
+
+func TestSearchGraphEmptyManagedVectorTable(t *testing.T) {
+	s := openRowAccessStore(t)
+	if _, err := s.CreateTable(t.Context(), "ns", "empty_vectors", []schema.Field{{Name: "body", Type: schema.Text, Vectorize: true}}, TableOpts{}, [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+	q := VectorQuery{Vec: []float32{1, 0}}
+	baseline, err := s.SearchVector(t.Context(), "ns", "empty_vectors", q, false, nil, Incarnation{}, Page{})
+	if err != nil || len(baseline.Rows) != 0 {
+		t.Fatalf("semantic search baseline: %+v %v", baseline, err)
+	}
+	out, err := s.SearchGraph(t.Context(), "ns", []string{"empty_vectors"}, q, 1, searchExpansion(), nil)
+	if err != nil || len(out.Seeds) != 0 || len(out.Nodes) != 0 || out.Truncated {
+		t.Fatalf("empty managed space should have no seeds: %+v %v", out, err)
+	}
+}
