@@ -147,3 +147,25 @@ func TestSearchGraphRequiresSQLite(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchGraphSeedTableAuthorization(t *testing.T) {
+	if testEngine(t) != "sqlite" {
+		t.Skip("SQLite graph adapter")
+	}
+	for _, transport := range []string{"http", "mcp"} {
+		t.Run(transport, func(t *testing.T) {
+			h := newHarnessMode(t, authAdminKey)
+			_, key := mintKey(t, h, "reader", "reader")
+			h.seedTable("acme", "visible", []map[string]any{{"name": "v", "type": "vector", "dim": 2}})
+			h.seedTable("acme", "hidden", []map[string]any{{"name": "v", "type": "vector", "dim": 3}})
+			grantTo(t, h, "principal", "reader", "acme", "visible", "read")
+			for _, table := range []string{"hidden", "absent"} {
+				body := map[string]any{"namespace": "acme", "tables": []string{table}, "vector": []float64{1, 0}}
+				_, code := traversalCall(t, h, transport, "search_graph", identity{bearer: key}, body)
+				if code != "forbidden" {
+					t.Fatalf("unreadable seed table %s leaked validation/existence: %s", table, code)
+				}
+			}
+		})
+	}
+}
