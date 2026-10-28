@@ -75,6 +75,12 @@ with (work / 'graph-search-auth.log').open('w') as log:
                 evidence[f'forbidden_{mcp}_{table}'] = data
                 assert code == 'forbidden', (table, code, data)
             print(f'PASS compiled {"MCP" if mcp else "HTTP"}: unreadable and absent seed tables both return forbidden')
+        for mcp in (False, True):
+            oversized = ['not-a-number'] + [0] * 4096
+            data, code = call('search_graph', {'namespace': 'verify', 'tables': ['visible'], 'vector': oversized}, keys['reader'], mcp)
+            evidence[f'vector_bound_{mcp}'] = data
+            assert code == 'invalid_request' and 'vector has more than 4096 numbers' in data['message'], (code, data)
+            print(f'PASS compiled {"MCP" if mcp else "HTTP"}: vector bound precedes typed element decoding')
         for principal in ('alice', 'bob'):
             grant(principal, '', ['read', 'create'])
             must('insert', {'namespace': 'verify', 'table': 'own_nodes', 'records': [{'v': [1, 0]}]}, keys[principal])
