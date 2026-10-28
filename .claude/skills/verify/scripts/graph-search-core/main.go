@@ -76,4 +76,13 @@ func main() {
 	expect(out.Truncated && out.StopReason == "elapsed", "elapsed bound during snapshot setup")
 	fmt.Println("PASS SQLite SearchGraph: blocked snapshot setup returns truncated/elapsed")
 
+	expansion.Limits.Elapsed = time.Second
+	expansion.RelationTypes = nil
+	q.Filter = " \t\n "
+	q.Args = nil
+	out, err = s.SearchGraph(ctx, "verify", []string{"nodes"}, q, 1, expansion, access)
+	must(err)
+	expect(len(out.Seeds) == 1 && len(out.Nodes) == 2 && len(out.Edges) == 1 && !out.Truncated, "whitespace property filter")
+	fmt.Println("PASS SQLite SearchGraph: whitespace-only property filter searches all scoped rows")
+
 }

@@ -63,6 +63,14 @@ func TestSearchGraphCore(t *testing.T) {
 		t.Fatalf("empty validates bounds: %v", err)
 	}
 }
+func TestSearchGraphWhitespaceFilter(t *testing.T) {
+	s := searchGraphFixture(t)
+	out, err := s.SearchGraph(t.Context(), "ns", []string{"alpha"}, VectorQuery{Vec: []float32{1, 0}, Filter: " \t\n "}, 1, searchExpansion(), nil)
+	if err != nil || len(out.Seeds) != 1 || out.Seeds[0].Score != 1 || len(out.Nodes) != 2 || len(out.Edges) != 1 || out.Truncated {
+		t.Fatalf("whitespace filter should search all rows: %+v %v", out, err)
+	}
+}
+
 func TestSearchGraphSeedAndExpansionShareSnapshot(t *testing.T) {
 	s := searchGraphFixture(t)
 	calls := 0
