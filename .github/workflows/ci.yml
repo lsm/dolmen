@@ -204,7 +204,7 @@ jobs:
             asset: libduckdb-linux-arm64.zip
             static_asset: libduckdb-linux-arm64-musl.zip
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-latest
             ext: osx_arm64
             asset: libduckdb-osx-universal.zip
             static_asset: ""
