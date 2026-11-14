@@ -21,7 +21,7 @@ operations. One server, three ways in:
 
 ## Try it
 
-With [Go 1.26.10+](#prerequisites) (Windows PowerShell variant in the
+With [Go 1.26.11+](#prerequisites) (Windows PowerShell variant in the
 [Quickstart](#quickstart); a released container below needs only Docker):
 
 ```bash
@@ -58,7 +58,7 @@ tables plus search plus an agent-native interface.
 
 ### Prerequisites
 
-- [Go 1.26.10+](https://go.dev/dl/) (only to build; the binary is otherwise standalone).
+- [Go 1.26.11+](https://go.dev/dl/) (only to build; the binary is otherwise standalone).
 - Git.
 - For `vectorize` fields and text queries in `search_vector`: nothing extra by default. The built-in
   `local` provider is enabled automatically and embeds in-process (it downloads the model on first

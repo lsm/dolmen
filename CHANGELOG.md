@@ -28,7 +28,7 @@
   as SQLite does, so an oversized file or a `copy_from` naming no readable file is refused instead
   of answering `updated: 0`.
 
-- Builds with Go 1.26.10, which fixes GO-2026-6809 in `crypto/x509`.
+- Builds with Go 1.26.11, which fixes GO-2026-6809 in `crypto/x509` and GO-2026-6859 in `net/http`.
 
 ## v0.7.0
 
