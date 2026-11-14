@@ -25,8 +25,8 @@ func relationTableBody(table string) map[string]any {
 
 func TestRelationTablesAreDeclaredOnBothTransports(t *testing.T) {
 	h := newHarness(t)
-	if testEngine(t) != store.EngineSQLite {
-		t.Skip("relation tables are SQLite-only so far")
+	if testEngine(t) == store.EngineLakehouse {
+		t.Skip("relation tables are refused on the lakehouse engine")
 	}
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
 	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "nodes", "accept_references": true, "fields": []map[string]any{{"name": "label", "type": "string"}}})
@@ -65,7 +65,7 @@ func TestDeclarationsAreAvailableWhileAuthIsOn(t *testing.T) {
 	plain := []map[string]any{{"name": "label", "type": "string"}}
 	h.mustHTTP("create_table", map[string]any{"namespace": "app", "table": "nodes", "accept_references": true, "fields": plain})
 	h.mustMCP("create_table", map[string]any{"namespace": "app", "table": "keys", "fields": plain, "constraints": []map[string]any{{"name": "label_key", "kind": "unique", "fields": []string{"label"}}}})
-	if testEngine(t) == store.EngineSQLite {
+	if testEngine(t) != store.EngineLakehouse {
 		h.mustMCP("create_table", relationTableBody("links"))
 	}
 }
@@ -94,9 +94,9 @@ func TestDeclarationsAreAdvertisedInBothAuthModes(t *testing.T) {
 	}
 }
 
-func TestNonSQLiteRelationsStayRefusedAfterConstraintActivation(t *testing.T) {
-	if testEngine(t) == store.EngineSQLite {
-		t.Skip("SQLite supports relations")
+func TestLakehouseRelationsStayRefusedAfterConstraintActivation(t *testing.T) {
+	if testEngine(t) != store.EngineLakehouse {
+		t.Skip("SQLite and PostgreSQL support relations")
 	}
 	h := newHarness(t)
 	h.mustHTTP("create_namespace", map[string]any{"namespace": "app"})
@@ -108,7 +108,7 @@ func TestNonSQLiteRelationsStayRefusedAfterConstraintActivation(t *testing.T) {
 	body := relationTableBody("links")
 	code, out := h.httpCall("create_table", body)
 	message := errMessage(out)
-	if code != http.StatusBadRequest || errCode(out) != "invalid_request" || !strings.Contains(message, "relation") || !strings.Contains(message, "SQLite") {
+	if code != http.StatusBadRequest || errCode(out) != "invalid_request" || !strings.Contains(message, "relation") || !strings.Contains(message, "PostgreSQL") {
 		t.Fatalf("%s relation refusal: %d %v", testEngine(t), code, out)
 	}
 	if env := h.mcpCall("create_table", body).toolError(); env == nil || env["code"] != "invalid_request" || env["message"] != message {

@@ -11,7 +11,15 @@ import (
 func relationSetup(t *testing.T, h *harness, extra ...schema.Field) {
 	t.Helper()
 	if testEngine(t) != store.EngineSQLite {
-		t.Skip("relation tables are SQLite-only until the other engines keep the declaration")
+		t.Skip("graph reads are SQLite-only until the other engines have a graph index")
+	}
+	relationTables(t, h, extra...)
+}
+
+func relationTables(t *testing.T, h *harness, extra ...schema.Field) {
+	t.Helper()
+	if testEngine(t) == store.EngineLakehouse {
+		t.Skip("relation tables are refused on the lakehouse engine")
 	}
 	h.ensureNS("acme")
 	ctx := t.Context()
@@ -60,7 +68,7 @@ func TestRelateInsertsOneIdempotentEdge(t *testing.T) {
 	for _, transport := range []string{"http", "mcp"} {
 		t.Run(transport, func(t *testing.T) {
 			h := newHarness(t)
-			relationSetup(t, h)
+			relationTables(t, h)
 			edge := map[string]any{"namespace": "acme", "table": "links", "source": 1, "target": 2, "type": "k", "properties": map[string]any{"weight": 0.5}, "idempotency_key": "e1"}
 			out, code, msg := relateCall(t, h, transport, edge)
 			if out == nil || out["id"] != float64(1) || out["replayed"] != false {
@@ -107,7 +115,7 @@ func TestRelateInsertsOneIdempotentEdge(t *testing.T) {
 
 func TestRelateTakesFileProperties(t *testing.T) {
 	h := newHarness(t)
-	relationSetup(t, h, schema.Field{Name: "doc", Type: schema.File})
+	relationTables(t, h, schema.Field{Name: "doc", Type: schema.File})
 	h.seedTable("acme", "docs", fileTableFields())
 	if code, body := h.multipartCall("insert", `{"namespace":"acme","table":"docs","records":[{"title":"src","doc":{"part":"f"}}]}`, map[string][]byte{"f": []byte("edge notes")}); code != 200 {
 		t.Fatalf("insert: %d %v", code, body)
