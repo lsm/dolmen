@@ -47,12 +47,13 @@ func TestRelationRoleFieldsStayLockedThroughMigrations(t *testing.T) {
 		change schema.Change
 		want   string
 	}{
-		"rename source":   {schema.Change{Op: schema.OpRenameField, From: "src", To: "origin"}, "relation"},
+		"rename source":   {schema.Change{Op: schema.OpRenameField, From: "src", To: "origin"}, "src_ref"},
+		"rename type":     {schema.Change{Op: schema.OpRenameField, From: "kind", To: "label"}, "relation"},
 		"drop type":       {schema.Change{Op: schema.OpDropField, Name: "kind"}, "relation"},
 		"drop target key": {schema.Change{Op: schema.OpDropConstraint, Name: "dst_ref"}, "relation"},
 	} {
 		if _, err := h.st.Migrate(ctx, "acme", "links", []schema.Change{c.change}, store.Embedder{}, store.Incarnation{Version: 1}); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), c.want) {
-			t.Fatalf("%s %s: %v, want a refusal naming the %s", testEngine(t), label, err, c.want)
+			t.Fatalf("%s %s: %v, want a refusal naming %s", testEngine(t), label, err, c.want)
 		}
 	}
 	if _, err := h.st.Migrate(ctx, "acme", "links", []schema.Change{{Op: schema.OpAddField, Field: &schema.Field{Name: "note", Type: schema.String}}}, store.Embedder{}, store.Incarnation{Version: 1}); err != nil {
