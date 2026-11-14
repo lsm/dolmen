@@ -69,3 +69,16 @@ conservatively, without another adjacency probe. Exactly reaching a budget is
 not proof that unseen adjacency is empty. Reasons are `hops`, `nodes`, `edges`,
 `work`, `elapsed` or `complete`; caller cancellation and backend faults remain
 errors. A found shortest path is complete even when unrelated branches remain.
+
+## Shared adapter suite
+
+`internal/graph/graphtest.Run` is the conformance suite every `graph.Index`
+adapter runs. The adapter's test supplies a `Backend` over a fresh namespace with
+node tables `alpha` and `beta` (a string `label` field, accepting references) and
+two relation tables using fields `src`, `dst` and `kind`: `links` from `alpha` to
+`beta` and `loops` from `alpha` to `alpha`. `Index(hidden...)` returns an index
+whose access hides the named tables. The suite pins one-hop adjacency in every
+direction, ordering by relation table then edge ID, candidate limits and `more`,
+self-loops, snapshot isolation with read-your-writes on a new snapshot, updates,
+deletes, hidden and dropped tables, input refusal, idempotent `Close` and
+cancellation. The SQLite adapter runs it in `internal/store`.
