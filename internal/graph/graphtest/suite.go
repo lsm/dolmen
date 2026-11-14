@@ -16,6 +16,7 @@ type Backend interface {
 	Update(t *testing.T, table string, id int64, values map[string]any)
 	Delete(t *testing.T, table string, id int64)
 	Drop(t *testing.T, table string)
+	CreateRelation(t *testing.T, table, source, target string)
 }
 
 type fixture struct {
@@ -38,6 +39,7 @@ func Run(t *testing.T, open func(*testing.T) Backend) {
 		{"visible_hides_absent_and_hidden_rows", visibleRows},
 		{"hidden_relation_table", hiddenRelationTable},
 		{"dropped_relation_table", droppedRelationTable},
+		{"recreated_relation_table_serves_no_old_edges", recreatedRelationTable},
 		{"refuses_bad_direction_and_limit", refusesBadInput},
 		{"close_is_idempotent", closeIdempotent},
 		{"canceled_snapshot", canceledSnapshot},
@@ -189,6 +191,22 @@ func droppedRelationTable(f fixture) {
 	f.adjacent(v, f.a(0), "out", 10, []graph.Edge{o}, false)
 	f.adjacent(v, f.b(0), "in", 10, nil, false)
 	f.visible(v, graph.Ref{Table: "links", ID: 1}, false)
+}
+
+func recreatedRelationTable(f fixture) {
+	old := f.link("links", f.a(0), f.b(0), "old")
+	before := f.view()
+	f.Drop(f.t, "links")
+	f.CreateRelation(f.t, "links", "alpha", "beta")
+	f.adjacent(before, f.a(0), "out", 10, []graph.Edge{old}, false)
+	v := f.view()
+	f.adjacent(v, f.a(0), "out", 10, nil, false)
+	f.adjacent(v, f.b(0), "in", 10, nil, false)
+	fresh := f.link("links", f.a(1), f.b(1), "new")
+	v = f.view()
+	f.adjacent(v, f.a(0), "out", 10, nil, false)
+	f.adjacent(v, f.b(0), "in", 10, nil, false)
+	f.adjacent(v, f.a(1), "out", 10, []graph.Edge{fresh}, false)
 }
 
 func refusesBadInput(f fixture) {

@@ -53,12 +53,17 @@ func (b sqliteGraphBackend) Drop(t *testing.T, table string) {
 	}
 }
 
+func (b sqliteGraphBackend) CreateRelation(t *testing.T, table, source, target string) {
+	t.Helper()
+	if _, err := b.s.CreateTable(t.Context(), "ns", table, relationFields(), relationOpts(source, target), [16]byte{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGraphSQLiteIndexSuite(t *testing.T) {
 	graphtest.Run(t, func(t *testing.T) graphtest.Backend {
-		s := relationStore(t)
-		if _, err := s.CreateTable(t.Context(), "ns", "loops", relationFields(), relationOpts("alpha", "alpha"), [16]byte{}); err != nil {
-			t.Fatal(err)
-		}
-		return sqliteGraphBackend{s}
+		b := sqliteGraphBackend{relationStore(t)}
+		b.CreateRelation(t, "loops", "alpha", "alpha")
+		return b
 	})
 }
