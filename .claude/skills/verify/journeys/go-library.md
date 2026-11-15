@@ -10,8 +10,9 @@ example builds against this checkout through `replace => ../..`:
 Expect exit 0, printed search results, and `declared relation table and related edge 1
 with 2 foreign keys`, then `neighbors returned 2 nodes and 1 edge: complete`. The example uses only public types to opt a
 parent into references, declare a relation through `CreateTableWithOptions`, call
-`Relate`, and read back its role fields/constraints. This is SQLite-only; the
-existing PostgreSQL/lakehouse refusal remains in force. For facade behavior, add the
+`Relate`, and read back its role fields/constraints. The example runs on SQLite
+because `neighbors` is SQLite-only so far; PostgreSQL also keeps relation tables and
+`Relate`, and lakehouse still refuses them. For facade behavior, add the
 case to the example or a root-package test, and check
 `docs/design/facade-input-matrix.md` and `numeric-fidelity-matrix.md` before
 changing any recorded divergence from the wire.

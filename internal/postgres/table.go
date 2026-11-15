@@ -140,8 +140,8 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 	if err := store.ValidateEngineNames("postgresql", table, fields); err != nil {
 		return nil, err
 	}
-	if err := store.RefuseRelationOptions(opts); err != nil {
-		return nil, err
+	if err := schema.ValidateRelation(fields, opts.Constraints, opts.Relation); err != nil {
+		return nil, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
 	if err := store.RequireSecretKey(s.secrets, fields); err != nil {
 		return nil, err
@@ -158,7 +158,7 @@ func (s *Store) CreateTable(ctx context.Context, ns, table string, fields []sche
 		}
 	}
 	sc := &schema.TableSchema{Namespace: ns, Name: table, Version: 1, Fields: fields,
-		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != "", Constraints: opts.Constraints, AcceptReferences: opts.AcceptReferences}
+		RowAccess: opts.RowAccess, HasOwner: opts.RowAccess != "", Constraints: opts.Constraints, AcceptReferences: opts.AcceptReferences, Relation: opts.Relation}
 	err = s.write(ctx, ns, expected, s.declared(ctx, sc, func(tx pgx.Tx, n namespace) error {
 		if _, err := s.loadTable(ctx, tx, n, table); err == nil {
 			return fmt.Errorf("%w: table %s.%s already exists", store.ErrInvalid, ns, table)

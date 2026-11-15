@@ -988,7 +988,7 @@ with a `foreign_key`, plus a required `string` type field, then name the roles w
 `"relation":{"source":"src","target":"dst","type":"kind"}`. Its other fields are the edge's
 properties. `describe_table` returns `constraints`, `accept_references` and `relation` as declared.
 `constraints` and `accept_references` work on SQLite, PostgreSQL and lakehouse, and `relation` on
-SQLite only so far. With authentication on they require the reads their checks consult. On plain tables,
+SQLite and PostgreSQL only so far. With authentication on they require the reads their checks consult. On plain tables,
 constrained writes need `read` on each consulted table, including a foreign key's parent. On
 `row_access: own` tables, a standing own-row read (`read` or a data verb) on each endpoint is enough
 for own-row writes; a table-wide mutation needs table-wide read on every affected endpoint.

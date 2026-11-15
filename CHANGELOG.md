@@ -5,7 +5,7 @@
 - `create_table` takes `constraints` (unique keys, partial with `where`, and foreign keys to
   another table's `id`), `accept_references` and `relation` over HTTP and MCP, and
   `describe_table` returns them. They are checked on every write. Constraints work on SQLite,
-  PostgreSQL and lakehouse, and relation tables on SQLite so far. `migrate` adds `add_constraint`,
+  PostgreSQL and lakehouse, and relation tables on SQLite and PostgreSQL so far. `migrate` adds `add_constraint`,
   `drop_constraint` and `set_accept_references`, each as the only change in its call, with existing
   duplicates or orphans refused even in a dry run. The Go library exposes declarations through
   `CreateTableWithOptions`. Activating constraints raises the namespace's minimum catalog reader

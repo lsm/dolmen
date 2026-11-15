@@ -11,7 +11,7 @@ import (
 
 func RefuseRelationOptions(opts TableOpts) error {
 	if opts.Relation != nil {
-		return fmt.Errorf("%w: relation tables are available on the SQLite engine only so far; omit relation on this engine", ErrInvalid)
+		return fmt.Errorf("%w: relation tables are available on the SQLite and PostgreSQL engines only so far; omit relation on this engine", ErrInvalid)
 	}
 	return nil
 }
