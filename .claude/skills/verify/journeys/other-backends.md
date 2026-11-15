@@ -18,6 +18,7 @@ written with the available Docker context:
 eval "$(.claude/skills/verify/scripts/pg.sh start)"
 go test -count=1 -v ./internal/postgres -run 'TestPostgres(ConstraintMigrations|AddConstraintDryRun|ConstraintChangesRunAlone|ForeignKeyDryRun|MigrationKeepsStoredRelation|AcceptReferencesRequiresValue)'
 DOLMEN_ENGINE=postgres go test -count=1 -v ./internal/conformance -run '^TestConstraintMigration(sOnBothTransports|BackendIsEnforcedOnHTTPAndMCP)$'
+DOLMEN_ENGINE=postgres go test -count=1 -v ./internal/conformance -run '^(TestRelate|TestRelation|TestEmbeddedParityRelationTableOptions)'
 go test -race -count=1 ./internal/postgres
 DOLMEN_ENGINE=postgres go test -race -count=1 ./internal/conformance
 DOLMEN_ENGINE=postgres go test -race -count=1 ./internal/blackbox

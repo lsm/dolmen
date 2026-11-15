@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/lsm/dolmen"
@@ -974,17 +975,17 @@ func TestEmbeddedParityRelationTableOptions(t *testing.T) {
 		},
 		Relation: &dolmen.Relation{Source: "src", Target: "dst", Type: "kind"},
 	}
-	if testEngine(t) != store.EngineSQLite {
-		if _, err := st.CreateTableWithOptions(ctx, "graph", "links", fields, opts); !errors.Is(err, dolmen.ErrInvalidRequest) {
+	if _, err := st.CreateTableWithOptions(ctx, "graph", "nodes", []dolmen.Field{{Name: "label", Type: dolmen.String}}, dolmen.CreateTableOptions{AcceptReferences: true}); err != nil {
+		t.Fatal(err)
+	}
+	if testEngine(t) == store.EngineLakehouse {
+		if _, err := st.CreateTableWithOptions(ctx, "graph", "links", fields, opts); !errors.Is(err, dolmen.ErrInvalidRequest) || !strings.Contains(err.Error(), "relation tables") {
 			t.Fatalf("unenforced relation: %v", err)
 		}
 		if _, _, err := st.DescribeTable(ctx, "graph", "links"); !errors.Is(err, dolmen.ErrNotFound) {
 			t.Fatalf("refused table persisted: %v", err)
 		}
 		return
-	}
-	if _, err := st.CreateTableWithOptions(ctx, "graph", "nodes", []dolmen.Field{{Name: "label", Type: dolmen.String}}, dolmen.CreateTableOptions{AcceptReferences: true}); err != nil {
-		t.Fatal(err)
 	}
 	created, err := st.CreateTableWithOptions(ctx, "graph", "links", fields, opts)
 	if err != nil {
